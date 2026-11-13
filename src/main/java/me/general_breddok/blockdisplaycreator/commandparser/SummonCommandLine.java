@@ -63,6 +63,9 @@ public class SummonCommandLine extends MCCommandLine {
         OperationUtil.doIfNotNull(getArgument(4), arg -> {
 
             String strNbtArg = getArguments().stream().skip(4).map(CommandArgument::toString).collect(Collectors.joining());
+            if (LegacyDisplayNbt.serverNeedsModernNbt()) {
+                strNbtArg = LegacyDisplayNbt.modernize(strNbtArg);
+            }
 
             this.nbtArg = new NbtCommandArgument(strNbtArg, this);
             this.arguments.set(4, this.nbtArg);
