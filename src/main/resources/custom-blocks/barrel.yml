@@ -127,3 +127,9 @@ sound:
 #  #      over: 10
 #  #      parts: [3]
 #  #      transformation: [1,0,0,0.5, 0,1,0,1, 0,0,1,0.25, 0,0,0,1]
+#  #An animation may also play sounds of its own, a tune for instance: a sound of the game, the tick it is played at, its pitch and its volume.
+#  #    sounds:
+#  #      - at: 12
+#  #        sound: minecraft:block.note_block.harp
+#  #        pitch: 1.2
+#  #        volume: 1

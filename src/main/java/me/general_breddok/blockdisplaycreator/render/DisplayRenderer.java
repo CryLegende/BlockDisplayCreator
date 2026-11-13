@@ -850,6 +850,7 @@ public final class DisplayRenderer implements Listener {
                 DisplayAnimation animation = animations.get(i);
                 if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
                     play(placed, i, animation, animation.startingAt[this.tick % animation.duration]);
+                    sound(placed, animation, this.tick % animation.duration);
                 }
             }
         }
@@ -865,6 +866,7 @@ public final class DisplayRenderer implements Listener {
                 int elapsed = this.tick - placed.startedAt[i];
                 if (elapsed >= 0 && elapsed <= animation.duration) {
                     play(placed, i, animation, animation.startingAt[elapsed]);
+                    sound(placed, animation, elapsed);
                 }
                 if (elapsed >= animation.duration) {
                     placed.startedAt[i] = -1;
@@ -875,6 +877,18 @@ public final class DisplayRenderer implements Listener {
             if (!active) {
                 iterator.remove();
             }
+        }
+    }
+
+    private void sound(PlacedDisplay placed, DisplayAnimation animation, int at) {
+        int[] due = animation.notesAt[at];
+        if (due == null) {
+            return;
+        }
+        Location where = placed.base();
+        for (int note : due) {
+            DisplayAnimation.Note played = animation.notes[note];
+            placed.world.playSound(where, played.sound(), played.volume(), played.pitch());
         }
     }
 

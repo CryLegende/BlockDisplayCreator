@@ -40,6 +40,7 @@ import java.util.zip.GZIPInputStream;
 public final class SiteModelImporter {
 
     private static final String PROJECT_URL = "https://www.block-display.com/api/v1/bde/project-model";
+    private static final String FILE_URL = "https://www.block-display.com/api/v1/bde/project-file";
     private static final String INFO_URL = "https://block-display.com/api/v1/models/";
     private static final String PAGE_URL = "https://block-display.com/bd/";
     /**
@@ -72,8 +73,9 @@ public final class SiteModelImporter {
      * @param skipped          elements of the project left out (texts)
      * @param animatedElements display entities the animation moves, 0 without animation
      * @param ticks            length of the animation
+     * @param notes            sounds the animation plays
      */
-    public record Imported(String name, Path file, String title, String author, int elements, int skipped, int animatedElements, int frames, int ticks) {
+    public record Imported(String name, Path file, String title, String author, int elements, int skipped, int animatedElements, int frames, int ticks, int notes) {
     }
 
     private record Leaf(JsonObject node, Matrix4f world, String group) {
@@ -92,7 +94,7 @@ public final class SiteModelImporter {
         String title = "";
         String author = "";
         try {
-            JsonObject info = JsonParser.parseString(request(INFO_URL + id, null)).getAsJsonObject();
+            JsonObject info = JsonParser.parseString(new String(request(INFO_URL + id, null), StandardCharsets.UTF_8)).getAsJsonObject();
             JsonObject data = info.has("data") && info.get("data").isJsonObject() ? info.getAsJsonObject("data") : info;
             title = text(data, "title");
             if (data.has("author") && data.get("author").isJsonObject()) {
@@ -137,53 +139,100 @@ public final class SiteModelImporter {
         Files.writeString(temporary, file, StandardCharsets.UTF_8);
         Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
         return new Imported(name, target, title, author, leaves.size(), skipped,
-                animation == null ? 0 : animation.parts, animation == null ? 0 : animation.frames, animation == null ? 0 : animation.ticks);
+                animation == null ? 0 : animation.parts, animation == null ? 0 : animation.frames, animation == null ? 0 : animation.ticks, animation == null ? 0 : animation.notes);
     }
 
     // ---------- The site ----------
 
+    /**
+     * The site keeps a project either in its answer, as text, or as a file of its own to be asked for next: the
+     * larger and the more recent ones. Both are the same data, zipped.
+     */
     private static JsonObject project(int id) throws IOException {
         JsonObject answer;
         try {
-            answer = JsonParser.parseString(request(PROJECT_URL, String.valueOf(id))).getAsJsonObject();
+            answer = JsonParser.parseString(new String(request(PROJECT_URL, Map.of("modelID", String.valueOf(id))), StandardCharsets.UTF_8)).getAsJsonObject();
         } catch (RuntimeException e) {
             throw new IOException("the site did not answer with a model");
         }
         JsonObject data = answer.has("data") && answer.get("data").isJsonObject() ? answer.getAsJsonObject("data") : null;
-        if (data == null || !data.has("projectBDE") || data.get("projectBDE").isJsonNull()) {
+        String inline = data == null ? "" : text(data, "projectBDE").trim();
+        byte[] packed;
+        if (!inline.isEmpty()) {
+            try {
+                packed = Base64.getDecoder().decode(inline);
+            } catch (IllegalArgumentException e) {
+                throw new IOException("the project of the model " + id + " is stored in a form this import does not read");
+            }
+        } else if (data != null && flag(data, "projectFileReady")) {
+            Map<String, String> file = new LinkedHashMap<>();
+            file.put("kind", text(data, "projectFileKind").isEmpty() ? "model" : text(data, "projectFileKind"));
+            file.put("id", text(data, "projectFileId").isEmpty() ? String.valueOf(id) : text(data, "projectFileId"));
+            packed = request(FILE_URL, file);
+        } else {
             throw new IOException("the site has no project for the model " + id);
         }
-        byte[] packed;
-        try {
-            packed = Base64.getDecoder().decode(data.get("projectBDE").getAsString().trim());
-        } catch (IllegalArgumentException e) {
-            throw new IOException("the project of the model " + id + " is stored in a form this import does not read");
-        }
         try (InputStream in = new GZIPInputStream(new ByteArrayInputStream(packed))) {
-            JsonElement project = JsonParser.parseString(new String(in.readAllBytes(), StandardCharsets.UTF_8));
-            return project.getAsJsonArray().get(0).getAsJsonObject();
-        } catch (RuntimeException e) {
-            throw new IOException("the project of the model " + id + " could not be read");
+            return scene(in.readAllBytes());
+        } catch (IOException | RuntimeException e) {
+            throw new IOException("the project of the model " + id + " could not be read (" + e + ")");
         }
     }
 
     /**
-     * @param modelId posted as a form field when given, a plain GET otherwise
+     * The scene of an unzipped project: the project itself, or the entry "scene.json" of a container holding
+     * several files.
      */
-    private static String request(String url, String modelId) throws IOException {
+    private static JsonObject scene(byte[] project) throws IOException {
+        byte[] json = project;
+        if (project.length > 9 && project[0] == 'P' && project[1] == 'R' && project[2] == 'J') {
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(project).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            buffer.position(5);
+            int entries = buffer.getInt();
+            json = null;
+            for (int i = 0; i < entries && buffer.remaining() >= 2; i++) {
+                byte[] name = new byte[buffer.getShort() & 0xFFFF];
+                buffer.get(name);
+                int size = buffer.getInt();
+                if (size < 0 || size > buffer.remaining()) {
+                    break;
+                }
+                if (new String(name, StandardCharsets.UTF_8).equals("scene.json")) {
+                    json = new byte[size];
+                    buffer.get(json);
+                    break;
+                }
+                buffer.position(buffer.position() + size);
+            }
+            if (json == null) {
+                throw new IOException("it holds no scene");
+            }
+        }
+        JsonElement scene = JsonParser.parseString(new String(json, StandardCharsets.UTF_8));
+        return scene.isJsonArray() ? scene.getAsJsonArray().get(0).getAsJsonObject() : scene.getAsJsonObject();
+    }
+
+    /**
+     * @param fields posted as a form when given, a plain GET otherwise
+     */
+    private static byte[] request(String url, Map<String, String> fields) throws IOException {
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setConnectTimeout(10_000);
         connection.setReadTimeout(30_000);
         connection.setRequestProperty("User-Agent", "BlockDisplayCreator");
-        connection.setRequestProperty("Accept", "application/json");
-        if (modelId != null) {
+        if (fields != null) {
             String boundary = "----bdc" + Long.toHexString(System.nanoTime());
             connection.setRequestMethod("POST");
             connection.setDoOutput(true);
             connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-            String body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"modelID\"\r\n\r\n" + modelId + "\r\n--" + boundary + "--\r\n";
+            StringBuilder body = new StringBuilder();
+            for (Map.Entry<String, String> field : fields.entrySet()) {
+                body.append("--").append(boundary).append("\r\nContent-Disposition: form-data; name=\"").append(field.getKey())
+                        .append("\"\r\n\r\n").append(field.getValue()).append("\r\n");
+            }
+            body.append("--").append(boundary).append("--\r\n");
             try (OutputStream out = connection.getOutputStream()) {
-                out.write(body.getBytes(StandardCharsets.UTF_8));
+                out.write(body.toString().getBytes(StandardCharsets.UTF_8));
             }
         }
         int code = connection.getResponseCode();
@@ -191,7 +240,7 @@ public final class SiteModelImporter {
             throw new IOException(code == 404 ? "the site does not know this model" : "the site answered with the code " + code);
         }
         try (InputStream in = connection.getInputStream()) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return in.readAllBytes();
         }
     }
 
@@ -395,9 +444,11 @@ public final class SiteModelImporter {
 
     private static final class Animation {
         final StringBuilder text = new StringBuilder();
+        final StringBuilder sounds = new StringBuilder();
         int frames;
         int ticks;
         int parts;
+        int notes;
     }
 
     private static Animation animation(JsonObject root, List<Leaf> rest, Matrix4f fit, String trigger) {
@@ -455,7 +506,81 @@ public final class SiteModelImporter {
             animation.ticks += 2;
         }
         animation.parts = groups.values().stream().mapToInt(List::size).sum();
+        sounds(root, animation);
         return animation;
+    }
+
+    /**
+     * The sounds of a project are tracks of notes: a sound of the game, played at given ticks with a pitch and a
+     * volume. They are written as the sounds of the animation.
+     */
+    private static void sounds(JsonObject root, Animation animation) {
+        if (!root.has("listSound") || !root.get("listSound").isJsonArray()) {
+            return;
+        }
+        List<float[]> notes = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (JsonElement entry : root.getAsJsonArray("listSound")) {
+            JsonObject sound = entry.getAsJsonObject();
+            float tick = sound.has("tick") && sound.get("tick").isJsonPrimitive() ? Math.max(0.05f, sound.get("tick").getAsFloat()) : 1;
+            if (!sound.has("tracks") || !sound.get("tracks").isJsonArray()) {
+                continue;
+            }
+            for (JsonElement trackEntry : sound.getAsJsonArray("tracks")) {
+                JsonObject track = trackEntry.getAsJsonObject();
+                String id = text(track, "id");
+                if (id.isEmpty() || !track.has("piano") || !track.get("piano").isJsonArray()) {
+                    continue;
+                }
+                for (JsonElement noteEntry : track.getAsJsonArray("piano")) {
+                    JsonObject note = noteEntry.getAsJsonObject();
+                    float pitch = note.has("pitch") ? note.get("pitch").getAsFloat() : 1;
+                    float volume = note.has("volume") ? note.get("volume").getAsFloat() : 1;
+                    String played = id;
+                    // The game plays a sound from half to twice its pitch. A harp note out of that range goes to the
+                    // note block instrument that sounds one or two octaves away; any other is brought back by octaves.
+                    if (id.endsWith("note_block.harp") && pitch > 0) {
+                        String family = id.substring(0, id.length() - "harp".length());
+                        if (pitch < 0.25f) {
+                            played = family + "bass";
+                            pitch *= 4;
+                        } else if (pitch < 0.5f) {
+                            played = family + "guitar";
+                            pitch *= 2;
+                        } else if (pitch > 4) {
+                            played = family + "bell";
+                            pitch /= 4;
+                        } else if (pitch > 2) {
+                            played = family + "flute";
+                            pitch /= 2;
+                        }
+                    }
+                    while (pitch > 0 && pitch < 0.5f) {
+                        pitch *= 2;
+                    }
+                    while (pitch > 2) {
+                        pitch /= 2;
+                    }
+                    notes.add(new float[]{Math.round(note.get("time").getAsFloat() * tick), pitch, volume});
+                    names.add(played.contains(":") ? played : "minecraft:" + played);
+                }
+            }
+        }
+        Integer[] order = new Integer[notes.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        java.util.Arrays.sort(order, java.util.Comparator.comparingDouble(i -> notes.get(i)[0]));
+        for (int i : order) {
+            float[] note = notes.get(i);
+            animation.sounds.append("      - at: ").append((int) note[0]).append("\n        sound: ").append(names.get(i))
+                    .append("\n        pitch: ").append(number(note[1], 4)).append('\n');
+            if (Math.abs(note[2] - 1) > 1.0E-3f) {
+                animation.sounds.append("        volume: ").append(number(note[2], 2)).append('\n');
+            }
+            animation.notes++;
+            animation.ticks = Math.max(animation.ticks, (int) note[0] + 1);
+        }
     }
 
     private static float length(JsonObject node) {
@@ -748,6 +873,9 @@ public final class SiteModelImporter {
         out.append("sound:\n  break:\n    sound-type: BLOCK_WOOD_BREAK\n    volume: 2.5\n    pitch: 0.6\n  place:\n    sound-type: BLOCK_BARREL_OPEN\n    volume: 1.7\n    pitch: 3\n");
         if (animation != null) {
             out.append("\nanimations:\n  animation:\n    trigger: ").append(trigger).append("\n    duration: ").append(animation.ticks).append("\n    frames:\n").append(animation.text);
+            if (animation.notes > 0) {
+                out.append("    sounds:\n").append(animation.sounds);
+            }
         }
         return out.toString();
     }

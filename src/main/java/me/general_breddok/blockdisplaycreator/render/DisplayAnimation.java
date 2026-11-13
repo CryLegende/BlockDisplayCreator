@@ -30,6 +30,10 @@ import java.util.TreeSet;
  *         scale: 1.2          # or [x, y, z]
  *         pivot: [0, 1, 0]    # point the rotation and the scale are made around. By def the middle of the parts
  *         sound: minecraft:block.chest.open
+ *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
+ *       - at: 12
+ *         sound: minecraft:block.note_block.harp
+ *         pitch: 1.2
  *       - at: 30
  *         over: 10            # no move, rotate nor scale: back to rest
  * </pre>
@@ -56,6 +60,14 @@ final class DisplayAnimation {
      * For each tick of the animation, the indexes of the frames that start at it, or null.
      */
     final int[][] startingAt;
+    /**
+     * Sounds played at the block along the animation, apart from those of its frames.
+     */
+    final Note[] notes;
+    /**
+     * For each tick of the animation, the indexes of the notes played at it, or null.
+     */
+    final int[][] notesAt;
 
     /**
      * @param at      the tick it starts at
@@ -66,13 +78,27 @@ final class DisplayAnimation {
     record Frame(int at, int[] parts, List<?>[] moving, List<?>[] jumping, String sound, float volume, float pitch) {
     }
 
-    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames) {
+    /**
+     * A sound of the game played at a tick of the animation.
+     */
+    record Note(int at, String sound, float volume, float pitch) {
+    }
+
+    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes) {
         this.name = name;
         this.trigger = trigger;
         this.interaction = interaction;
         this.duration = duration;
         this.frames = frames;
         this.startingAt = new int[duration + 1][];
+        this.notes = notes;
+        this.notesAt = new int[duration + 1][];
+        for (int i = 0; i < notes.length; i++) {
+            int[] playing = this.notesAt[notes[i].at()];
+            int[] extended = playing == null ? new int[1] : java.util.Arrays.copyOf(playing, playing.length + 1);
+            extended[extended.length - 1] = i;
+            this.notesAt[notes[i].at()] = extended;
+        }
         for (int i = 0; i < frames.length; i++) {
             int[] starting = this.startingAt[frames[i].at()];
             int[] extended = starting == null ? new int[1] : java.util.Arrays.copyOf(starting, starting.length + 1);
@@ -140,8 +166,20 @@ final class DisplayAnimation {
                     number(entry.get("volume"), 1f).floatValue(), number(entry.get("pitch"), 1f).floatValue()));
         }
         frames.sort(Comparator.comparingInt(Frame::at));
+        List<Note> notes = new ArrayList<>();
+        for (Map<?, ?> entry : section.getMapList("sounds")) {
+            if (entry.get("sound") == null) {
+                throw new IllegalArgumentException("a sound has no sound key");
+            }
+            int at = Math.max(0, number(entry.get("at"), 0).intValue());
+            notes.add(new Note(at, entry.get("sound").toString(), number(entry.get("volume"), 1f).floatValue(), number(entry.get("pitch"), 1f).floatValue()));
+            end = Math.max(end, at + 1);
+        }
         int duration = Math.max(section.getInt("duration", end), frames.get(frames.size() - 1).at() + 1);
-        return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new));
+        for (Note note : notes) {
+            duration = Math.max(duration, note.at() + 1);
+        }
+        return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new));
     }
 
     /**

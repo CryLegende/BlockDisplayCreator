@@ -989,7 +989,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
             try {
                 imported = me.general_breddok.blockdisplaycreator.importer.SiteModelImporter.importModel(repository, id, name, trigger, finalTurn);
             } catch (java.io.IOException | RuntimeException e) {
-                String reason = e instanceof java.io.IOException ? e.getMessage() : e.toString();
+                String reason = e instanceof java.io.IOException && e.getMessage() != null ? e.getMessage() : e.toString();
                 Bukkit.getScheduler().runTask(this.plugin, () -> ChatUtil.sendMessage(sender, "&cThe model could not be imported: " + reason));
                 return;
             }
@@ -1003,7 +1003,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                 }
                 ChatUtil.sendMessage(sender, "&aImported " + (imported.title().isEmpty() ? "the model " + id : "\"" + imported.title() + "\"")
                         + " as &e" + name + "&a: " + imported.elements() + " display entities"
-                        + (imported.ticks() > 0 ? ", animation of " + imported.ticks() + " ticks on " + imported.animatedElements() + " of them (" + trigger + ")" : ", no animation")
+                        + (imported.ticks() > 0 ? ", animation of " + imported.ticks() + " ticks on " + imported.animatedElements() + " of them (" + trigger + ")" + (imported.notes() > 0 ? " with " + imported.notes() + " sounds" : "") : ", no animation")
                         + (imported.skipped() > 0 ? ". " + imported.skipped() + " text element(s) were left out" : "") + ".");
                 ChatUtil.sendMessage(sender, "&7File: custom-blocks/import/" + name + ".yml");
                 AbstractCustomBlock block = storage.getAbstractCustomBlock(name);
