@@ -81,7 +81,7 @@ final class DisplayModel {
      * @param problems   receives what could not be read of its animations
      * @return the model, without any element when the summon commands of the block create nothing
      */
-    static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, World world, int chunkX, int chunkZ,
+    static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
                              ConfigurationSection animations, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
@@ -89,7 +89,7 @@ final class DisplayModel {
         Interaction sender = world.spawn(location, Interaction.class);
         List<Display> displays;
         try {
-            displays = definition.spawnDisplay(location, sender, display -> true);
+            displays = summonTexts == null ? definition.spawnDisplay(location, sender, display -> true) : summon(definition, summonTexts, location, sender);
         } finally {
             sender.remove();
         }
@@ -154,6 +154,38 @@ final class DisplayModel {
                     element.block(), element.drawn(), element.boxed(), nms.withCullingBox(element.data(), width, height)));
         }
         return boxed;
+    }
+
+    /**
+     * Summons a model from the text of its commands, as its summoner does, without building that text again.
+     */
+    private static List<Display> summon(AbstractCustomBlock definition, List<String[]> summonTexts, Location location, Interaction sender) {
+        World world = location.getWorld();
+        Boolean feedback = world.getGameRuleValue(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK);
+        Boolean logged = world.getGameRuleValue(org.bukkit.GameRule.LOG_ADMIN_COMMANDS);
+        sender.addAttachment(me.general_breddok.blockdisplaycreator.BlockDisplayCreator.getInstance(),
+                me.general_breddok.blockdisplaycreator.permission.DefaultPermissions.Vanilla.Command.SUMMON, true);
+        world.setGameRule(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK, false);
+        world.setGameRule(org.bukkit.GameRule.LOG_ADMIN_COMMANDS, false);
+        try {
+            String at = " " + location.getX() + " " + location.getY() + " " + location.getZ() + " ";
+            for (String[] text : summonTexts) {
+                org.bukkit.Bukkit.dispatchCommand(sender, text[0] + at + text[1]);
+            }
+        } finally {
+            world.setGameRule(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK, feedback == null || feedback);
+            world.setGameRule(org.bukkit.GameRule.LOG_ADMIN_COMMANDS, logged == null || logged);
+        }
+        DirectedVector translation = definition.getDisplaySummoner() instanceof TranslationVectorAdjustable adjustable ? adjustable.getTranslation() : null;
+        List<Display> displays = new ArrayList<>();
+        for (Entity entity : world.getNearbyEntities(location, 0.01, 0.01, 0.01, entity -> entity instanceof Display)) {
+            Display display = (Display) entity;
+            if (translation != null) {
+                display.setTransformation(new me.general_breddok.blockdisplaycreator.world.TransformationBuilder(display).addTranslation(translation.clone()).build());
+            }
+            displays.add(display);
+        }
+        return displays;
     }
 
     private static boolean isDrawn(Display display) {

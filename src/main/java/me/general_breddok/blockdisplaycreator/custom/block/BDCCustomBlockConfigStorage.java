@@ -1,5 +1,10 @@
 package me.general_breddok.blockdisplaycreator.custom.block;
 
+import me.general_breddok.blockdisplaycreator.custom.AutomaticCommandDisplaySummoner;
+import me.general_breddok.blockdisplaycreator.commandparser.SummonCommandLine;
+import me.general_breddok.blockdisplaycreator.commandparser.CommandLine;
+import java.util.Map;
+import java.util.HashMap;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.experimental.FieldDefaults;
@@ -30,6 +35,12 @@ import java.util.stream.Stream;
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class BDCCustomBlockConfigStorage implements CustomBlockStorage {
     List<AbstractCustomBlock> abstractCustomBlocks;
+    /**
+     * For each custom block, its summon commands as text, each cut in two around its coordinates. Writing the
+     * data of a large model as text takes time: it is done here, when the files are read off the main thread,
+     * rather than each time the model is summoned.
+     */
+    volatile Map<String, List<String[]>> summonTexts = Map.of();
     @Getter
     CustomBlockRepository customBlockRepository;
     final JavaPlugin plugin;
@@ -57,10 +68,18 @@ public class BDCCustomBlockConfigStorage implements CustomBlockStorage {
 
 
             ChatUtil.log("&6[BlockDisplayCreator] &eInitialization complete, %d blocks initialized", tempAbstractCustomBlocks.size());
+            Map<String, List<String[]>> tempSummonTexts = new HashMap<>();
+            for (AbstractCustomBlock abstractCustomBlock : tempAbstractCustomBlocks) {
+                List<String[]> texts = summonTexts(abstractCustomBlock);
+                if (texts != null) {
+                    tempSummonTexts.put(abstractCustomBlock.getName(), texts);
+                }
+            }
 
             Bukkit.getScheduler().runTask(this.plugin, () -> {
                 this.customBlockRepository = tempCustomBlockRepository;
                 this.abstractCustomBlocks = tempAbstractCustomBlocks;
+                this.summonTexts = tempSummonTexts;
 
                 BlockDisplayCreatorCAPICommand bdcCommand = BlockDisplayCreator.getInstance().getBdcCommand();
                 if (bdcCommand != null) {
@@ -72,6 +91,37 @@ public class BDCCustomBlockConfigStorage implements CustomBlockStorage {
                 }
             });
         });
+    }
+
+    /**
+     * The summon commands of a custom block as text, or null when one of them is not a plain summon command.
+     */
+    @Nullable
+    private static List<String[]> summonTexts(AbstractCustomBlock abstractCustomBlock) {
+        if (!(abstractCustomBlock.getDisplaySummoner() instanceof AutomaticCommandDisplaySummoner summoner) || summoner.getCommands() == null) {
+            return null;
+        }
+        List<String[]> texts = new ArrayList<>();
+        for (CommandLine command : summoner.getCommands()) {
+            if (!(command instanceof SummonCommandLine summon)) {
+                return null;
+            }
+            texts.add(new String[]{"minecraft:summon " + summon.getSummonEntity().toString().toLowerCase(), summon.getNbtArg().toString()});
+        }
+        return texts;
+    }
+
+    /**
+     * The custom block of a name as the storage holds it, not a copy: to be read only.
+     */
+    @Nullable
+    public AbstractCustomBlock peek(@NotNull String name) {
+        for (AbstractCustomBlock abstractCustomBlock : this.abstractCustomBlocks) {
+            if (abstractCustomBlock.getName().equals(name)) {
+                return abstractCustomBlock;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -91,6 +141,15 @@ public class BDCCustomBlockConfigStorage implements CustomBlockStorage {
             } catch (CustomBlockLoadException | IllegalArgumentException e) {
                 ChatUtil.log("&c" + e.getMessage());
             }
+            Map<String, List<String[]>> updatedSummonTexts = new HashMap<>(this.summonTexts);
+            AbstractCustomBlock reloaded = peek(name);
+            List<String[]> texts = reloaded == null ? null : summonTexts(reloaded);
+            if (texts == null) {
+                updatedSummonTexts.remove(name);
+            } else {
+                updatedSummonTexts.put(name, texts);
+            }
+            this.summonTexts = updatedSummonTexts;
 
             Bukkit.getScheduler().runTask(this.plugin, () -> {
                 BlockDisplayCreatorCAPICommand bdcCommand = BlockDisplayCreator.getInstance().getBdcCommand();

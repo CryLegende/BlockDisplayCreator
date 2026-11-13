@@ -728,7 +728,10 @@ public final class DisplayRenderer implements Listener {
         if (world == null || this.tick < this.unavailableModels.getOrDefault(name, 0)) {
             return null;
         }
-        AbstractCustomBlock definition = this.plugin.getCustomBlockService().getStorage().getAbstractCustomBlock(name);
+        // the definition held by the storage and the text of its commands: a copy would be written out as text again
+        BDCCustomBlockConfigStorage storage = this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage config ? config : null;
+        AbstractCustomBlock definition = storage != null ? storage.peek(name) : this.plugin.getCustomBlockService().getStorage().getAbstractCustomBlock(name);
+        List<String[]> summonTexts = storage == null ? null : storage.getSummonTexts().get(name);
         if (definition == null) {
             this.unavailableModels.put(name, this.tick + MODEL_RETRY_PERIOD);
             return null;
@@ -740,7 +743,7 @@ public final class DisplayRenderer implements Listener {
         }
         List<String> problems = new ArrayList<>();
         try {
-            model = DisplayModel.read(this.nms, definition, world, chunkX, chunkZ, animations(name), problems);
+            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
                 this.plugin.getLogger().log(Level.WARNING, "Could not read the display entities of the custom block " + name, e);
