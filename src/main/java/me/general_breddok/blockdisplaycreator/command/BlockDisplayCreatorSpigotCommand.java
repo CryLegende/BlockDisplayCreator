@@ -656,6 +656,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                     }
                 }
             }
+            case "import" -> importModel(sender, args);
             case "erasecbdata" -> {
 
                 if (!sender.hasPermission(DefaultPermissions.BDC.Command.ERASE_CB_DATA)) {
@@ -778,9 +779,20 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
         if (args.length == 1) {
             StringUtil.copyPartialMatches(arg1, List.of(
                     "custom-block",
+                    "import",
                     "erasecbdata",
                     "reload"
             ), result);
+        } else if (arg1.equals("import")) {
+            if (args.length == 2) {
+                result.add("<number>");
+            } else if (args.length == 3) {
+                result.add("<name>");
+            } else if (args.length == 4) {
+                StringUtil.copyPartialMatches(args[3], List.of("click", "loop", "place"), result);
+            } else if (args.length == 5) {
+                StringUtil.copyPartialMatches(args[4], List.of("0", "90", "180", "270"), result);
+            }
         } else if (args.length == 2) {
             if (arg1.equals("erasecbdata")) {
                 if (player != null) {
@@ -924,6 +936,85 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
         return result;
     }
 
+
+    /**
+     * /bdc import &lt;number or link of the model on block-display.com&gt; &lt;name&gt; [click|loop|place] [turn]
+     * <p>
+     * Creates the file of a custom block from a model of the site: its display entities, a click box fitted to
+     * it and its animation if it has one. The download and the conversion run off the main thread.
+     */
+    private void importModel(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("bdc.command.import")) {
+            ChatUtil.sendMessage(sender, "&cYou do not have the permission to import models.");
+            return;
+        }
+        java.util.regex.Matcher number = args.length < 3 ? null : java.util.regex.Pattern.compile("(\\d+)/?$").matcher(args[1]);
+        if (number == null || !number.find()) {
+            ChatUtil.sendMessage(sender, "&6/bdc import <number of the model on block-display.com> <name> [click|loop|place] [turn]");
+            ChatUtil.sendMessage(sender, "&7The animation of the model, if it has one, plays on a right click (click), all the time (loop) or when the block is placed (place). By default click.");
+            return;
+        }
+        int id = Integer.parseInt(number.group(1));
+        String name = args[2];
+        if (!name.matches("[A-Za-z0-9_]{1,40}")) {
+            ChatUtil.sendMessage(sender, "&cThe name takes letters, digits and underscores only.");
+            return;
+        }
+        String trigger = args.length > 3 ? args[3].toLowerCase() : "click";
+        if (!List.of("click", "loop", "place").contains(trigger)) {
+            ChatUtil.sendMessage(sender, "&cThe animation plays on click, loop or place, not on '" + args[3] + "'.");
+            return;
+        }
+        int turn = 180;
+        if (args.length > 4) {
+            try {
+                turn = Integer.parseInt(args[4]);
+            } catch (NumberFormatException e) {
+                ChatUtil.sendMessage(sender, "&cThe turn is a number of degrees, 0, 90, 180 or 270 for instance.");
+                return;
+            }
+        }
+
+        CustomBlockStorage storage = this.plugin.getCustomBlockService().getStorage();
+        java.nio.file.Path repository = this.plugin.getDataFolder().toPath().resolve("custom-blocks");
+        boolean replaced = java.nio.file.Files.exists(repository.resolve(me.general_breddok.blockdisplaycreator.importer.SiteModelImporter.FOLDER).resolve(name + ".yml"));
+        if (!replaced && storage.containsAbstractCustomBlock(name)) {
+            ChatUtil.sendMessage(sender, "&cA custom block named " + name + " already exists.");
+            return;
+        }
+        ChatUtil.sendMessage(sender, "&6Importing the model " + id + "...");
+        int finalTurn = turn;
+        Bukkit.getScheduler().runTaskAsynchronously(this.plugin, () -> {
+            me.general_breddok.blockdisplaycreator.importer.SiteModelImporter.Imported imported;
+            try {
+                imported = me.general_breddok.blockdisplaycreator.importer.SiteModelImporter.importModel(repository, id, name, trigger, finalTurn);
+            } catch (java.io.IOException | RuntimeException e) {
+                String reason = e instanceof java.io.IOException ? e.getMessage() : e.toString();
+                Bukkit.getScheduler().runTask(this.plugin, () -> ChatUtil.sendMessage(sender, "&cThe model could not be imported: " + reason));
+                return;
+            }
+            Bukkit.getScheduler().runTask(this.plugin, () -> storage.reloadAll(() -> {
+                if (this.plugin.getDisplayRepairListener() != null) {
+                    this.plugin.getDisplayRepairListener().invalidate();
+                }
+                if (replaced && this.plugin.getDisplayRenderer() != null) {
+                    // blocks of this name already placed take the new model
+                    this.plugin.getDisplayRenderer().reload();
+                }
+                ChatUtil.sendMessage(sender, "&aImported " + (imported.title().isEmpty() ? "the model " + id : "\"" + imported.title() + "\"")
+                        + " as &e" + name + "&a: " + imported.elements() + " display entities"
+                        + (imported.ticks() > 0 ? ", animation of " + imported.ticks() + " ticks on " + imported.animatedElements() + " of them (" + trigger + ")" : ", no animation")
+                        + (imported.skipped() > 0 ? ". " + imported.skipped() + " text element(s) were left out" : "") + ".");
+                ChatUtil.sendMessage(sender, "&7File: custom-blocks/import/" + name + ".yml");
+                AbstractCustomBlock block = storage.getAbstractCustomBlock(name);
+                if (block == null) {
+                    ChatUtil.sendMessage(sender, "&cThe file was written but the block did not load: see the console.");
+                } else if (sender instanceof Player player) {
+                    player.getInventory().addItem(block.getItem());
+                }
+            }));
+        });
+    }
 
     private void eraseCbData(BoundingBox boundingBox, Player sender) {
         WorldSelection worldSelection = new WorldSelection(boundingBox, sender.getWorld());

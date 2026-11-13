@@ -14,7 +14,7 @@ loadbefore:
 commands:
   blockdisplaycreator:
     description: Main command for BlockDisplayCreator
-    usage: /bdc <custom-block|reload|erase>
+    usage: /bdc <custom-block|import|reload|erase>
     aliases: [bdc]
 
   cb:
@@ -61,6 +61,7 @@ permissions:
     children:
       bdc.command.custom-block: true
       bdc.command.reload: true
+      bdc.command.import: true
       bdc.command.erasecbdata: true
 
 
@@ -91,6 +92,10 @@ permissions:
 
   bdc.command.reload:
     description: Allows players to use /bdc reload command
+    default: op
+
+  bdc.command.import:
+    description: Allows players to use /bdc import command, which creates a custom block from a model of block-display.com
     default: op
 
   bdc.command.erasecbdata:
