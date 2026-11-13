@@ -195,8 +195,10 @@ final class PlacedDisplay {
                 DisplayModel.Element element = elements.get(i);
                 double[] pose = pose(element.pitch());
                 packets.add(nms.spawnPacket(this.entityIds[i], UUID.randomUUID(), pose[0], pose[1], pose[2], (float) pose[4], (float) pose[3], element.type()));
-                if (!element.data().isEmpty()) {
-                    packets.add(nms.dataPacket(this.entityIds[i], element.data()));
+                // the culling box of a model is that of a model standing upright on its block
+                List<?> data = element.upright() != null && pose[4] == 0 && this.fixedPose == null ? element.upright() : element.data();
+                if (!data.isEmpty()) {
+                    packets.add(nms.dataPacket(this.entityIds[i], data));
                 }
             }
             this.spawnPacket = nms.bundle(packets);

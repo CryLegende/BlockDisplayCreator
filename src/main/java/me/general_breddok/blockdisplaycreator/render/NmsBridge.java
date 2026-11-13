@@ -106,6 +106,10 @@ final class NmsBridge {
         private final Object leftRotationAccessor;
         private final Object scaleAccessor;
         private final Object rightRotationAccessor;
+        private final Object widthAccessor;
+        private final Object heightAccessor;
+        private final Method accessorId;
+        private final Method valueId;
 
         Poses(ClassLoader server) throws ReflectiveOperationException {
             // the server splits a matrix into the translation, rotations and scale a display entity is made of
@@ -133,9 +137,33 @@ final class NmsBridge {
             this.scaleAccessor = accessor(display, "DATA_SCALE_ID");
             this.rightRotationAccessor = accessor(display, "DATA_RIGHT_ROTATION_ID");
 
+            this.widthAccessor = accessor(display, "DATA_WIDTH_ID");
+            this.heightAccessor = accessor(display, "DATA_HEIGHT_ID");
+
             Class<?> accessor = Class.forName("net.minecraft.network.syncher.EntityDataAccessor", true, server);
-            this.createValue = Class.forName("net.minecraft.network.syncher.SynchedEntityData$DataValue", true, server)
-                    .getMethod("create", accessor, Object.class);
+            Class<?> value = Class.forName("net.minecraft.network.syncher.SynchedEntityData$DataValue", true, server);
+            this.createValue = value.getMethod("create", accessor, Object.class);
+            this.accessorId = accessor.getMethod("id");
+            this.valueId = value.getMethod("id");
+        }
+
+        /**
+         * The synced values of a display entity, with the box out of which a client stops drawing it. Values that
+         * already give it one are left as they are.
+         */
+        List<?> withCullingBox(List<?> values, float width, float height) throws ReflectiveOperationException {
+            Object widthId = this.accessorId.invoke(this.widthAccessor);
+            Object heightId = this.accessorId.invoke(this.heightAccessor);
+            for (Object value : values) {
+                Object id = this.valueId.invoke(value);
+                if (id.equals(widthId) || id.equals(heightId)) {
+                    return values;
+                }
+            }
+            List<Object> boxed = new java.util.ArrayList<>(values);
+            boxed.add(this.createValue.invoke(null, this.widthAccessor, width));
+            boxed.add(this.createValue.invoke(null, this.heightAccessor, height));
+            return List.copyOf(boxed);
         }
 
         private static Method either(Class<?> type, String name, String olderName) throws NoSuchMethodException {
@@ -187,6 +215,21 @@ final class NmsBridge {
             return this.poses.values(matrix, duration);
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * The synced values of a display entity, completed with a culling box of the given size around and above its
+     * position. Returned unchanged on a server that does not allow it.
+     */
+    List<?> withCullingBox(List<?> values, float width, float height) {
+        if (this.poses == null) {
+            return values;
+        }
+        try {
+            return this.poses.withCullingBox(values, width, height);
+        } catch (ReflectiveOperationException e) {
+            return values;
         }
     }
 

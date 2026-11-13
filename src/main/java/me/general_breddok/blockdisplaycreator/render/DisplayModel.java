@@ -66,8 +66,11 @@ final class DisplayModel {
      * @param transformation its resting transformation
      * @param block          whether it is a block display, drawn from its corner rather than around its origin
      * @param drawn          whether it shows something: the root of a bdengine model is an empty block display
+     * @param boxed          whether a box drawn around the model is enough to tell if it is on screen
+     * @param upright        its synced data when the model stands on its block: with a culling box if it can have one
      */
-    record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation, boolean block, boolean drawn) {
+    record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation, boolean block, boolean drawn, boolean boxed,
+                   List<?> upright) {
     }
 
     /**
@@ -103,8 +106,54 @@ final class DisplayModel {
                 display.remove();
             }
         }
-        return new DisplayModel(definition, List.copyOf(elements),
-                elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems)));
+        List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
+        return new DisplayModel(definition, List.copyOf(read.isEmpty() ? withCullingBox(nms, elements) : elements), read);
+    }
+
+    /**
+     * A display entity without a culling box is drawn whenever it is in range, even behind the player. A model
+     * standing on its block gets one box for all its entities: a cylinder around its vertical axis, from its base
+     * to its top, with some room. Models that reach below their base, that move, or whose entities face the
+     * player keep being drawn at all times.
+     */
+    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements) {
+        float radius = 0;
+        float top = 0;
+        org.joml.Vector3f corner = new org.joml.Vector3f();
+        for (Element element : elements) {
+            if (!element.drawn()) {
+                continue;
+            }
+            if (!element.boxed()) {
+                return elements;
+            }
+            Transformation rest = element.transformation();
+            org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(rest.getTranslation()).rotate(rest.getLeftRotation())
+                    .scale(rest.getScale()).rotate(rest.getRightRotation());
+            // a block display draws the unit cube, the others are drawn around their origin
+            float low = element.block() ? 0f : -0.5f;
+            float high = element.block() ? 1f : 0.5f;
+            for (int i = 0; i < 8; i++) {
+                matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
+                if (corner.y < -0.6f) {
+                    return elements;
+                }
+                radius = Math.max(radius, (float) Math.sqrt(corner.x * corner.x + corner.z * corner.z));
+                top = Math.max(top, corner.y);
+            }
+        }
+        if (radius == 0 || top <= 0) {
+            return elements;
+        }
+        // the box starts at the entity: what little goes under it is covered by the room given all around
+        float width = radius * 2.2f + 1.5f;
+        float height = top * 1.1f + 0.75f;
+        List<Element> boxed = new ArrayList<>(elements.size());
+        for (Element element : elements) {
+            boxed.add(new Element(element.type(), element.data(), element.yaw(), element.pitch(), element.transformation(),
+                    element.block(), element.drawn(), element.boxed(), nms.withCullingBox(element.data(), width, height)));
+        }
+        return boxed;
     }
 
     private static boolean isDrawn(Display display) {
@@ -120,7 +169,8 @@ final class DisplayModel {
     private static void collect(NmsBridge nms, Display display, List<Element> elements) {
         Object handle = nms.handle(display);
         Location location = display.getLocation();
-        elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation(), display instanceof BlockDisplay, isDrawn(display)));
+        elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation(), display instanceof BlockDisplay, isDrawn(display),
+                !(display instanceof org.bukkit.entity.TextDisplay) && display.getBillboard() == Display.Billboard.FIXED, null));
         for (Entity passenger : display.getPassengers()) {
             if (passenger instanceof Display child) {
                 collect(nms, child, elements);
