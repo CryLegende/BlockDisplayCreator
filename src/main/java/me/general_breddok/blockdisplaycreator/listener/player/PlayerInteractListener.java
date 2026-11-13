@@ -26,6 +26,8 @@ import me.general_breddok.blockdisplaycreator.world.skyblock.superior.SSBIslandP
 import org.bukkit.GameMode;
 import org.bukkit.Chunk;
 import me.general_breddok.blockdisplaycreator.render.DisplayRenderer;
+import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -83,6 +85,18 @@ public class PlayerInteractListener implements Listener {
 
         event.setCancelled(true);
 
+        // The item of a custom block is often a real block: the client draws it placed at once, and does so again
+        // every few ticks while the button is held. The server corrects the click it handles; the item is put on
+        // a short cooldown so that the client stops guessing, and the blocks around are sent again.
+        if (player.hasCooldown(item.getType())) {
+            return;
+        }
+        settle(player, blockLocation.getBlock(), item.getType());
+        if (clickedBlock.getType().isAir()) {
+            // a block the client alone believes in: nothing is placed on it
+            return;
+        }
+
         if (LongConfigValue.MAX_ENTITIES_PER_CHUNK > 0) {
             Chunk chunk = blockLocation.getChunk();
             DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
@@ -139,6 +153,22 @@ public class PlayerInteractListener implements Listener {
         if (customBlock != null && !(player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR)) {
             item.setAmount(item.getAmount() - 1);
         }
+    }
+
+    private static final BlockFace[] AROUND = {BlockFace.SELF, BlockFace.UP, BlockFace.DOWN, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST};
+    private static final int PLACEMENT_COOLDOWN = 6;
+
+    private static void settle(Player player, Block target, Material material) {
+        player.setCooldown(material, PLACEMENT_COOLDOWN);
+        Bukkit.getScheduler().runTaskLater(BlockDisplayCreator.getInstance(), () -> {
+            if (!player.isOnline() || !player.getWorld().equals(target.getWorld())) {
+                return;
+            }
+            for (BlockFace face : AROUND) {
+                Block block = target.getRelative(face);
+                player.sendBlockChange(block.getLocation(), block.getBlockData());
+            }
+        }, 2L);
     }
 
     private BlockFace resolvePlacementFace(CustomBlockPlaceSettings.PlacementMode placementMode, BlockFace blockFace, Player player) {
