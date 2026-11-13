@@ -22,6 +22,7 @@ import me.general_breddok.blockdisplaycreator.file.config.value.BooleanConfigVal
 import me.general_breddok.blockdisplaycreator.file.config.value.LongConfigValue;
 import me.general_breddok.blockdisplaycreator.file.config.value.StringMessagesValue;
 import me.general_breddok.blockdisplaycreator.listener.block.BlockBreakListener;
+import me.general_breddok.blockdisplaycreator.listener.block.BlockDamageListener;
 import me.general_breddok.blockdisplaycreator.listener.block.BlockExplodeListener;
 import me.general_breddok.blockdisplaycreator.listener.block.BlockPlaceListener;
 import me.general_breddok.blockdisplaycreator.listener.block.piston.BlockPistonExtendListener;
@@ -231,6 +232,7 @@ public final class BlockDisplayCreator extends JavaPlugin {
         pluginManager.registerEvents(new BlockPlaceListener(), this);
         pluginManager.registerEvents(new PlayerInteractEntityListener(this.servicesManager), this);
         pluginManager.registerEvents(new BlockBreakListener(this.servicesManager), this);
+        pluginManager.registerEvents(new BlockDamageListener(), this);
         pluginManager.registerEvents(new BlockExplodeListener(), this);
         pluginManager.registerEvents(new EntityExplodeListener(), this);
         pluginManager.registerEvents(new BlockPistonExtendListener(), this);

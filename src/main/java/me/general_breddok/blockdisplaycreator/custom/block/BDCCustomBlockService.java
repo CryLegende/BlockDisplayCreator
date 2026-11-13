@@ -505,6 +505,9 @@ public class BDCCustomBlockService implements CustomBlockService {
      */
     public List<Interaction> summonInteractions(AbstractCustomBlock abstractCustomBlock, Location location, CustomBlockRotation rotation) {
         return abstractCustomBlock.getConfiguredInteractions().stream().map(configuredInteraction -> {
+            if (isUseless(configuredInteraction)) {
+                return null;
+            }
             Interaction interaction = configuredInteraction.summon(location);
 
             // If the interaction failed to summon, skip it
@@ -540,6 +543,9 @@ public class BDCCustomBlockService implements CustomBlockService {
      */
     public List<Shulker> summonCollisions(AbstractCustomBlock abstractCustomBlock, Location location, CustomBlockRotation rotation) {
         return abstractCustomBlock.getConfiguredCollisions().stream().map(configuredCollision -> {
+            if (isUseless(configuredCollision, abstractCustomBlock)) {
+                return null;
+            }
             Shulker collision = configuredCollision.summon(location);
 
             // If the collision failed to summon, skip it
@@ -572,12 +578,32 @@ public class BDCCustomBlockService implements CustomBlockService {
     }
 
     /**
+     * An interaction without width nor height can be neither clicked nor hit: it is not summoned.
+     */
+    public static boolean isUseless(ConfiguredInteraction interaction) {
+        return interaction.getSummoner() instanceof InteractionSummoner summoner
+                && summoner.getInteractionWidth() <= 0 && summoner.getInteractionHeight() <= 0;
+    }
+
+    /**
+     * A collision without size is a full block. Where the central block of the custom block is solid, it stops
+     * players and entities by itself: the collision is not summoned.
+     */
+    public static boolean isUseless(ConfiguredCollision collision, AbstractCustomBlock abstractCustomBlock) {
+        Material central = abstractCustomBlock.getCentralMaterial();
+        return collision.getSize() <= 0 && central != null && central.isSolid();
+    }
+
+    /**
      * Describes the interactions and collisions a custom block is defined with. Stored with a placed block, it
      * tells whether its hitbox entities still match its file.
      */
     public static String hitboxSignature(AbstractCustomBlock abstractCustomBlock) {
         StringBuilder signature = new StringBuilder();
         for (ConfiguredInteraction interaction : abstractCustomBlock.getConfiguredInteractions()) {
+            if (isUseless(interaction)) {
+                continue;
+            }
             signature.append("i:").append(interaction.getIdentifier()).append('=');
             if (interaction.getSummoner() instanceof InteractionSummoner summoner) {
                 signature.append(summoner.getInteractionWidth()).append('x').append(summoner.getInteractionHeight());
@@ -585,6 +611,9 @@ public class BDCCustomBlockService implements CustomBlockService {
             signature.append('@').append(interaction.getOffset()).append(';');
         }
         for (ConfiguredCollision collision : abstractCustomBlock.getConfiguredCollisions()) {
+            if (isUseless(collision, abstractCustomBlock)) {
+                continue;
+            }
             signature.append("c:").append(collision.getIdentifier()).append('=').append(collision.getSize())
                     .append('@').append(collision.getOffset()).append(';');
         }

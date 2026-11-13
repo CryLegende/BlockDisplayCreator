@@ -50,6 +50,8 @@ public class BlockBreakListener implements Listener {
         if (!BooleanConfigValue.BLOCKS_DESTRUCTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
                 ChatUtil.sendMessage(player, StringMessagesValue.PERMISSION_DENIED_BREAK);
+                // the central block stays: without it the custom block could no longer be broken
+                event.setCancelled(true);
                 return;
             }
         }
@@ -70,6 +72,7 @@ public class BlockBreakListener implements Listener {
         }
 
         if (!checkAccess(player, customBlock)) {
+            event.setCancelled(true);
             return;
         }
 
