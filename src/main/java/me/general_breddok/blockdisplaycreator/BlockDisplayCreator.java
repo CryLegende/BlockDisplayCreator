@@ -30,9 +30,11 @@ import me.general_breddok.blockdisplaycreator.listener.entity.EntityDamageByEnti
 import me.general_breddok.blockdisplaycreator.listener.entity.EntityExplodeListener;
 import me.general_breddok.blockdisplaycreator.listener.player.PlayerInteractEntityListener;
 import me.general_breddok.blockdisplaycreator.listener.player.PlayerInteractListener;
+import me.general_breddok.blockdisplaycreator.listener.skyblock.superior.SuperiorSkyblockChunkResetListener;
 import me.general_breddok.blockdisplaycreator.listener.skyblock.superior.SuperiorSkyblockPluginInitializeListener;
 import me.general_breddok.blockdisplaycreator.metrics.BlockDisplayCreatorMetrics;
 import me.general_breddok.blockdisplaycreator.metrics.PluginMetrics;
+import me.general_breddok.blockdisplaycreator.render.DisplayRenderer;
 import me.general_breddok.blockdisplaycreator.service.CustomBlockServiceManager;
 import me.general_breddok.blockdisplaycreator.service.ServiceManager;
 import me.general_breddok.blockdisplaycreator.sound.SimplePlayableSound;
@@ -95,6 +97,10 @@ public final class BlockDisplayCreator extends JavaPlugin {
      */
     VersionManager versionManager;
     DisplayRepairListener displayRepairListener;
+    /**
+     * Shows the display entities of custom blocks through packets. Null on a server it does not support.
+     */
+    DisplayRenderer displayRenderer;
     /**
      * Indicates if CommandAPI is supported on the current server version.
      */
@@ -201,6 +207,8 @@ public final class BlockDisplayCreator extends JavaPlugin {
                 this.getResource("custom-blocks/barrel.yml")
         );
 
+        this.displayRenderer = DisplayRenderer.create(this);
+
         reloadConfig();
         registerEvents();
 
@@ -229,6 +237,9 @@ public final class BlockDisplayCreator extends JavaPlugin {
         pluginManager.registerEvents(new BlockPistonRetractListener(), this);
         if (this.dependentPluginsManager.isSuperiorSkyblockAvailable()) {
             pluginManager.registerEvents(new SuperiorSkyblockPluginInitializeListener(), this);
+            if (this.displayRenderer != null) {
+                pluginManager.registerEvents(new SuperiorSkyblockChunkResetListener(this.displayRenderer), this);
+            }
         }
         //pluginManager.registerEvents(new PrepareItemCraftListener(), this);
         this.displayRepairListener = new DisplayRepairListener(this);
@@ -285,7 +296,11 @@ public final class BlockDisplayCreator extends JavaPlugin {
     public void reloadConfig() {
         this.yamlConfiguration.reload();
         this.messagesFile.reload();
-        this.customBlockService.getStorage().reloadAll();
+        this.customBlockService.getStorage().reloadAll(() -> {
+            if (this.displayRenderer != null) {
+                this.displayRenderer.reload();
+            }
+        });
         if (this.displayRepairListener != null) {
             this.displayRepairListener.invalidate();
         }
@@ -329,6 +344,9 @@ public final class BlockDisplayCreator extends JavaPlugin {
     public void onDisable() {
         if (this.capi) {
             CommandAPI.onDisable();
+        }
+        if (this.displayRenderer != null) {
+            this.displayRenderer.shutdown();
         }
         this.dependentPluginsManager.terminatePacketEvents();
     }

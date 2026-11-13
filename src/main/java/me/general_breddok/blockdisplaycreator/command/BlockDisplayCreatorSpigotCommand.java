@@ -965,6 +965,8 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                         customBlockData.remove(CustomBlockKey.BLOCK_ROTATION);
                         customBlockData.remove(CustomBlockKey.ITEM);
                         customBlockData.remove(CustomBlockKey.DISPLAY_SPAWN_COMMAND);
+                        // the rest of its data, and its display entities when they are shown through packets
+                        me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockService.clearCustomBlockData(customBlockData);
                         blocksCount[0]++;
                     }
                 }

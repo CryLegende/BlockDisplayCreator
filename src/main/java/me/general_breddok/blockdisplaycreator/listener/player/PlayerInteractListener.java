@@ -24,6 +24,8 @@ import me.general_breddok.blockdisplaycreator.world.guard.WGRegionFlags;
 import me.general_breddok.blockdisplaycreator.world.skyblock.superior.SSBIslandAccessChecker;
 import me.general_breddok.blockdisplaycreator.world.skyblock.superior.SSBIslandPrivileges;
 import org.bukkit.GameMode;
+import org.bukkit.Chunk;
+import me.general_breddok.blockdisplaycreator.render.DisplayRenderer;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -82,7 +84,10 @@ public class PlayerInteractListener implements Listener {
         event.setCancelled(true);
 
         if (LongConfigValue.MAX_ENTITIES_PER_CHUNK > 0) {
-            if (blockLocation.getChunk().getEntities().length > LongConfigValue.MAX_ENTITIES_PER_CHUNK) {
+            Chunk chunk = blockLocation.getChunk();
+            DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+            // display entities shown through packets weigh on the clients as much as real ones
+            if (chunk.getEntities().length + (renderer == null ? 0 : renderer.elementsIn(chunk)) > LongConfigValue.MAX_ENTITIES_PER_CHUNK) {
                 ChatUtil.sendMessage(player, StringMessagesValue.MAX_ENTITIES_PER_CHUNK);
                 return;
             }

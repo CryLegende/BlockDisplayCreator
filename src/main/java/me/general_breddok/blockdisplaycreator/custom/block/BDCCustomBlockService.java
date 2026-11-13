@@ -21,6 +21,7 @@ import me.general_breddok.blockdisplaycreator.event.custom.block.CustomBlockPlac
 import me.general_breddok.blockdisplaycreator.file.config.value.StringMessagesValue;
 import me.general_breddok.blockdisplaycreator.placeholder.universal.CustomBlockPlaceholder;
 import me.general_breddok.blockdisplaycreator.placeholder.universal.LocationPlaceholder;
+import me.general_breddok.blockdisplaycreator.render.DisplayRenderer;
 import me.general_breddok.blockdisplaycreator.rotation.DirectedVector;
 import me.general_breddok.blockdisplaycreator.rotation.EntityRotation;
 import me.general_breddok.blockdisplaycreator.util.ChatUtil;
@@ -285,44 +286,15 @@ public class BDCCustomBlockService implements CustomBlockService {
         }
 
 
-        // Summon a temporary interaction entity to serve as the center for display entities
-        Interaction centerEntity = world.spawn(location, Interaction.class);
-
         List<UUID> displayVehicleUuids = new ArrayList<>();
 
-        // Summon display entities and iterate through them to apply the necessary settings
-        List<Display> displays = abstractCustomBlock.spawnDisplay(location, centerEntity, display -> {
-            // Store the UUID of the display vehicle if it's not on another vehicle.
-            if (!display.isInsideVehicle()) {
-                displayVehicleUuids.add(display.getUniqueId());
-            }
-
-            // Set persistent and invulnerable so they don't despawn or die
-            display.setPersistent(true);
-            display.setInvulnerable(true);
-
-            // Adjust display rotation and translation depending on the settings selected
-            rotation.adjustDisplayRotation(display, abstractCustomBlock.getSidesCount());
-            applyDisplayTranslationRotation(abstractCustomBlock.getDisplaySummoner(), display);
-
-            // Set custom block data for the display entity
-            CustomBlockKey.holder(display)
-                    .setServiceClass(BDCCustomBlockService.class.getName())
-                    .setName(abstractCustomBlock.getName())
-                    .setLocation(location);
-
-            // Add scoreboard tags for easy identification and use in data packs
-            display.addScoreboardTag("custom-block");
-            display.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
-            display.addScoreboardTag("custom-block-display");
-            display.addScoreboardTag("custom-block-location:" + location.toVector());
-            return true;
-        });
-
-        centerEntity.remove();
+        // A block shown through packets has no display entity: its model only has to be readable
+        DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        boolean packetDisplay = renderer != null && renderer.renders(abstractCustomBlock);
+        List<Display> displays = packetDisplay ? new ArrayList<>() : summonDisplays(abstractCustomBlock, location, rotation, displayVehicleUuids);
 
         // If no display entities were summoned, something went wrong - revert the block change and log an error
-        if (displays.isEmpty()) {
+        if (packetDisplay ? !renderer.prepare(abstractCustomBlock.getName(), location) : displays.isEmpty()) {
             block.setType(originalMaterial);
             ChatUtil.log("&6[BlockDisplayCreator] &4Something went wrong, custom block at location " + location.getBlockX() + " " + location.getBlockY() + " " + location.getBlockZ() + " in %s world was not placed due to missing display entities. You may have specified the spawn command incorrectly.", world.getName());
             return null;
@@ -342,6 +314,10 @@ public class BDCCustomBlockService implements CustomBlockService {
         // Trigger the custom block place event and handle cancellation
         if (!triggerCustomBlockPlaceEvent(rawCustomBlock, player, customBlockData)) {
             return null;
+        }
+
+        if (packetDisplay) {
+            renderer.placed(abstractCustomBlock.getName(), location, rotation, customBlockData);
         }
 
         // Play placement sound if the option is not set to silent
@@ -469,6 +445,48 @@ public class BDCCustomBlockService implements CustomBlockService {
         }
 
         return true;
+    }
+
+    /**
+     * Summons the display entities of a custom block and gives them their rotation and block data.
+     *
+     * @param displayVehicleUuids receives the UUID of each display entity that rides no other
+     */
+    public List<Display> summonDisplays(AbstractCustomBlock abstractCustomBlock, Location location, CustomBlockRotation rotation, List<UUID> displayVehicleUuids) {
+        // Summon a temporary interaction entity to serve as the center for display entities
+        Interaction centerEntity = location.getWorld().spawn(location, Interaction.class);
+
+        // Summon display entities and iterate through them to apply the necessary settings
+        List<Display> displays = abstractCustomBlock.spawnDisplay(location, centerEntity, display -> {
+            // Store the UUID of the display vehicle if it's not on another vehicle.
+            if (!display.isInsideVehicle()) {
+                displayVehicleUuids.add(display.getUniqueId());
+            }
+
+            // Set persistent and invulnerable so they don't despawn or die
+            display.setPersistent(true);
+            display.setInvulnerable(true);
+
+            // Adjust display rotation and translation depending on the settings selected
+            rotation.adjustDisplayRotation(display, abstractCustomBlock.getSidesCount());
+            applyDisplayTranslationRotation(abstractCustomBlock.getDisplaySummoner(), display);
+
+            // Set custom block data for the display entity
+            CustomBlockKey.holder(display)
+                    .setServiceClass(BDCCustomBlockService.class.getName())
+                    .setName(abstractCustomBlock.getName())
+                    .setLocation(location);
+
+            // Add scoreboard tags for easy identification and use in data packs
+            display.addScoreboardTag("custom-block");
+            display.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
+            display.addScoreboardTag("custom-block-display");
+            display.addScoreboardTag("custom-block-location:" + location.toVector());
+            return true;
+        });
+
+        centerEntity.remove();
+        return displays;
     }
 
     public static void applyDisplayTranslationRotation(@NotNull GroupSummoner<Display> displaySummoner, Display display) {
@@ -704,5 +722,13 @@ public class BDCCustomBlockService implements CustomBlockService {
 
         customBlockData.remove(CustomBlockKey.ITEM);
         customBlockData.remove(CustomBlockKey.DISPLAY_SPAWN_COMMAND);
+        customBlockData.remove(CustomBlockKey.HITBOX);
+        customBlockData.remove(CustomBlockKey.RENDER);
+
+        DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        Block block = customBlockData.getBlock();
+        if (renderer != null && block != null) {
+            renderer.removed(block);
+        }
     }
 }

@@ -10,3 +10,7 @@ blocks-interaction: true
 #If a negative number is specified, the check will not be performed.   By def -1
 max-entities-per-chunk: -1
 
+#If set to true, the display entities of custom blocks are not created on the server: their model is sent to the players around them.
+#Blocks already placed are converted when their chunk loads, and converted back if this is set to false again.
+#Needs a Paper server; on other servers custom blocks keep their display entities.   By def true
+packet-display: true
