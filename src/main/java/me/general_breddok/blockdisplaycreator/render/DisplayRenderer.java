@@ -469,8 +469,9 @@ public final class DisplayRenderer implements Listener {
                 try {
                     if (task.unload()) {
                         unload(world, task.x(), task.z());
-                    } else {
-                        scan(world, task.x(), task.z());
+                    } else if (!scan(world, task.x(), task.z(), deadline)) {
+                        // out of time in the middle of the chunk: the rest of its blocks wait for the next tick
+                        this.tasks.add(task);
                     }
                 } catch (RuntimeException e) {
                     this.plugin.getLogger().log(Level.WARNING, "Could not read the custom blocks of chunk " + task.x() + " " + task.z() + " in " + world.getName(), e);
@@ -513,22 +514,28 @@ public final class DisplayRenderer implements Listener {
     /**
      * Reads the custom blocks of a loaded chunk. It waits for the entities of the chunk: the blocks placed with real
      * display entities are recognised by them.
+     * <p>
+     * Reading a model for the first time and converting a block take time: a chunk holding many of them is read
+     * over several ticks.
+     *
+     * @param deadline the time after which the reading stops, as given by {@link System#nanoTime()}
+     * @return false when blocks of the chunk are left to read
      */
-    private void scan(World world, int chunkX, int chunkZ) {
+    private boolean scan(World world, int chunkX, int chunkZ, long deadline) {
         if (!world.isChunkLoaded(chunkX, chunkZ)) {
-            return;
+            return true;
         }
         Chunk chunk = world.getChunkAt(chunkX, chunkZ);
         if (!chunk.isEntitiesLoaded()) {
-            return;
+            return true;
         }
         if (Boolean.TRUE.equals(this.registry.get(registryKey(world, chunkX, chunkZ)))) {
             wipe(chunk);
-            return;
+            return true;
         }
         Set<Block> blocks = CustomBlockData.getBlocksWithCustomData(this.plugin, chunk);
         if (blocks.isEmpty()) {
-            return;
+            return true;
         }
         Map<Long, List<PlacedDisplay>> chunks = chunks(world);
         long key = chunkKey(chunkX, chunkZ);
@@ -536,15 +543,23 @@ public final class DisplayRenderer implements Listener {
         if (list == null) {
             list = new ArrayList<>();
         }
+        boolean complete = true;
         for (Block block : blocks) {
             if (!isIndexed(list, block)) {
+                int shown = list.size();
                 read(block, chunk, list);
+                // only a block that got shown counts: the ones left as they are cost nothing and are met again
+                if (list.size() > shown && System.nanoTime() > deadline) {
+                    complete = false;
+                    break;
+                }
             }
         }
         if (!list.isEmpty()) {
             chunks.put(key, list);
             register(world, chunkX, chunkZ);
         }
+        return complete;
     }
 
     private static boolean isIndexed(List<PlacedDisplay> list, Block block) {
