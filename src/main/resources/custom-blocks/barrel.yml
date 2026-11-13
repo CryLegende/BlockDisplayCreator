@@ -86,3 +86,44 @@ sound:
     sound-type: BLOCK_BARREL_OPEN
     volume: 1.7
     pitch: 3
+
+
+#Animations of this block, played by the clients without any data pack.   The field may be missing
+#They need the display entities to be shown through packets (packet-display in config.yml).
+#animations:
+#  #Animation name
+#  hop:
+#    #What starts it: loop (plays on and on), click (a right click on an interaction) or place (when the block is placed).   By def loop
+#    trigger: click
+#    #Click only: the interaction that starts it.   By def any interaction
+#    interaction: interaction
+#    #Length in ticks. A loop starts over after them.   By def the end of the last frame
+#    duration: 10
+#    frames:
+#        #Tick the frame starts at
+#      - at: 0
+#        #Ticks the parts take to get to it.   By def 0 (at once)
+#        over: 4
+#        #Display entities moved, numbered in the order of the summon command (0 is its root). Ranges are allowed.   By def all of them
+#        parts: [1, 2, "5-9"]
+#        #Blocks added to their resting place
+#        move: [0, 0.4, 0]
+#        #Degrees around X, Y and Z. A part takes the shortest way round: go by steps of less than 180 degrees
+#        rotate: [0, 90, 0]
+#        #One number, or one per axis
+#        scale: [1.2, 0.8, 1.2]
+#        #Point the rotation and the scale are made around.   By def the middle of the parts
+#        pivot: [0, 1, 0]
+#        #Sound played at the block (a sound key of the game), with its volume and pitch.   By def none, 1 and 1
+#        sound: minecraft:block.barrel.open
+#        volume: 1
+#        pitch: 1.2
+#        #A frame without move, rotate or scale takes its parts back to rest
+#      - at: 4
+#        over: 6
+#        parts: [1, 2, "5-9"]
+#  #A frame may give a single part the 16 numbers of a transformation instead, as bdengine writes them in a summon command:
+#  #    - at: 0
+#  #      over: 10
+#  #      parts: [3]
+#  #      transformation: [1,0,0,0.5, 0,1,0,1, 0,0,1,0.25, 0,0,0,1]

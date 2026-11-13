@@ -3,6 +3,8 @@ package me.general_breddok.blockdisplaycreator.render;
 import com.jeff_media.customblockdata.CustomBlockData;
 import me.general_breddok.blockdisplaycreator.BlockDisplayCreator;
 import me.general_breddok.blockdisplaycreator.custom.block.AbstractCustomBlock;
+import me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockConfigStorage;
+import me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockConfigurationFile;
 import me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockService;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockKey;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockRotation;
@@ -13,6 +15,7 @@ import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
@@ -89,6 +92,14 @@ public final class DisplayRenderer implements Listener {
     private final Set<ChunkTask> retryChunks = new HashSet<>();
     private final Map<String, Integer> ranges = new HashMap<>();
     private final Queue<ChunkTask> tasks = new ConcurrentLinkedQueue<>();
+    /**
+     * The blocks someone sees whose model has an animation playing in a loop.
+     */
+    private final Set<PlacedDisplay> looping = new HashSet<>();
+    /**
+     * The blocks with an animation started by a click or their placement that has not ended.
+     */
+    private final Set<PlacedDisplay> playing = new HashSet<>();
     /**
      * The chunks holding custom blocks shown through packets, kept on disk: a chunk wiped while it is not loaded
      * (value true) is cleaned of them when it next loads.
@@ -195,6 +206,42 @@ public final class DisplayRenderer implements Listener {
         removed(location.getBlock());
         placed.bind(model, this.nms);
         add(placed);
+        start(placed, DisplayAnimation.Trigger.PLACE, null);
+    }
+
+    /**
+     * Plays the click animations of a custom block whose interaction was just clicked.
+     *
+     * @param interaction the name of the interaction, as written in the file of the block
+     */
+    public synchronized void clicked(Block block, String interaction) {
+        Map<Long, List<PlacedDisplay>> chunks = this.index.get(block.getWorld().getUID());
+        List<PlacedDisplay> list = chunks == null ? null : chunks.get(chunkKey(block.getX() >> 4, block.getZ() >> 4));
+        if (list == null) {
+            return;
+        }
+        for (PlacedDisplay placed : list) {
+            if (placed.x == block.getX() && placed.y == block.getY() && placed.z == block.getZ()) {
+                start(placed, DisplayAnimation.Trigger.CLICK, interaction);
+                return;
+            }
+        }
+    }
+
+    /**
+     * Starts the animations of a block that answer a trigger, unless they are already playing.
+     */
+    private void start(PlacedDisplay placed, DisplayAnimation.Trigger trigger, String interaction) {
+        List<DisplayAnimation> animations = placed.model.animations;
+        for (int i = 0; i < animations.size(); i++) {
+            DisplayAnimation animation = animations.get(i);
+            if (animation.trigger == trigger && placed.startedAt[i] < 0
+                    && (animation.interaction == null || animation.interaction.equalsIgnoreCase(interaction))) {
+                // its first frame goes out with the next tick
+                placed.startedAt[i] = this.tick + 1;
+                this.playing.add(placed);
+            }
+        }
     }
 
     /**
@@ -271,6 +318,7 @@ public final class DisplayRenderer implements Listener {
         this.reportedModels.clear();
         this.retryChunks.clear();
         this.ranges.clear();
+        this.playing.clear();
 
         if (!isActive()) {
             // every block shown through packets is read again, and given real entities
@@ -330,6 +378,8 @@ public final class DisplayRenderer implements Listener {
         }
         this.index.clear();
         this.viewers.clear();
+        this.looping.clear();
+        this.playing.clear();
         if (this.registryDirty) {
             this.registryDirty = false;
             saveRegistry();
@@ -431,7 +481,9 @@ public final class DisplayRenderer implements Listener {
             }
         }
 
-        if (++this.tick % MODEL_RETRY_PERIOD == 0 && !this.retryChunks.isEmpty()) {
+        this.tick++;
+        animate();
+        if (this.tick % MODEL_RETRY_PERIOD == 0 && !this.retryChunks.isEmpty()) {
             this.tasks.addAll(this.retryChunks);
             this.retryChunks.clear();
         }
@@ -671,8 +723,9 @@ public final class DisplayRenderer implements Listener {
             this.unavailableModels.put(name, Integer.MAX_VALUE);
             return null;
         }
+        List<String> problems = new ArrayList<>();
         try {
-            model = DisplayModel.read(this.nms, definition, world, chunkX, chunkZ);
+            model = DisplayModel.read(this.nms, definition, world, chunkX, chunkZ, animations(name), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
                 this.plugin.getLogger().log(Level.WARNING, "Could not read the display entities of the custom block " + name, e);
@@ -687,9 +740,28 @@ public final class DisplayRenderer implements Listener {
             this.unavailableModels.put(name, this.tick + MODEL_RETRY_PERIOD);
             return null;
         }
+        for (String problem : problems) {
+            this.plugin.getLogger().warning("Custom block " + name + ", " + problem);
+        }
         this.unavailableModels.remove(name);
         this.models.put(name, model);
         return model;
+    }
+
+    /**
+     * The {@code animations} section of the file of a custom block, if it has one and this server can play it.
+     */
+    @Nullable
+    private ConfigurationSection animations(String name) {
+        if (this.nms.canAnimate()
+                && this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
+                && storage.getCustomBlockRepository() != null) {
+            CustomBlockConfigurationFile file = storage.getCustomBlockRepository().getFile(name);
+            if (file != null && file.get("animations") instanceof ConfigurationSection section) {
+                return section;
+            }
+        }
+        return null;
     }
 
     // ---------- Who sees what ----------
@@ -713,13 +785,102 @@ public final class DisplayRenderer implements Listener {
             if (!viewer.stale && world.equals(viewer.world)
                     && inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed.world))
                     && viewer.shown.add(placed)) {
-                placed.viewers.add(viewer);
-                this.nms.send(viewer.player, placed.spawnPacket(this.nms));
+                attach(viewer, placed);
             }
         }
     }
 
+    /**
+     * Sends a custom block to a player, where its animations have taken it.
+     */
+    private void attach(Viewer viewer, PlacedDisplay placed) {
+        placed.viewers.add(viewer);
+        this.nms.send(viewer.player, placed.spawnPacket(this.nms));
+
+        List<DisplayAnimation> animations = placed.model.animations;
+        for (int i = 0; i < animations.size(); i++) {
+            DisplayAnimation animation = animations.get(i);
+            int last = placed.lastFrame[i];
+            if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
+                // the frames already started in this turn of the loop, or all of them when it has turned before
+                int phase = this.tick % animation.duration;
+                last = -1;
+                while (last + 1 < animation.frames.length && animation.frames[last + 1].at() <= phase) {
+                    last++;
+                }
+                if (last < 0 && this.tick >= animation.duration) {
+                    last = animation.frames.length - 1;
+                }
+            }
+            if (last >= 0) {
+                this.nms.send(viewer.player, placed.catchUpPacket(this.nms, i, last));
+            }
+        }
+        if (placed.model.loops) {
+            this.looping.add(placed);
+        }
+    }
+
+    /**
+     * Plays the frames due at this tick: those of the loops of the blocks someone sees, all in step, and those of
+     * the animations a click or a placement started.
+     */
+    private void animate() {
+        for (PlacedDisplay placed : this.looping) {
+            List<DisplayAnimation> animations = placed.model.animations;
+            for (int i = 0; i < animations.size(); i++) {
+                DisplayAnimation animation = animations.get(i);
+                if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
+                    play(placed, i, animation, animation.startingAt[this.tick % animation.duration]);
+                }
+            }
+        }
+        for (Iterator<PlacedDisplay> iterator = this.playing.iterator(); iterator.hasNext(); ) {
+            PlacedDisplay placed = iterator.next();
+            List<DisplayAnimation> animations = placed.model.animations;
+            boolean active = false;
+            for (int i = 0; i < animations.size() && i < placed.startedAt.length; i++) {
+                if (placed.startedAt[i] < 0) {
+                    continue;
+                }
+                DisplayAnimation animation = animations.get(i);
+                int elapsed = this.tick - placed.startedAt[i];
+                if (elapsed >= 0 && elapsed <= animation.duration) {
+                    play(placed, i, animation, animation.startingAt[elapsed]);
+                }
+                if (elapsed >= animation.duration) {
+                    placed.startedAt[i] = -1;
+                } else {
+                    active = true;
+                }
+            }
+            if (!active) {
+                iterator.remove();
+            }
+        }
+    }
+
+    private void play(PlacedDisplay placed, int index, DisplayAnimation animation, int[] starting) {
+        if (starting == null) {
+            return;
+        }
+        for (int frame : starting) {
+            if (!placed.viewers.isEmpty()) {
+                Object packet = placed.framePacket(this.nms, index, frame);
+                for (Viewer viewer : placed.viewers) {
+                    this.nms.send(viewer.player, packet);
+                }
+            }
+            DisplayAnimation.Frame played = animation.frames[frame];
+            if (played.sound() != null) {
+                placed.world.playSound(placed.base(), played.sound(), played.volume(), played.pitch());
+            }
+            placed.lastFrame[index] = frame;
+        }
+    }
+
     private void hide(PlacedDisplay placed) {
+        this.looping.remove(placed);
         if (placed.viewers.isEmpty()) {
             return;
         }
@@ -739,6 +900,9 @@ public final class DisplayRenderer implements Listener {
     private void forget(Viewer viewer) {
         for (PlacedDisplay placed : viewer.shown) {
             placed.viewers.remove(viewer);
+            if (placed.viewers.isEmpty()) {
+                this.looping.remove(placed);
+            }
         }
         viewer.shown.clear();
         viewer.stale = true;
@@ -780,6 +944,9 @@ public final class DisplayRenderer implements Listener {
             if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius)) {
                 iterator.remove();
                 placed.viewers.remove(viewer);
+                if (placed.viewers.isEmpty()) {
+                    this.looping.remove(placed);
+                }
                 if (leaving == null) {
                     leaving = new ArrayList<>();
                 }
@@ -829,8 +996,7 @@ public final class DisplayRenderer implements Listener {
     private void showAll(Viewer viewer, List<PlacedDisplay> list) {
         for (PlacedDisplay placed : list) {
             if (viewer.shown.add(placed)) {
-                placed.viewers.add(viewer);
-                this.nms.send(viewer.player, placed.spawnPacket(this.nms));
+                attach(viewer, placed);
             }
         }
     }

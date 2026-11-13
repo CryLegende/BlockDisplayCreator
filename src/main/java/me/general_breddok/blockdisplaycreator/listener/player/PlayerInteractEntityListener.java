@@ -1,5 +1,6 @@
 package me.general_breddok.blockdisplaycreator.listener.player;
 
+import me.general_breddok.blockdisplaycreator.render.DisplayRenderer;
 import com.google.common.base.Preconditions;
 import me.general_breddok.blockdisplaycreator.BlockDisplayCreator;
 import me.general_breddok.blockdisplaycreator.common.BDCDependentPluginsManager;
@@ -95,6 +96,11 @@ public class PlayerInteractEntityListener implements Listener {
         event.setCancelled(true);
 
         customBlock.handleClick(configuredInteraction, interaction, player, new CustomBlockPlaceholder(customBlock), new InteractionPlaceholder(interaction));
+
+        DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        if (renderer != null) {
+            renderer.clicked(customBlock.getLocation().getBlock(), configuredInteraction.getIdentifier());
+        }
 
 
         /*

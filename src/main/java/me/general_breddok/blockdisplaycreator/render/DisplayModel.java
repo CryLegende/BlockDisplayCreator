@@ -7,9 +7,12 @@ import me.general_breddok.blockdisplaycreator.entity.display.TranslationVectorAd
 import me.general_breddok.blockdisplaycreator.rotation.DirectedVector;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.entity.BlockDisplay;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Interaction;
+import org.bukkit.entity.ItemDisplay;
 import org.bukkit.util.Transformation;
 
 import java.util.ArrayList;
@@ -33,12 +36,19 @@ final class DisplayModel {
     final float translationPitch;
     final String hitboxSignature;
     final List<Element> elements;
+    final List<DisplayAnimation> animations;
+    /**
+     * Whether one of its animations plays in a loop.
+     */
+    final boolean loops;
 
-    private DisplayModel(AbstractCustomBlock definition, List<Element> elements) {
+    private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations) {
         this.name = definition.getName();
         this.sidesCount = definition.getSidesCount();
         this.hitboxSignature = BDCCustomBlockService.hitboxSignature(definition);
         this.elements = elements;
+        this.animations = animations;
+        this.loops = animations.stream().anyMatch(animation -> animation.trigger == DisplayAnimation.Trigger.LOOP);
 
         GroupSummoner<Display> summoner = definition.getDisplaySummoner();
         DirectedVector translation = summoner instanceof TranslationVectorAdjustable adjustable ? adjustable.getTranslation() : null;
@@ -54,17 +64,22 @@ final class DisplayModel {
      * @param yaw            the yaw it is summoned with
      * @param pitch          the pitch it is summoned with
      * @param transformation its resting transformation
+     * @param block          whether it is a block display, drawn from its corner rather than around its origin
+     * @param drawn          whether it shows something: the root of a bdengine model is an empty block display
      */
-    record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation) {
+    record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation, boolean block, boolean drawn) {
     }
 
     /**
      * Reads the model of a custom block by summoning it for an instant, far above the given chunk, which must be
      * loaded with its entities.
      *
+     * @param animations the {@code animations} section of its file, or null
+     * @param problems   receives what could not be read of its animations
      * @return the model, without any element when the summon commands of the block create nothing
      */
-    static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, World world, int chunkX, int chunkZ) {
+    static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, World world, int chunkX, int chunkZ,
+                             ConfigurationSection animations, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -88,13 +103,24 @@ final class DisplayModel {
                 display.remove();
             }
         }
-        return new DisplayModel(definition, List.copyOf(elements));
+        return new DisplayModel(definition, List.copyOf(elements),
+                elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems)));
+    }
+
+    private static boolean isDrawn(Display display) {
+        if (display instanceof BlockDisplay block) {
+            return !block.getBlock().getMaterial().isAir();
+        }
+        if (display instanceof ItemDisplay item) {
+            return item.getItemStack() != null && !item.getItemStack().getType().isAir();
+        }
+        return true;
     }
 
     private static void collect(NmsBridge nms, Display display, List<Element> elements) {
         Object handle = nms.handle(display);
         Location location = display.getLocation();
-        elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation()));
+        elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation(), display instanceof BlockDisplay, isDrawn(display)));
         for (Entity passenger : display.getPassengers()) {
             if (passenger instanceof Display child) {
                 collect(nms, child, elements);

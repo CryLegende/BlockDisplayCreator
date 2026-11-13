@@ -41,8 +41,17 @@ final class PlacedDisplay {
 
     DisplayModel model;
     int[] entityIds;
+    /**
+     * For each animation of the model, the tick it was started at by a click or the placement, -1 while it rests.
+     */
+    int[] startedAt;
+    /**
+     * For each animation of the model, the last frame played since the block was shown at rest, -1 for none.
+     */
+    int[] lastFrame;
     private Object spawnPacket;
     private Object removePacket;
+    private Object[][] framePackets;
 
     PlacedDisplay(World world, int x, int y, int z, String modelName, CustomBlockRotation rotation) {
         this.world = world;
@@ -83,6 +92,48 @@ final class PlacedDisplay {
         }
         this.spawnPacket = null;
         this.removePacket = null;
+
+        int animations = model.animations.size();
+        this.startedAt = new int[animations];
+        this.lastFrame = new int[animations];
+        this.framePackets = new Object[animations][];
+        java.util.Arrays.fill(this.startedAt, -1);
+        java.util.Arrays.fill(this.lastFrame, -1);
+    }
+
+    /**
+     * The packet that starts the parts of a frame towards their pose.
+     */
+    Object framePacket(NmsBridge nms, int animation, int frame) {
+        Object[] packets = this.framePackets[animation];
+        if (packets == null) {
+            packets = this.framePackets[animation] = new Object[this.model.animations.get(animation).frames.length];
+        }
+        if (packets[frame] == null) {
+            DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
+            List<Object> parts = new ArrayList<>(played.parts().length);
+            for (int i = 0; i < played.parts().length; i++) {
+                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], played.moving()[i]));
+            }
+            packets[frame] = nms.bundle(parts);
+        }
+        return packets[frame];
+    }
+
+    /**
+     * The packet that puts a client that just received the block at rest where an animation has taken it: the
+     * poses of its frames up to the given one, applied at once.
+     */
+    Object catchUpPacket(NmsBridge nms, int animation, int lastFrame) {
+        DisplayAnimation.Frame[] frames = this.model.animations.get(animation).frames;
+        List<Object> parts = new ArrayList<>();
+        for (int frame = 0; frame <= lastFrame; frame++) {
+            DisplayAnimation.Frame played = frames[frame];
+            for (int i = 0; i < played.parts().length; i++) {
+                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], played.jumping()[i]));
+            }
+        }
+        return nms.bundle(parts);
     }
 
     /**

@@ -8,10 +8,15 @@ import org.bukkit.entity.Player;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.UUID;
+
+import org.joml.Matrix4f;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 /**
  * The few server internals needed to show display entities to players without the entities existing on the
@@ -34,6 +39,11 @@ final class NmsBridge {
     private final MethodHandle send;
     private final MethodHandle nextEntityId;
     private final Object noMovement;
+    /**
+     * What moving a display entity takes, or null on a server that names it otherwise: models are then shown
+     * without their animations.
+     */
+    private final Poses poses;
 
     private NmsBridge() throws ReflectiveOperationException {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -70,6 +80,125 @@ final class NmsBridge {
         this.send = lookup.unreflect(connection.getType().getMethod("send", Class.forName("net.minecraft.network.protocol.Packet")));
 
         this.nextEntityId = entityIdSource(lookup, craftBukkit);
+
+        Poses poses;
+        try {
+            poses = new Poses(type.getDeclaringClass().getClassLoader());
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            poses = null;
+        }
+        this.poses = poses;
+    }
+
+    /**
+     * Builds the synced values that give a display entity a new transformation.
+     */
+    private static final class Poses {
+        private final Constructor<?> decompose;
+        private final Method translation;
+        private final Method leftRotation;
+        private final Method scale;
+        private final Method rightRotation;
+        private final Method createValue;
+        private final Object startAccessor;
+        private final Object durationAccessor;
+        private final Object translationAccessor;
+        private final Object leftRotationAccessor;
+        private final Object scaleAccessor;
+        private final Object rightRotationAccessor;
+
+        Poses(ClassLoader server) throws ReflectiveOperationException {
+            // the server splits a matrix into the translation, rotations and scale a display entity is made of
+            Class<?> transformation = Class.forName("com.mojang.math.Transformation", true, server);
+            Constructor<?> decompose = null;
+            for (Constructor<?> constructor : transformation.getConstructors()) {
+                if (constructor.getParameterCount() == 1 && constructor.getParameterTypes()[0].isAssignableFrom(Matrix4f.class)) {
+                    decompose = constructor;
+                }
+            }
+            if (decompose == null) {
+                throw new NoSuchMethodException("Transformation(Matrix4f)");
+            }
+            this.decompose = decompose;
+            this.translation = either(transformation, "translation", "getTranslation");
+            this.leftRotation = either(transformation, "leftRotation", "getLeftRotation");
+            this.scale = either(transformation, "scale", "getScale");
+            this.rightRotation = either(transformation, "rightRotation", "getRightRotation");
+
+            Class<?> display = Class.forName("net.minecraft.world.entity.Display", true, server);
+            this.startAccessor = accessor(display, "DATA_TRANSFORMATION_INTERPOLATION_START_DELTA_TICKS_ID");
+            this.durationAccessor = accessor(display, "DATA_TRANSFORMATION_INTERPOLATION_DURATION_ID");
+            this.translationAccessor = accessor(display, "DATA_TRANSLATION_ID");
+            this.leftRotationAccessor = accessor(display, "DATA_LEFT_ROTATION_ID");
+            this.scaleAccessor = accessor(display, "DATA_SCALE_ID");
+            this.rightRotationAccessor = accessor(display, "DATA_RIGHT_ROTATION_ID");
+
+            Class<?> accessor = Class.forName("net.minecraft.network.syncher.EntityDataAccessor", true, server);
+            this.createValue = Class.forName("net.minecraft.network.syncher.SynchedEntityData$DataValue", true, server)
+                    .getMethod("create", accessor, Object.class);
+        }
+
+        private static Method either(Class<?> type, String name, String olderName) throws NoSuchMethodException {
+            try {
+                return type.getMethod(name);
+            } catch (NoSuchMethodException e) {
+                return type.getMethod(olderName);
+            }
+        }
+
+        private static Object accessor(Class<?> display, String name) throws ReflectiveOperationException {
+            Field field = display.getDeclaredField(name);
+            field.setAccessible(true);
+            return field.get(null);
+        }
+
+        List<?> values(Matrix4f matrix, int duration) throws ReflectiveOperationException {
+            Object transformation = this.decompose.newInstance(matrix);
+            return values(this.translation.invoke(transformation), this.leftRotation.invoke(transformation),
+                    this.scale.invoke(transformation), this.rightRotation.invoke(transformation), duration);
+        }
+
+        List<?> values(Object translation, Object leftRotation, Object scale, Object rightRotation, int duration) throws ReflectiveOperationException {
+            return List.of(
+                    this.createValue.invoke(null, this.startAccessor, 0),
+                    this.createValue.invoke(null, this.durationAccessor, duration),
+                    this.createValue.invoke(null, this.translationAccessor, translation),
+                    this.createValue.invoke(null, this.leftRotationAccessor, leftRotation),
+                    this.createValue.invoke(null, this.scaleAccessor, scale),
+                    this.createValue.invoke(null, this.rightRotationAccessor, rightRotation));
+        }
+    }
+
+    /**
+     * Whether display entities can be given a new transformation on this server.
+     */
+    boolean canAnimate() {
+        return this.poses != null;
+    }
+
+    /**
+     * The synced values that take a display entity to a transformation.
+     *
+     * @param matrix   the transformation, as a matrix
+     * @param duration the ticks the client takes to get there from where the entity is, 0 to jump
+     */
+    List<?> poseValues(Matrix4f matrix, int duration) {
+        try {
+            return this.poses.values(matrix, duration);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * The synced values that take a display entity to a transformation given by its four parts.
+     */
+    List<?> poseValues(Vector3f translation, Quaternionf leftRotation, Vector3f scale, Quaternionf rightRotation, int duration) {
+        try {
+            return this.poses.values(translation, leftRotation, scale, rightRotation, duration);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /**
