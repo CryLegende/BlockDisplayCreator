@@ -39,6 +39,8 @@ import me.general_breddok.blockdisplaycreator.sound.SimplePlayableSound;
 import me.general_breddok.blockdisplaycreator.util.ChatUtil;
 import me.general_breddok.blockdisplaycreator.version.BDCUpdateChecker;
 import me.general_breddok.blockdisplaycreator.version.VersionManager;
+import me.general_breddok.blockdisplaycreator.commandparser.LegacyDisplayNbt;
+import me.general_breddok.blockdisplaycreator.listener.world.DisplayRepairListener;
 import org.bukkit.configuration.serialization.ConfigurationSerialization;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -93,6 +95,7 @@ public final class BlockDisplayCreator extends JavaPlugin {
      * Detects and validates the running Minecraft server version.
      */
     VersionManager versionManager;
+    DisplayRepairListener displayRepairListener;
     /**
      * Indicates if CommandAPI is supported on the current server version.
      */
@@ -229,6 +232,12 @@ public final class BlockDisplayCreator extends JavaPlugin {
             pluginManager.registerEvents(new SuperiorSkyblockPluginInitializeListener(), this);
         }
         //pluginManager.registerEvents(new PrepareItemCraftListener(), this);
+        if (LegacyDisplayNbt.serverNeedsModernNbt()) {
+            this.displayRepairListener = new DisplayRepairListener(this);
+            pluginManager.registerEvents(this.displayRepairListener, this);
+            // custom blocks are read from their files off the main thread: entities loaded meanwhile are checked afterwards
+            getServer().getScheduler().runTaskLater(this, this.displayRepairListener::repairLoaded, 200L);
+        }
     }
 
     /**
@@ -280,6 +289,9 @@ public final class BlockDisplayCreator extends JavaPlugin {
         this.yamlConfiguration.reload();
         this.messagesFile.reload();
         this.customBlockService.getStorage().reloadAll();
+        if (this.displayRepairListener != null) {
+            this.displayRepairListener.invalidate();
+        }
         this.initializeConfigValues();
     }
 
