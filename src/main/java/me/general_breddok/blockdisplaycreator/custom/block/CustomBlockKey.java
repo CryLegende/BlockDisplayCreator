@@ -28,6 +28,7 @@ public interface CustomBlockKey {
 
     NamespacedKey DISPLAY_SPAWN_COMMAND = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-display-spawn-command");
     NamespacedKey ITEM = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-item");
+    NamespacedKey HITBOX = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-hitbox");
 
     static DataHolder holder(PersistentDataHolder holder) {
         return new DataHolder(holder);

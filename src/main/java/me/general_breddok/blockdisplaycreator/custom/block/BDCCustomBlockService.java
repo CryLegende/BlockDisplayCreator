@@ -11,6 +11,9 @@ import me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockBre
 import me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockOption;
 import me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockPlaceOption;
 import me.general_breddok.blockdisplaycreator.data.manager.PersistentDataTypes;
+import me.general_breddok.blockdisplaycreator.custom.ConfiguredCollision;
+import me.general_breddok.blockdisplaycreator.custom.ConfiguredInteraction;
+import me.general_breddok.blockdisplaycreator.entity.interaction.InteractionSummoner;
 import me.general_breddok.blockdisplaycreator.entity.GroupSummoner;
 import me.general_breddok.blockdisplaycreator.entity.display.TranslationVectorAdjustable;
 import me.general_breddok.blockdisplaycreator.event.custom.block.CustomBlockBreakEvent;
@@ -326,69 +329,8 @@ public class BDCCustomBlockService implements CustomBlockService {
         }
 
 
-        // Summon interaction entities and iterate through them to apply the necessary settings
-        List<Interaction> interactions = abstractCustomBlock.getConfiguredInteractions().stream().map(configuredInteraction -> {
-            Interaction interaction = configuredInteraction.summon(location);
-
-            // If the interaction failed to summon, skip it
-            if (interaction == null) {
-                return null;
-            }
-            // Adjusts the rotation and offset of the interaction depending on the settings selected
-            rotation.adjustInteractionRotation(interaction, configuredInteraction.getOffset(), abstractCustomBlock.getSidesCount());
-
-            // Get the interaction identifier that was specified in the block file as its section name.
-            String configuredInteractionIdentifier = configuredInteraction.getIdentifier();
-
-            // Set custom block data for the interaction entity
-            CustomBlockKey.holder(interaction)
-                    .setServiceClass(BDCCustomBlockService.class.getName())
-                    .setName(abstractCustomBlock.getName())
-                    .setLocation(location)
-                    .setInteractionIdentifier(configuredInteractionIdentifier);
-
-            // Add scoreboard tags for easy identification and use in data packs
-            interaction.addScoreboardTag("custom-block");
-            interaction.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
-            interaction.addScoreboardTag("custom-block-interaction");
-            interaction.addScoreboardTag("custom-block-interaction-id:" + configuredInteractionIdentifier);
-            interaction.addScoreboardTag("custom-block-location:" + location.toVector());
-
-            return interaction;
-        }).filter(Objects::nonNull).collect(OperationUtil.toArrayList());
-
-
-        // Summon collision entities and iterate through them to apply the necessary settings
-        List<Shulker> collisions = abstractCustomBlock.getConfiguredCollisions().stream().map(configuredCollision -> {
-            Shulker collision = configuredCollision.summon(location);
-
-            // If the collision failed to summon, skip it
-            if (collision == null) {
-                return null;
-            }
-
-            // Get the collision identifier that was specified in the block file as its section name.
-            String configuredCollisionIdentifier = configuredCollision.getIdentifier();
-
-            // Adjusts the rotation and offset of the collision depending on the settings selected
-            rotation.adjustCollisionRotation(collision, configuredCollision.getOffset(), abstractCustomBlock.getSidesCount());
-
-            // Set custom block data for the collision entity
-            CustomBlockKey.holder(collision)
-                    .setServiceClass(BDCCustomBlockService.class.getName())
-                    .setName(abstractCustomBlock.getName())
-                    .setLocation(location)
-                    .setCollisionIdentifier(configuredCollisionIdentifier);
-
-            // Add scoreboard tags for easy identification and use in data packs
-            collision.addScoreboardTag("custom-block");
-            collision.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
-            collision.addScoreboardTag("custom-block-collision");
-            collision.addScoreboardTag("custom-block-collision-id:" + configuredCollisionIdentifier);
-            collision.addScoreboardTag("custom-block-location:" + location.toVector());
-
-            return collision;
-        }).filter(Objects::nonNull).collect(OperationUtil.toArrayList());
+        List<Interaction> interactions = summonInteractions(abstractCustomBlock, location, rotation);
+        List<Shulker> collisions = summonCollisions(abstractCustomBlock, location, rotation);
 
 
         // Construct the raw custom block object
@@ -541,6 +483,151 @@ public class BDCCustomBlockService implements CustomBlockService {
     }
 
     /**
+     * Summons the interaction entities of a custom block and gives them their rotation, offset and block data.
+     */
+    public List<Interaction> summonInteractions(AbstractCustomBlock abstractCustomBlock, Location location, CustomBlockRotation rotation) {
+        return abstractCustomBlock.getConfiguredInteractions().stream().map(configuredInteraction -> {
+            Interaction interaction = configuredInteraction.summon(location);
+
+            // If the interaction failed to summon, skip it
+            if (interaction == null) {
+                return null;
+            }
+            // Adjusts the rotation and offset of the interaction depending on the settings selected
+            rotation.adjustInteractionRotation(interaction, configuredInteraction.getOffset(), abstractCustomBlock.getSidesCount());
+
+            // Get the interaction identifier that was specified in the block file as its section name.
+            String configuredInteractionIdentifier = configuredInteraction.getIdentifier();
+
+            // Set custom block data for the interaction entity
+            CustomBlockKey.holder(interaction)
+                    .setServiceClass(BDCCustomBlockService.class.getName())
+                    .setName(abstractCustomBlock.getName())
+                    .setLocation(location)
+                    .setInteractionIdentifier(configuredInteractionIdentifier);
+
+            // Add scoreboard tags for easy identification and use in data packs
+            interaction.addScoreboardTag("custom-block");
+            interaction.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
+            interaction.addScoreboardTag("custom-block-interaction");
+            interaction.addScoreboardTag("custom-block-interaction-id:" + configuredInteractionIdentifier);
+            interaction.addScoreboardTag("custom-block-location:" + location.toVector());
+
+            return interaction;
+        }).filter(Objects::nonNull).collect(OperationUtil.toArrayList());
+    }
+
+    /**
+     * Summons the collision entities of a custom block and gives them their rotation, offset and block data.
+     */
+    public List<Shulker> summonCollisions(AbstractCustomBlock abstractCustomBlock, Location location, CustomBlockRotation rotation) {
+        return abstractCustomBlock.getConfiguredCollisions().stream().map(configuredCollision -> {
+            Shulker collision = configuredCollision.summon(location);
+
+            // If the collision failed to summon, skip it
+            if (collision == null) {
+                return null;
+            }
+
+            // Get the collision identifier that was specified in the block file as its section name.
+            String configuredCollisionIdentifier = configuredCollision.getIdentifier();
+
+            // Adjusts the rotation and offset of the collision depending on the settings selected
+            rotation.adjustCollisionRotation(collision, configuredCollision.getOffset(), abstractCustomBlock.getSidesCount());
+
+            // Set custom block data for the collision entity
+            CustomBlockKey.holder(collision)
+                    .setServiceClass(BDCCustomBlockService.class.getName())
+                    .setName(abstractCustomBlock.getName())
+                    .setLocation(location)
+                    .setCollisionIdentifier(configuredCollisionIdentifier);
+
+            // Add scoreboard tags for easy identification and use in data packs
+            collision.addScoreboardTag("custom-block");
+            collision.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
+            collision.addScoreboardTag("custom-block-collision");
+            collision.addScoreboardTag("custom-block-collision-id:" + configuredCollisionIdentifier);
+            collision.addScoreboardTag("custom-block-location:" + location.toVector());
+
+            return collision;
+        }).filter(Objects::nonNull).collect(OperationUtil.toArrayList());
+    }
+
+    /**
+     * Describes the interactions and collisions a custom block is defined with. Stored with a placed block, it
+     * tells whether its hitbox entities still match its file.
+     */
+    public static String hitboxSignature(AbstractCustomBlock abstractCustomBlock) {
+        StringBuilder signature = new StringBuilder();
+        for (ConfiguredInteraction interaction : abstractCustomBlock.getConfiguredInteractions()) {
+            signature.append("i:").append(interaction.getIdentifier()).append('=');
+            if (interaction.getSummoner() instanceof InteractionSummoner summoner) {
+                signature.append(summoner.getInteractionWidth()).append('x').append(summoner.getInteractionHeight());
+            }
+            signature.append('@').append(interaction.getOffset()).append(';');
+        }
+        for (ConfiguredCollision collision : abstractCustomBlock.getConfiguredCollisions()) {
+            signature.append("c:").append(collision.getIdentifier()).append('=').append(collision.getSize())
+                    .append('@').append(collision.getOffset()).append(';');
+        }
+        return signature.toString();
+    }
+
+    /**
+     * Replaces the interaction and collision entities of a placed custom block when its file no longer describes
+     * the ones it was placed with. Nothing happens while one of the entities to replace is not loaded: it would be
+     * left behind.
+     *
+     * @param location the location the block was placed at, as stored on its entities
+     * @return true if the hitbox entities were replaced
+     */
+    public boolean refreshHitbox(@NotNull Location location) {
+        CustomBlockData customBlockData = new CustomBlockData(location.getBlock(), BlockDisplayCreator.getInstance());
+        if (!customBlockData.has(CustomBlockKey.NAME) || !customBlockData.has(CustomBlockKey.BLOCK_ROTATION)) {
+            return false;
+        }
+        AbstractCustomBlock abstractCustomBlock = storage.getAbstractCustomBlock(customBlockData.get(CustomBlockKey.NAME, PersistentDataType.STRING));
+        if (abstractCustomBlock == null) {
+            return false;
+        }
+        String signature = hitboxSignature(abstractCustomBlock);
+        if (signature.equals(customBlockData.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))) {
+            return false;
+        }
+
+        List<Entity> outdated = new ArrayList<>();
+        for (org.bukkit.NamespacedKey key : List.of(CustomBlockKey.INTERACTION_UUID, CustomBlockKey.COLLISION_UUID)) {
+            UUID[] uuids = customBlockData.get(key, PersistentDataTypes.UUID_ARRAY);
+            if (uuids == null) {
+                continue;
+            }
+            for (UUID uuid : uuids) {
+                Entity entity = Bukkit.getEntity(uuid);
+                if (entity == null) {
+                    return false;
+                }
+                outdated.add(entity);
+            }
+        }
+        CustomBlockRotation rotation = customBlockData.get(CustomBlockKey.BLOCK_ROTATION, PersistentDataTypes.CUSTOM_BLOCK_ROTATION);
+
+        for (Entity entity : outdated) {
+            Entity vehicle = entity instanceof Shulker ? entity.getVehicle() : null;
+            entity.remove();
+            if (vehicle != null) {
+                vehicle.remove();
+            }
+        }
+        List<Interaction> interactions = summonInteractions(abstractCustomBlock, location, rotation);
+        List<Shulker> collisions = summonCollisions(abstractCustomBlock, location, rotation);
+
+        customBlockData.set(CustomBlockKey.INTERACTION_UUID, PersistentDataTypes.UUID_ARRAY, interactions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
+        customBlockData.set(CustomBlockKey.COLLISION_UUID, PersistentDataTypes.UUID_ARRAY, collisions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
+        customBlockData.set(CustomBlockKey.HITBOX, PersistentDataType.STRING, signature);
+        return true;
+    }
+
+    /**
      * Creates a {@link CustomBlockData} from its location and stores all block data there
      *
      * @param customBlock         the custom block to create data for
@@ -555,6 +642,7 @@ public class BDCCustomBlockService implements CustomBlockService {
         customBlockData.set(CustomBlockKey.INTERACTION_UUID, PersistentDataTypes.UUID_ARRAY, customBlock.getInteractions().stream().map(Entity::getUniqueId).toList().toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.COLLISION_UUID, PersistentDataTypes.UUID_ARRAY, customBlock.getCollisions().stream().map(Entity::getUniqueId).toList().toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.BLOCK_ROTATION, PersistentDataTypes.CUSTOM_BLOCK_ROTATION, customBlock.getRotation());
+        customBlockData.set(CustomBlockKey.HITBOX, PersistentDataType.STRING, hitboxSignature(customBlock));
         customBlockData.set(CustomBlockKey.CUSTOM_BLOCK_UUID, PersistentDataTypes.UUID, customBlock.getUuid());
         if (customBlock.getSaveSystem().equals("item")) {
             GroupSummoner<Display> displaySummoner = customBlock.getDisplaySummoner();

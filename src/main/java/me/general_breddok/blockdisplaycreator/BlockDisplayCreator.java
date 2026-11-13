@@ -39,7 +39,6 @@ import me.general_breddok.blockdisplaycreator.sound.SimplePlayableSound;
 import me.general_breddok.blockdisplaycreator.util.ChatUtil;
 import me.general_breddok.blockdisplaycreator.version.BDCUpdateChecker;
 import me.general_breddok.blockdisplaycreator.version.VersionManager;
-import me.general_breddok.blockdisplaycreator.commandparser.LegacyDisplayNbt;
 import me.general_breddok.blockdisplaycreator.listener.world.DisplayRepairListener;
 import org.bukkit.configuration.serialization.ConfigurationSerialization;
 import org.bukkit.plugin.PluginManager;
@@ -232,12 +231,10 @@ public final class BlockDisplayCreator extends JavaPlugin {
             pluginManager.registerEvents(new SuperiorSkyblockPluginInitializeListener(), this);
         }
         //pluginManager.registerEvents(new PrepareItemCraftListener(), this);
-        if (LegacyDisplayNbt.serverNeedsModernNbt()) {
-            this.displayRepairListener = new DisplayRepairListener(this);
-            pluginManager.registerEvents(this.displayRepairListener, this);
-            // custom blocks are read from their files off the main thread: entities loaded meanwhile are checked afterwards
-            getServer().getScheduler().runTaskLater(this, this.displayRepairListener::repairLoaded, 200L);
-        }
+        this.displayRepairListener = new DisplayRepairListener(this);
+        pluginManager.registerEvents(this.displayRepairListener, this);
+        // custom blocks are read from their files off the main thread: entities loaded meanwhile are checked afterwards
+        getServer().getScheduler().runTaskLater(this, this.displayRepairListener::repairLoaded, 200L);
     }
 
     /**

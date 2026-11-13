@@ -4,7 +4,10 @@ import me.general_breddok.blockdisplaycreator.BlockDisplayCreator;
 import me.general_breddok.blockdisplaycreator.commandparser.CommandLine;
 import me.general_breddok.blockdisplaycreator.commandparser.LegacyDisplayNbt;
 import me.general_breddok.blockdisplaycreator.custom.AutomaticCommandDisplaySummoner;
+import com.jeff_media.customblockdata.CustomBlockData;
 import me.general_breddok.blockdisplaycreator.custom.block.AbstractCustomBlock;
+import me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockService;
+import java.util.concurrent.atomic.AtomicInteger;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockKey;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -41,9 +44,13 @@ public class DisplayRepairListener implements Listener {
     private final BlockDisplayCreator plugin;
     private final Map<String, List<List<LegacyDisplayNbt.Passenger>>> models = new ConcurrentHashMap<>();
     private final Set<String> unknownBlocks = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> signatures = new ConcurrentHashMap<>();
+    private final AtomicInteger refreshed = new AtomicInteger();
+    private final boolean repairDisplays;
 
     public DisplayRepairListener(BlockDisplayCreator plugin) {
         this.plugin = plugin;
+        this.repairDisplays = LegacyDisplayNbt.serverNeedsModernNbt();
     }
 
     /**
@@ -77,6 +84,10 @@ public class DisplayRepairListener implements Listener {
         if (name == null) {
             return;
         }
+        checkHitbox(root, name);
+        if (!this.repairDisplays) {
+            return;
+        }
         List<Entity> passengers = root.getPassengers();
         for (List<LegacyDisplayNbt.Passenger> expected : this.models.computeIfAbsent(name, this::model)) {
             if (!matches(expected, passengers)) {
@@ -100,10 +111,51 @@ public class DisplayRepairListener implements Listener {
     }
 
     /**
+     * Compares the interactions and collisions the block was placed with to the ones its file describes now, and
+     * has them replaced when they differ. Entities are still being added to the world while a chunk loads: the
+     * replacement waits for the next tick.
+     */
+    private void checkHitbox(Display root, String name) {
+        Location location = CustomBlockKey.holder(root).getLocation();
+        if (location == null || location.getWorld() == null) {
+            return;
+        }
+        String expected = this.signatures.computeIfAbsent(name, this::signature);
+        if (expected.isEmpty()) {
+            return;
+        }
+        CustomBlockData data = new CustomBlockData(location.getBlock(), this.plugin);
+        if (!data.has(CustomBlockKey.NAME) || expected.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))) {
+            return;
+        }
+        Bukkit.getScheduler().runTask(this.plugin, () -> {
+            if (!location.getWorld().isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)
+                    || !(this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service)) {
+                return;
+            }
+            try {
+                if (service.refreshHitbox(location) && this.refreshed.getAndIncrement() == 0) {
+                    // one line for a whole batch of chunks rather than one per block
+                    Bukkit.getScheduler().runTaskLater(this.plugin, () -> this.plugin.getLogger().info(
+                            "Refreshed the hitbox of " + this.refreshed.getAndSet(0) + " placed custom block(s) from their files"), 200L);
+                }
+            } catch (RuntimeException e) {
+                this.plugin.getLogger().log(Level.WARNING, "Could not refresh the hitbox of the custom block at " + describe(root), e);
+            }
+        });
+    }
+
+    private String signature(String name) {
+        AbstractCustomBlock definition = this.plugin.getCustomBlockService().getStorage().getAbstractCustomBlock(name);
+        return definition == null ? "" : BDCCustomBlockService.hitboxSignature(definition);
+    }
+
+    /**
      * Forgets the parsed models: called when the custom block files are read again.
      */
     public void invalidate() {
         this.models.clear();
+        this.signatures.clear();
     }
 
     /**
