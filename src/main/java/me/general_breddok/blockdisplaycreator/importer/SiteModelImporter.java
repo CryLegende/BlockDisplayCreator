@@ -444,6 +444,9 @@ public final class SiteModelImporter {
         String name = text(node, "name");
         int bracket = name.indexOf('[');
         String id = (bracket < 0 ? name : name.substring(0, bracket)).trim();
+        if (id.equals("chain")) {
+            id = "iron_chain"; // renamed in 1.21.9, "chain" is unknown on 26.x
+        }
         String properties = bracket < 0 ? "" : name.substring(bracket + 1, name.lastIndexOf(']') < 0 ? name.length() : name.lastIndexOf(']'));
         StringBuilder out = new StringBuilder();
         if ("item".equals(kind(node))) {

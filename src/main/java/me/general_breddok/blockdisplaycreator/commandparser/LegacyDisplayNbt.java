@@ -33,6 +33,8 @@ public class LegacyDisplayNbt {
     private static final Pattern STATE_ID = Pattern.compile("\"?(?:id|Name)\"?:\"([^\"]+)\"");
     private static final Pattern STATE_PROPERTIES = Pattern.compile("\"?(?:properties|Properties)\"?:\\{([^{}]*)}");
     private static final Pattern DISPLAY_TYPE = Pattern.compile("id:\"minecraft:(block|item|text)_display\"");
+    /** The chain block and item became {@code iron_chain} (copper chains were added); {@code minecraft:chain} is unknown on 26.x. */
+    private static final Pattern RENAMED_CHAIN = Pattern.compile("\"minecraft:chain(?=[\\[\"])");
 
     /**
      * @return true if the running server only reads the new display NBT (verified on 26.3)
@@ -68,7 +70,7 @@ public class LegacyDisplayNbt {
             text.appendReplacement(result, Matcher.quoteReplacement(replacement));
         }
         text.appendTail(result);
-        return result.toString();
+        return RENAMED_CHAIN.matcher(result.toString()).replaceAll("\"minecraft:iron_chain");
     }
 
     private String toSnbt(JsonElement element) {
