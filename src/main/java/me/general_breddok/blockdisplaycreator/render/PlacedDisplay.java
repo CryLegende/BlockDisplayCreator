@@ -123,14 +123,23 @@ final class PlacedDisplay {
     /**
      * The packet that puts a client that just received the block at rest where an animation has taken it: the
      * poses of its frames up to the given one, applied at once.
+     * <p>
+     * A pose is a whole transformation, so each part only needs the last one a frame gave it: one packet per part
+     * at most, where replaying every frame would send frames × parts packets (8340 for a model of 139 parts turned
+     * in 60 frames, past what a client takes in a bundle).
      */
     Object catchUpPacket(NmsBridge nms, int animation, int lastFrame) {
         DisplayAnimation.Frame[] frames = this.model.animations.get(animation).frames;
+        boolean[] posed = new boolean[this.entityIds.length];
         List<Object> parts = new ArrayList<>();
-        for (int frame = 0; frame <= lastFrame; frame++) {
+        for (int frame = lastFrame; frame >= 0; frame--) {
             DisplayAnimation.Frame played = frames[frame];
-            for (int i = 0; i < played.parts().length; i++) {
-                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], played.jumping()[i]));
+            for (int i = played.parts().length - 1; i >= 0; i--) {
+                int part = played.parts()[i];
+                if (!posed[part]) {
+                    posed[part] = true;
+                    parts.add(nms.dataPacket(this.entityIds[part], played.jumping()[i]));
+                }
             }
         }
         return nms.bundle(parts);

@@ -325,11 +325,25 @@ final class NmsBridge {
     }
 
     /**
-     * One packet the client applies in a single frame.
+     * A client disconnects on a bundle of more than 4096 packets ("Too many packets in a bundle"), and a proxy or
+     * ViaVersion may add some on the way: a bundle never holds more than this.
+     */
+    private static final int BUNDLE_LIMIT = 2000;
+
+    /**
+     * One packet the client applies in a single frame; more packets than a bundle may hold go in several bundles
+     * sent one after the other, given back as a list that {@link #send} sends in order.
      */
     Object bundle(List<Object> packets) {
         try {
-            return this.newBundle.invoke((Iterable<Object>) packets);
+            if (packets.size() <= BUNDLE_LIMIT) {
+                return this.newBundle.invoke((Iterable<Object>) packets);
+            }
+            List<Object> bundles = new java.util.ArrayList<>();
+            for (int from = 0; from < packets.size(); from += BUNDLE_LIMIT) {
+                bundles.add(this.newBundle.invoke((Iterable<Object>) new java.util.ArrayList<>(packets.subList(from, Math.min(packets.size(), from + BUNDLE_LIMIT)))));
+            }
+            return bundles;
         } catch (Throwable e) {
             throw failure(e);
         }
@@ -338,7 +352,14 @@ final class NmsBridge {
     void send(Player player, Object packet) {
         try {
             Object connection = this.getConnection.invoke(this.getHandle.invoke(player));
-            if (connection != null) {
+            if (connection == null) {
+                return;
+            }
+            if (packet instanceof List<?> bundles) {
+                for (Object bundle : bundles) {
+                    this.send.invoke(connection, bundle);
+                }
+            } else {
                 this.send.invoke(connection, packet);
             }
         } catch (Throwable e) {
