@@ -54,16 +54,33 @@ public class ChatUtil {
 
     /**
      * Sends a formatted message to a command sender.
+     * Nothing is sent when the message is empty or only holds color codes,
+     * so a message set to '' in messages.yml stays silent instead of sending an empty line.
      *
      * @param sender  the recipient
      * @param message the message
      */
     public void sendMessage(CommandSender sender, String message) {
-        sender.sendMessage(color(message));
+        if (isBlank(message))
+            return;
+
+        String colored = color(message);
+
+        if (isBlank(ChatColor.stripColor(colored)))
+            return;
+
+        sender.sendMessage(colored);
     }
 
     public void sendPlaceholderMessage(Player player, String message) {
+        if (isBlank(message))
+            return;
+
         sendMessage(player, setPlaceholders(player, message));
+    }
+
+    private boolean isBlank(String message) {
+        return message == null || message.isBlank();
     }
 
     /**
@@ -74,6 +91,9 @@ public class ChatUtil {
      * @param args    the arguments
      */
     public void sendMessage(CommandSender sender, String message, Object... args) {
+        if (isBlank(message))
+            return;
+
         sendMessage(sender, String.format(message, args));
     }
 
@@ -114,6 +134,9 @@ public class ChatUtil {
      * @param args    the arguments
      */
     public void sendMessage(List<Player> players, String message, Object... args) {
+        if (isBlank(message))
+            return;
+
         sendMessage(players, format(message, args));
     }
 

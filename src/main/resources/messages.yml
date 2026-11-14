@@ -1,3 +1,5 @@
+#Any message set to "" is not sent at all.
+
 #Message displayed when placing a block in a chunk that exceeds the max-entities-per-chunk limit
 max-entities-per-chunk: "&cYou cannot place a custom block in this chunk!"
 

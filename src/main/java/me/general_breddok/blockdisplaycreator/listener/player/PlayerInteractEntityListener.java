@@ -48,7 +48,14 @@ public class PlayerInteractEntityListener implements Listener {
         this.serviceManager = serviceManager;
     }
 
-    @EventHandler(ignoreCancelled = true, priority = EventPriority.HIGH)
+    /*
+     * LOW: a right click on the click box of a custom block is decided here, before the generic protections
+     * (WorldGuard reads such a click as its "interact" flag at NORMAL, so a spawn region denying interact
+     * would swallow every click). The custom block's own rules apply instead: the interact-cb region flag,
+     * the INTERACT_CB island privilege and the permissions of the block file. Allowed or refused, the click
+     * is cancelled, so no other protection acts on (or answers) a click on a custom block.
+     */
+    @EventHandler(ignoreCancelled = true, priority = EventPriority.LOW)
     public void onPlayerInteractAtEntity(PlayerInteractEntityEvent event) {
         Player player = event.getPlayer();
         EquipmentSlot hand = event.getHand();
@@ -63,6 +70,7 @@ public class PlayerInteractEntityListener implements Listener {
 
         if (!BooleanConfigValue.BLOCKS_INTERACTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_INTERACTION)) {
+                event.setCancelled(true);
                 ChatUtil.sendMessage(player, StringMessagesValue.PERMISSION_DENIED_INTERACT);
                 return;
             }
@@ -78,6 +86,7 @@ public class PlayerInteractEntityListener implements Listener {
         }
 
         if (!checkAccess(customBlock, player)) {
+            event.setCancelled(true);
             return;
         }
 
