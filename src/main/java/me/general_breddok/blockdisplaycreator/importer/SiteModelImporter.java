@@ -91,6 +91,7 @@ public final class SiteModelImporter {
      */
     public static Imported importModel(Path repository, int id, String name, String trigger, int turn) throws IOException {
         JsonObject root = project(id);
+        playedAnimation(root);
         String title = "";
         String author = "";
         try {
@@ -340,6 +341,59 @@ public final class SiteModelImporter {
             // no curve: a straight line
         }
         return progress;
+    }
+
+    /**
+     * A project can hold several animations, listed in "listAnim" with a number each: the keys of the first are
+     * stored in "animation", those of number n in "animation_n". A project whose first animation was deleted only has
+     * the latter. The first listed animation that has keys is the one imported: its keys are moved to "animation",
+     * where the rest of this class reads them.
+     */
+    private static void playedAnimation(JsonObject root) {
+        if (!root.has("listAnim") || !root.get("listAnim").isJsonArray()) {
+            return;
+        }
+        for (JsonElement listed : root.getAsJsonArray("listAnim")) {
+            if (!listed.isJsonObject() || !listed.getAsJsonObject().has("id")) {
+                continue;
+            }
+            String number = text(listed.getAsJsonObject(), "id");
+            String field = number.equals("1") ? "animation" : "animation_" + number;
+            if (hasKeys(root, field)) {
+                if (!field.equals("animation")) {
+                    moveKeys(root, field);
+                }
+                return;
+            }
+        }
+    }
+
+    private static boolean hasKeys(JsonObject node, String field) {
+        if (node.has(field) && node.get(field).isJsonArray() && node.getAsJsonArray(field).size() > 1) {
+            return true;
+        }
+        if (node.has("children") && node.get("children").isJsonArray()) {
+            for (JsonElement child : node.getAsJsonArray("children")) {
+                if (child.isJsonObject() && hasKeys(child.getAsJsonObject(), field)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void moveKeys(JsonObject node, String field) {
+        node.remove("animation");
+        if (node.has(field)) {
+            node.add("animation", node.get(field));
+        }
+        if (node.has("children") && node.get("children").isJsonArray()) {
+            for (JsonElement child : node.getAsJsonArray("children")) {
+                if (child.isJsonObject()) {
+                    moveKeys(child.getAsJsonObject(), field);
+                }
+            }
+        }
     }
 
     private static JsonArray keys(JsonObject node) {
