@@ -1064,9 +1064,38 @@ public final class DisplayRenderer implements Listener {
 
     private void showAll(Viewer viewer, List<PlacedDisplay> list) {
         for (PlacedDisplay placed : list) {
-            if (inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed)) && viewer.shown.add(placed)) {
-                attach(viewer, placed);
+            if (!inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed)) || viewer.shown.contains(placed)) {
+                continue;
             }
+            if (!chunkSent(viewer.player, placed.chunkX(), placed.chunkZ())) {
+                // the terrain first: a player who just arrived gets the decorations of a chunk once he has the chunk
+                viewer.stale = true;
+                continue;
+            }
+            viewer.shown.add(placed);
+            attach(viewer, placed);
+        }
+    }
+
+    // Paper only: whether the server has sent a chunk to the player yet
+    private static final java.lang.reflect.Method CHUNK_SENT = chunkSentMethod();
+
+    private static java.lang.reflect.Method chunkSentMethod() {
+        try {
+            return Player.class.getMethod("isChunkSent", long.class);
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
+
+    private static boolean chunkSent(Player player, int chunkX, int chunkZ) {
+        if (CHUNK_SENT == null) {
+            return true;
+        }
+        try {
+            return (boolean) CHUNK_SENT.invoke(player, (long) chunkX & 0xffffffffL | ((long) chunkZ & 0xffffffffL) << 32);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return true;
         }
     }
 
