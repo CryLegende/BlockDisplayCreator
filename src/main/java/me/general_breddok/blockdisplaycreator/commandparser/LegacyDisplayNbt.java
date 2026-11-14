@@ -33,8 +33,30 @@ public class LegacyDisplayNbt {
     private static final Pattern STATE_ID = Pattern.compile("\"?(?:id|Name)\"?:\"([^\"]+)\"");
     private static final Pattern STATE_PROPERTIES = Pattern.compile("\"?(?:properties|Properties)\"?:\\{([^{}]*)}");
     private static final Pattern DISPLAY_TYPE = Pattern.compile("id:\"minecraft:(block|item|text)_display\"");
-    /** The chain block and item became {@code iron_chain} (copper chains were added); {@code minecraft:chain} is unknown on 26.x. */
-    private static final Pattern RENAMED_CHAIN = Pattern.compile("\"minecraft:chain(?=[\\[\"])");
+
+    /**
+     * A block and item id Minecraft renamed. BDEngine projects keep the names of the version they were made in; the
+     * editor turns them into the current name and writes, on export, the name the target version wants. These are
+     * the three renames of its table ({@code ID_ALIASES} and {@code minecraftIdForExport}), with the same limits:
+     * {@code grass} before 1.20.3, {@code chain} before 1.21.9, {@code grass_path} never (renamed before 1.19.4).
+     *
+     * @param old     name before the rename
+     * @param current name since
+     * @param since   first version with the current name
+     */
+    private record Renamed(String old, String current, MinecraftVersion since) {
+    }
+
+    private static final List<Renamed> RENAMED = List.of(
+            new Renamed("grass", "short_grass", MinecraftVersion.V1_20_3),
+            new Renamed("chain", "iron_chain", MinecraftVersion.V1_21_9),
+            new Renamed("grass_path", "dirt_path", MinecraftVersion.V1_19_4));
+    private static final Pattern RENAMED_ID =
+            Pattern.compile("\"minecraft:(grass|short_grass|chain|iron_chain|grass_path|dirt_path)(?=[\\[\"])");
+
+    private static MinecraftVersion serverVersion() {
+        return BlockDisplayCreator.getInstance().getVersionManager().getCurrentVersion();
+    }
 
     /**
      * @return true if the running server only reads the new display NBT (verified on 26.3)
@@ -70,7 +92,46 @@ public class LegacyDisplayNbt {
             text.appendReplacement(result, Matcher.quoteReplacement(replacement));
         }
         text.appendTail(result);
-        return RENAMED_CHAIN.matcher(result.toString()).replaceAll("\"minecraft:iron_chain");
+        return renameIds(result.toString());
+    }
+
+    /**
+     * @param id a block or item id without namespace, in any of its names (old or current)
+     * @return the name the running server knows for it; any other id is returned as is
+     */
+    public String idForServer(String id) {
+        return idForVersion(id, serverVersion());
+    }
+
+    String idForVersion(String id, MinecraftVersion version) {
+        for (Renamed renamed : RENAMED) {
+            if (id.equals(renamed.old()) || id.equals(renamed.current())) {
+                return version.isAtLeast(renamed.since()) ? renamed.current() : renamed.old();
+            }
+        }
+        return id;
+    }
+
+    /**
+     * Rewrites a summon command for the running server: the form of the block states on 26.3 and later, and the
+     * names of the renamed blocks and items on every version.
+     */
+    public String forServer(String nbt) {
+        return serverNeedsModernNbt() ? modernize(nbt) : renameIds(nbt);
+    }
+
+    private String renameIds(String nbt) {
+        return renameIds(nbt, serverVersion());
+    }
+
+    String renameIds(String nbt, MinecraftVersion version) {
+        Matcher renamed = RENAMED_ID.matcher(nbt);
+        StringBuilder out = new StringBuilder();
+        while (renamed.find()) {
+            renamed.appendReplacement(out, Matcher.quoteReplacement("\"minecraft:" + idForVersion(renamed.group(1), version)));
+        }
+        renamed.appendTail(out);
+        return out.toString();
     }
 
     private String toSnbt(JsonElement element) {

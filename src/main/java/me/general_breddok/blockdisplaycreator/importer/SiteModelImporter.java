@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import me.general_breddok.blockdisplaycreator.commandparser.LegacyDisplayNbt;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -444,9 +445,8 @@ public final class SiteModelImporter {
         String name = text(node, "name");
         int bracket = name.indexOf('[');
         String id = (bracket < 0 ? name : name.substring(0, bracket)).trim();
-        if (id.equals("chain")) {
-            id = "iron_chain"; // renamed in 1.21.9, "chain" is unknown on 26.x
-        }
+        id = LegacyDisplayNbt.idForServer(id); // a project keeps the names of its time, the server wants its own
+        boolean modern = LegacyDisplayNbt.serverNeedsModernNbt();
         String properties = bracket < 0 ? "" : name.substring(bracket + 1, name.lastIndexOf(']') < 0 ? name.length() : name.lastIndexOf(']'));
         StringBuilder out = new StringBuilder();
         if ("item".equals(kind(node))) {
@@ -463,9 +463,9 @@ public final class SiteModelImporter {
             }
             out.append("},item_display:\"").append(display).append('"');
         } else {
-            out.append("{id:\"minecraft:block_display\",block_state:{id:\"minecraft:").append(id).append('"');
+            out.append("{id:\"minecraft:block_display\",block_state:{").append(modern ? "id" : "Name").append(":\"minecraft:").append(id).append('"');
             if (!properties.isBlank()) {
-                out.append(",properties:{");
+                out.append(modern ? ",properties:{" : ",Properties:{");
                 boolean first = true;
                 for (String property : properties.split(",")) {
                     int equals = property.indexOf('=');
