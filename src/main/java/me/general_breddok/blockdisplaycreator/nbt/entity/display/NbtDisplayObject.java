@@ -214,6 +214,47 @@ public class NbtDisplayObject extends NbtEntityObject implements NbtDisplay {
         return quaternionf;
     }
 
+    /**
+     * Makes the display bigger or smaller by a factor around the origin of its model (the centre of the block, at
+     * floor level): the matrix is multiplied on the left by a uniform scale, which is exact for both of its forms. A
+     * matrix of 16 numbers, written row by row, has its first three rows multiplied; a compound has its translation
+     * and scale multiplied, its rotations kept. A display without transformation gets the scale alone. A culling box
+     * given in the command is scaled too.
+     */
+    public void scaleModel(float factor) {
+        BinaryTag transformation = this.get(NbtDisplayPropertyNames.TRANSFORMATION);
+        if (transformation instanceof ListBinaryTag matrix && matrix.size() == 16) {
+            Float[] values = new Float[16];
+            for (int i = 0; i < 16; i++) {
+                values[i] = matrix.getFloat(i) * (i < 12 ? factor : 1);
+            }
+            this.put(NbtDisplayPropertyNames.TRANSFORMATION, AdventureTagBuilder.floatList(values).build());
+        } else if (transformation instanceof CompoundBinaryTag compound) {
+            this.put(NbtDisplayPropertyNames.TRANSFORMATION, compound
+                    .put(NbtDisplayPropertyNames.TRANSLATION, scaledVector(compound.getList(NbtDisplayPropertyNames.TRANSLATION), factor, 0))
+                    .put(NbtDisplayPropertyNames.SCALE, scaledVector(compound.getList(NbtDisplayPropertyNames.SCALE), factor, 1)));
+        } else if (transformation == null) {
+            this.put(NbtDisplayPropertyNames.TRANSFORMATION, AdventureTagBuilder.floatList(new Float[]{
+                    factor, 0f, 0f, 0f, 0f, factor, 0f, 0f, 0f, 0f, factor, 0f, 0f, 0f, 0f, 1f}).build());
+        }
+        Float width = this.getDisplayWidth();
+        if (width != null && this.get(NbtDisplayPropertyNames.WIDTH) != null) {
+            this.setDisplayWidth(width * factor);
+        }
+        Float height = this.getDisplayHeight();
+        if (height != null && this.get(NbtDisplayPropertyNames.HEIGHT) != null) {
+            this.setDisplayHeight(height * factor);
+        }
+    }
+
+    private static BinaryTag scaledVector(ListBinaryTag vector, float factor, float byDefault) {
+        Float[] values = new Float[3];
+        for (int i = 0; i < 3; i++) {
+            values[i] = (vector.size() == 3 ? vector.getFloat(i) : byDefault) * factor;
+        }
+        return AdventureTagBuilder.floatList(values).build();
+    }
+
     public void setTransformation(Transformation transformation, boolean compound) {
         if (transformation == null) {
             this.remove(NbtDisplayPropertyNames.TRANSFORMATION);

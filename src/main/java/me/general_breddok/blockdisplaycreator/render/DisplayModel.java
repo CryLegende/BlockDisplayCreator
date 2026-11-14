@@ -41,9 +41,15 @@ final class DisplayModel {
      * Whether one of its animations plays in a loop.
      */
     final boolean loops;
+    /**
+     * How far, in blocks, players are sent the model: its file's {@code display.view-distance}, 0 for the distance
+     * the world tracks display entities at.
+     */
+    final int viewDistance;
 
-    private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations) {
+    private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance) {
         this.name = definition.getName();
+        this.viewDistance = viewDistance;
         this.sidesCount = definition.getSidesCount();
         this.hitboxSignature = BDCCustomBlockService.hitboxSignature(definition);
         this.elements = elements;
@@ -77,12 +83,13 @@ final class DisplayModel {
      * Reads the model of a custom block by summoning it for an instant, far above the given chunk, which must be
      * loaded with its entities.
      *
-     * @param animations the {@code animations} section of its file, or null
-     * @param problems   receives what could not be read of its animations
+     * @param animations   the {@code animations} section of its file, or null
+     * @param viewDistance how far players are sent it, in blocks, 0 for the world's distance
+     * @param problems     receives what could not be read of its animations
      * @return the model, without any element when the summon commands of the block create nothing
      */
     static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
-                             ConfigurationSection animations, List<String> problems) {
+                             ConfigurationSection animations, int viewDistance, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -107,7 +114,7 @@ final class DisplayModel {
             }
         }
         List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
-        return new DisplayModel(definition, List.copyOf(read.isEmpty() ? withCullingBox(nms, elements) : elements), read);
+        return new DisplayModel(definition, List.copyOf(read.isEmpty() ? withCullingBox(nms, elements) : elements), read, viewDistance);
     }
 
     /**

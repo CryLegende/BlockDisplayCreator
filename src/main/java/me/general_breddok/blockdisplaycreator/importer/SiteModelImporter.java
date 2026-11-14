@@ -900,6 +900,8 @@ public final class SiteModelImporter {
             out.append(", by ").append(author.replace('\n', ' '));
         }
         out.append('\n');
+        // the size of the whole model, click boxes and animations included
+        out.append("scale: 1\n");
         out.append("display:\n  spawn-command:\n  - ").append(summon).append("\n\n");
         out.append("central-material: AIR\n\nsides-count: 8\n\n");
         out.append("item:\n  material: LANTERN\n  name: '&e").append(name.replace('_', ' ').replace("'", "''")).append("'\n")

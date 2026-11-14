@@ -91,6 +91,11 @@ public final class DisplayRenderer implements Listener {
     private final Set<String> reportedModels = new HashSet<>();
     private final Set<ChunkTask> retryChunks = new HashSet<>();
     private final Map<String, Integer> ranges = new HashMap<>();
+    /**
+     * The longest {@code display.view-distance} of the models read, in blocks: how far around them players look for
+     * blocks to be sent.
+     */
+    private int farthest;
     private final Queue<ChunkTask> tasks = new ConcurrentLinkedQueue<>();
     /**
      * The blocks someone sees whose model has an animation playing in a loop.
@@ -318,6 +323,7 @@ public final class DisplayRenderer implements Listener {
         this.reportedModels.clear();
         this.retryChunks.clear();
         this.ranges.clear();
+        this.farthest = 0;
         this.playing.clear();
 
         if (!isActive()) {
@@ -337,6 +343,7 @@ public final class DisplayRenderer implements Listener {
                     if (model == null) {
                         iterator.remove();
                     } else {
+                        refreshHitbox(placed, model, new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin));
                         placed.bind(model, this.nms);
                         show(placed);
                     }
@@ -607,16 +614,24 @@ public final class DisplayRenderer implements Listener {
             return;
         }
 
+        refreshHitbox(placed, model, data);
+
+        placed.bind(model, this.nms);
+        list.add(placed);
+        show(placed);
+    }
+
+    /**
+     * Replaces the interactions and collisions of a placed block when its file no longer describes the ones it has:
+     * a click box changed by hand, or a new scale.
+     */
+    private void refreshHitbox(PlacedDisplay placed, DisplayModel model, CustomBlockData data) {
         if (!model.hitboxSignature.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
                 && this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service
                 && service.refreshHitbox(placed.base())) {
             this.hitboxes++;
             scheduleSummary();
         }
-
-        placed.bind(model, this.nms);
-        list.add(placed);
-        show(placed);
     }
 
     /**
@@ -743,7 +758,7 @@ public final class DisplayRenderer implements Listener {
         }
         List<String> problems = new ArrayList<>();
         try {
-            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), problems);
+            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), viewDistance(name), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
                 this.plugin.getLogger().log(Level.WARNING, "Could not read the display entities of the custom block " + name, e);
@@ -763,7 +778,28 @@ public final class DisplayRenderer implements Listener {
         }
         this.unavailableModels.remove(name);
         this.models.put(name, model);
+        // players moving look that much further for blocks; the blocks of this model are shown as they are added
+        this.farthest = Math.max(this.farthest, model.viewDistance);
         return model;
+    }
+
+    /**
+     * The {@code display.view-distance} of the file of a custom block, in blocks, or 0 when it has none.
+     */
+    private int viewDistance(String name) {
+        if (this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
+                && storage.getCustomBlockRepository() != null) {
+            CustomBlockConfigurationFile file = storage.getCustomBlockRepository().getFile(name);
+            if (file != null) {
+                try {
+                    return Math.round(me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockYamlFile.viewDistance(file.get("display.view-distance")));
+                } catch (IllegalArgumentException e) {
+                    // the block itself does not load with it
+                    return 0;
+                }
+            }
+        }
+        return 0;
     }
 
     /**
@@ -801,7 +837,7 @@ public final class DisplayRenderer implements Listener {
         UUID world = placed.world.getUID();
         for (Viewer viewer : this.viewers.values()) {
             if (!viewer.stale && world.equals(viewer.world)
-                    && inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed.world))
+                    && inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed))
                     && viewer.shown.add(placed)) {
                 attach(viewer, placed);
             }
@@ -968,12 +1004,13 @@ public final class DisplayRenderer implements Listener {
         viewer.chunkX = chunkX;
         viewer.chunkZ = chunkZ;
         viewer.stale = false;
-        int radius = radius(world);
+        // the chunks to look in: those of the model seen from the furthest away
+        int radius = Math.max(radius(world), radius(world, this.farthest));
 
         List<PlacedDisplay> leaving = null;
         for (Iterator<PlacedDisplay> iterator = viewer.shown.iterator(); iterator.hasNext(); ) {
             PlacedDisplay placed = iterator.next();
-            if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius)) {
+            if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius(placed))) {
                 iterator.remove();
                 placed.viewers.remove(viewer);
                 if (placed.viewers.isEmpty()) {
@@ -1027,7 +1064,7 @@ public final class DisplayRenderer implements Listener {
 
     private void showAll(Viewer viewer, List<PlacedDisplay> list) {
         for (PlacedDisplay placed : list) {
-            if (viewer.shown.add(placed)) {
+            if (inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed)) && viewer.shown.add(placed)) {
                 attach(viewer, placed);
             }
         }
@@ -1035,6 +1072,18 @@ public final class DisplayRenderer implements Listener {
 
     private static boolean inRange(int dx, int dz, int radius) {
         return dx * dx + dz * dz <= radius * radius + radius;
+    }
+
+    /**
+     * How many chunks away a custom block is shown: as far as its model asks, or as the world tracks display
+     * entities, within the chunks the server sends.
+     */
+    private int radius(PlacedDisplay placed) {
+        return placed.model == null || placed.model.viewDistance <= 0 ? radius(placed.world) : radius(placed.world, placed.model.viewDistance);
+    }
+
+    private static int radius(World world, int blocks) {
+        return blocks <= 0 ? 0 : Math.max(1, Math.min((blocks + 15) >> 4, world.getViewDistance()));
     }
 
     /**

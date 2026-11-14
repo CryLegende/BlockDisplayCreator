@@ -145,6 +145,9 @@ final class DisplayAnimation {
         if (entries.isEmpty()) {
             throw new IllegalArgumentException("it has no frames");
         }
+        // moves, pivots and whole matrices are written for the model at size 1: they follow its scale
+        float scale = me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockYamlFile.modelScale(
+                section.getRoot() == null ? null : section.getRoot().get("scale"));
         List<Frame> frames = new ArrayList<>();
         int end = 1;
         for (Map<?, ?> entry : entries) {
@@ -155,9 +158,9 @@ final class DisplayAnimation {
 
             List<?>[] moving = new List<?>[parts.length];
             List<?>[] jumping = new List<?>[parts.length];
-            Vector3f pivot = entry.get("pivot") == null ? centre(parts, elements) : vector(entry.get("pivot"), "pivot");
+            Vector3f pivot = entry.get("pivot") == null ? centre(parts, elements) : vector(entry.get("pivot"), "pivot").mul(scale);
             for (int i = 0; i < parts.length; i++) {
-                List<?>[] values = pose(entry, pivot, elements.get(parts[i]), parts.length, over, nms);
+                List<?>[] values = pose(entry, pivot, elements.get(parts[i]), parts.length, over, scale, nms);
                 moving[i] = values[0];
                 jumping[i] = values[1];
             }
@@ -191,12 +194,12 @@ final class DisplayAnimation {
      *
      * @return the synced values that take the entity there over the frame's time, then those that jump there
      */
-    private static List<?>[] pose(Map<?, ?> frame, Vector3f pivot, DisplayModel.Element element, int partCount, int over, NmsBridge nms) {
+    private static List<?>[] pose(Map<?, ?> frame, Vector3f pivot, DisplayModel.Element element, int partCount, int over, float modelScale, NmsBridge nms) {
         Transformation rest = element.transformation();
         Object absolute = frame.get("transformation");
         Object scale = frame.get("scale");
         Object rotate = frame.get("rotate");
-        Vector3f move = frame.get("move") == null ? new Vector3f() : vector(frame.get("move"), "move");
+        Vector3f move = frame.get("move") == null ? new Vector3f() : vector(frame.get("move"), "move").mul(modelScale);
         Quaternionf turn = new Quaternionf();
         if (rotate != null) {
             Vector3f degrees = vector(rotate, "rotate");
@@ -231,6 +234,8 @@ final class DisplayAnimation {
                     pose.set(column, row, number(numbers.get(row * 4 + column), 0).floatValue());
                 }
             }
+            // the matrix of a part in the model at size 1, as in the summon command
+            pose.scaleLocal(modelScale);
         } else {
             pose.translate(move).translate(pivot).rotate(turn).scale(vector(scale, "scale"))
                     .translate(-pivot.x, -pivot.y, -pivot.z).mul(resting(rest));

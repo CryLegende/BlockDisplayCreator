@@ -97,8 +97,54 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
         return file.get(key);
     }
 
+    /**
+     * The size of a model relative to its file: everything in the file (the summon command, the click boxes, the
+     * collisions, the moves and pivots of its animations) is written for size 1 and multiplied by it, around the centre
+     * of the block at floor level.
+     *
+     * @param value the {@code scale} of the file, null when it has none
+     * @throws IllegalArgumentException when it is not a number above 0
+     */
+    public static float modelScale(Object value) {
+        if (value == null) {
+            return 1;
+        }
+        if (!(value instanceof Number number) || !(number.floatValue() > 0) || Float.isInfinite(number.floatValue())) {
+            throw new IllegalArgumentException("scale must be a number above 0, not " + value);
+        }
+        return number.floatValue();
+    }
+
+    /**
+     * How far a model is seen, in blocks: players are sent it up to there (within the chunks the server sends them),
+     * and its display entities are drawn up to there unless {@code display.view-range} says otherwise (a client draws
+     * a display entity up to 64 blocks times its view range).
+     *
+     * @param value the {@code display.view-distance} of the file, null when it has none
+     * @return 0 when it has none
+     * @throws IllegalArgumentException when it is not a number above 0
+     */
+    public static float viewDistance(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        if (!(value instanceof Number number) || !(number.floatValue() > 0) || Float.isInfinite(number.floatValue())) {
+            throw new IllegalArgumentException("view-distance must be a number of blocks above 0, not " + value);
+        }
+        return number.floatValue();
+    }
+
+    private float modelScale() {
+        try {
+            return modelScale(file.get(ParameterLocators.SCALE_PATH));
+        } catch (IllegalArgumentException e) {
+            throw new CustomBlockLoadException(e, "&cUnable to load block &6%s&r&c, parameter %s: %s", getName(), ParameterLocators.SCALE_PATH, e.getMessage());
+        }
+    }
+
     public List<ConfiguredInteraction> getConfiguredInteractions() {
         List<ConfiguredInteraction> configuredInteractions = new ArrayList<>();
+        float scale = modelScale();
 
         YamlData<Float> floatYamlData = new YamlData<>(file, TypeTokens.FLOAT);
         YamlData<Vector> vectorYamlData = new YamlData<>(file, TypeTokens.VECTOR);
@@ -142,6 +188,11 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
                 offset = null;
             }
 
+            if (scale != 1) {
+                width *= scale;
+                height *= scale;
+                offset = offset == null ? null : offset.clone().multiply(scale);
+            }
 
             InteractionSummoner interactionSummoner = new InteractionSummoner(width, height);
             InteractionHandlerDta interactionHandlerDta = null;
@@ -167,6 +218,7 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
 
     public List<ConfiguredCollision> getConfiguredCollisions() {
         List<ConfiguredCollision> configuredCollisions = new ArrayList<>();
+        float scale = modelScale();
 
         ConfigurationSection collisionSection = file.getConfigurationSection(ParameterLocators.COLLISION_PATH);
 
@@ -222,6 +274,11 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
                 disableBelow1_20_5 = booleanYamlData.get(collisionPath + ".disable-below-1_20_5", false);
             } catch (ConfigurationDataTypeMismatchException e) {
                 disableBelow1_20_5 = false;
+            }
+
+            if (scale != 1) {
+                size *= scale;
+                offset = offset == null ? null : offset.clone().multiply(scale);
             }
 
             ShulkerSummoner summoner = new ShulkerSummoner();
@@ -392,9 +449,18 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
 
     public List<SummonDisplayCommandLine> setDisplayParameters(List<SummonDisplayCommandLine> displaySummonCommands) {
         Color glowColorOverride = this.getDisplayColor();
+        float scale = modelScale();
 
         boolean glowing = file.get(ParameterLocators.Display.GLOWING, false);
-        Float viewRange = file.get(ParameterLocators.Display.VIEW_RANGE);
+        Float configuredViewRange = file.get(ParameterLocators.Display.VIEW_RANGE);
+        float viewDistance;
+        try {
+            viewDistance = viewDistance(file.get(ParameterLocators.Display.VIEW_DISTANCE_PATH));
+        } catch (IllegalArgumentException e) {
+            throw new CustomBlockLoadException(e, "&cUnable to load block &6%s&r&c, parameter %s: %s", getName(), ParameterLocators.Display.VIEW_DISTANCE_PATH, e.getMessage());
+        }
+        // a client draws a display entity up to 64 blocks times its view range
+        Float viewRange = configuredViewRange == null && viewDistance > 0 ? Float.valueOf(viewDistance / 64f) : configuredViewRange;
         Float shadowRadius = file.get(ParameterLocators.Display.SHADOW_RADIUS);
         Float shadowStrength = file.get(ParameterLocators.Display.SHADOW_STRENGTH);
         Display.Brightness brightness = file.get(ParameterLocators.Display.BRIGHTNESS);
@@ -452,6 +518,14 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
             if (glowColorOverride != null) {
                 nbtDisplay.setGlowColorOverride(glowColorOverride);
                 nbtPassengers.forEach(passenger -> passenger.setGlowColorOverride(glowColorOverride));
+                changed = true;
+            }
+
+            if (scale != 1) {
+                if (nbtDisplay instanceof NbtDisplayObject root) {
+                    root.scaleModel(scale);
+                }
+                nbtPassengers.forEach(passenger -> passenger.scaleModel(scale));
                 changed = true;
             }
 
@@ -719,6 +793,7 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
         ConfigLocator<Short> SIDES_COUNT = new ConfigLocator<>("sides-count", TypeTokens.SHORT);
         ConfigLocator<String> SAVE_SYSTEM = new ConfigLocator<>("save-system", TypeTokens.STRING);
 
+        String SCALE_PATH = "scale";
         String INTERACTION_PATH = "interactions";
         String COLLISION_PATH = "collisions";
 
@@ -748,6 +823,7 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
             ConfigLocator<Boolean> USE_PLACEHOLDER = new ConfigLocator<>(DISPLAY_PATH + ".use-placeholder", TypeTokens.BOOLEAN);
             ConfigLocator<Boolean> GLOWING = new ConfigLocator<>(DISPLAY_PATH + ".glowing", TypeTokens.BOOLEAN);
             ConfigLocator<Float> VIEW_RANGE = new ConfigLocator<>(DISPLAY_PATH + ".view-range", TypeTokens.FLOAT);
+            String VIEW_DISTANCE_PATH = DISPLAY_PATH + ".view-distance";
             ConfigLocator<DirectedVector> TRANSLATION = new ConfigLocator<>(DISPLAY_PATH + ".translation", TypeTokens.DIRECTED_VECTOR);
             ConfigLocator<org.bukkit.entity.Display.Billboard> BILLBOARD = new ConfigLocator<>(DISPLAY_PATH + ".billboard", TypeTokens.BILLBOARD);
             ConfigLocator<org.bukkit.entity.Display.Brightness> BRIGHTNESS = new ConfigLocator<>(DISPLAY_PATH + ".brightness", TypeTokens.BRIGHTNESS);
