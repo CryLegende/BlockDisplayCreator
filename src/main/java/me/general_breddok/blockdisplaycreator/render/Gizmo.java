@@ -137,7 +137,7 @@ final class Gizmo {
         this.summonedPitch = target.model.elements.get(0).pitch();
 
         float[] extent = target.model.extent();
-        this.scale = Math.max(0.6, Math.min(3.0, Math.max(extent[0], extent[1]) * 0.6));
+        this.scale = Math.max(1.0, Math.min(3.0, Math.max(extent[0], extent[1]) * 0.8));
 
         read(target.world, target.chunkX(), target.chunkZ());
 
