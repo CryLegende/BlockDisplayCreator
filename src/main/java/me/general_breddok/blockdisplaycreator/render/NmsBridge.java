@@ -225,6 +225,7 @@ final class NmsBridge {
         private final Object heightAccessor;
         private final Method accessorId;
         private final Method valueId;
+        private final Method valueOf;
 
         Poses(ClassLoader server) throws ReflectiveOperationException {
             // the server splits a matrix into the translation, rotations and scale a display entity is made of
@@ -260,6 +261,7 @@ final class NmsBridge {
             this.createValue = value.getMethod("create", accessor, Object.class);
             this.accessorId = accessor.getMethod("id");
             this.valueId = value.getMethod("id");
+            this.valueOf = value.getMethod("value");
         }
 
         /**
@@ -279,6 +281,39 @@ final class NmsBridge {
             boxed.add(this.createValue.invoke(null, this.widthAccessor, width));
             boxed.add(this.createValue.invoke(null, this.heightAccessor, height));
             return List.copyOf(boxed);
+        }
+
+        /**
+         * The synced values of a display entity with its size multiplied: the translation and the scale of its
+         * transformation, and the box it is culled by. A scale left out (the default one) is given.
+         */
+        List<?> scaled(List<?> values, float factor) throws ReflectiveOperationException {
+            Object translationId = this.accessorId.invoke(this.translationAccessor);
+            Object scaleId = this.accessorId.invoke(this.scaleAccessor);
+            Object widthId = this.accessorId.invoke(this.widthAccessor);
+            Object heightId = this.accessorId.invoke(this.heightAccessor);
+            List<Object> out = new java.util.ArrayList<>(values.size() + 1);
+            boolean hasScale = false;
+            for (Object value : values) {
+                Object id = this.valueId.invoke(value);
+                Object current = this.valueOf.invoke(value);
+                if (id.equals(translationId)) {
+                    out.add(this.createValue.invoke(null, this.translationAccessor, new Vector3f((org.joml.Vector3fc) current).mul(factor)));
+                } else if (id.equals(scaleId)) {
+                    hasScale = true;
+                    out.add(this.createValue.invoke(null, this.scaleAccessor, new Vector3f((org.joml.Vector3fc) current).mul(factor)));
+                } else if (id.equals(widthId)) {
+                    out.add(this.createValue.invoke(null, this.widthAccessor, (Float) current * factor));
+                } else if (id.equals(heightId)) {
+                    out.add(this.createValue.invoke(null, this.heightAccessor, (Float) current * factor));
+                } else {
+                    out.add(value);
+                }
+            }
+            if (!hasScale) {
+                out.add(this.createValue.invoke(null, this.scaleAccessor, new Vector3f(factor, factor, factor)));
+            }
+            return List.copyOf(out);
         }
 
         private static Method either(Class<?> type, String name, String olderName) throws NoSuchMethodException {
@@ -330,6 +365,21 @@ final class NmsBridge {
             return this.poses.values(matrix, duration);
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * The synced values of a display entity with its size multiplied by a factor. Returned unchanged on a server that
+     * does not allow it.
+     */
+    List<?> scaledValues(List<?> values, float factor) {
+        if (this.poses == null || factor == 1f) {
+            return values;
+        }
+        try {
+            return this.poses.scaled(values, factor);
+        } catch (ReflectiveOperationException e) {
+            return values;
         }
     }
 

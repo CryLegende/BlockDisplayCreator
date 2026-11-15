@@ -59,12 +59,64 @@ public class DisplayRepairListener implements Listener {
     public void repairLoaded() {
         for (World world : Bukkit.getWorlds()) {
             repairAll(world.getEntitiesByClass(Display.class));
+            sweepStray(world.getEntitiesByClass(Display.class));
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onEntitiesLoad(EntitiesLoadEvent event) {
         repairAll(event.getEntities());
+        sweepStray(event.getEntities());
+    }
+
+    private final AtomicInteger swept = new AtomicInteger();
+
+    /**
+     * Removes the real display entities of custom blocks that are shown through packets: when a block was converted
+     * (or placed since), its entities are not listed in its data any more, so any real display still carrying its
+     * name and position is a leftover (an old placement, a partial conversion, a block broken without them). It
+     * would show the model a second time, and stay on screen once the block is broken.
+     */
+    private void sweepStray(Iterable<? extends Entity> entities) {
+        me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = this.plugin.getDisplayRenderer();
+        if (renderer == null || !renderer.isActive()) {
+            return;
+        }
+        List<Entity> stray = null;
+        for (Entity entity : entities) {
+            if (!(entity instanceof Display) || !entity.getPersistentDataContainer().has(CustomBlockKey.NAME, PersistentDataType.STRING)) {
+                continue;
+            }
+            Location at = CustomBlockKey.holder(entity).getLocation();
+            if (at == null || at.getWorld() == null || !at.getWorld().isChunkLoaded(at.getBlockX() >> 4, at.getBlockZ() >> 4)) {
+                continue;
+            }
+            CustomBlockData data = new CustomBlockData(at.getBlock(), this.plugin);
+            java.util.UUID[] listed = data.get(CustomBlockKey.DISPLAY_UUID, me.general_breddok.blockdisplaycreator.data.manager.PersistentDataTypes.UUID_ARRAY);
+            boolean real = data.has(CustomBlockKey.NAME) && (data.has(CustomBlockKey.DISPLAY_SPAWN_COMMAND) || (listed != null && listed.length > 0));
+            if (!real) {
+                if (stray == null) {
+                    stray = new java.util.ArrayList<>();
+                }
+                stray.add(entity);
+            }
+        }
+        if (stray == null) {
+            return;
+        }
+        List<Entity> found = stray;
+        // entities are still being added to the world while a chunk loads: they go with the next tick
+        Bukkit.getScheduler().runTask(this.plugin, () -> {
+            for (Entity entity : found) {
+                if (entity.isValid()) {
+                    BDCCustomBlockService.removeWithPassengers(entity);
+                    if (this.swept.getAndIncrement() == 0) {
+                        Bukkit.getScheduler().runTaskLater(this.plugin, () -> this.plugin.getLogger().info(
+                                "Removed " + this.swept.getAndSet(0) + " display(s) left by custom blocks shown through packets"), 200L);
+                    }
+                }
+            }
+        });
     }
 
     private void repairAll(Iterable<? extends Entity> entities) {

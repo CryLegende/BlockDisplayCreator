@@ -2,6 +2,13 @@ package me.general_breddok.blockdisplaycreator.render;
 
 import com.jeff_media.customblockdata.CustomBlockData;
 import me.general_breddok.blockdisplaycreator.BlockDisplayCreator;
+import me.general_breddok.blockdisplaycreator.common.BDCDependentPluginsManager;
+import me.general_breddok.blockdisplaycreator.custom.block.AbstractCustomBlock;
+import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockPermissions;
+import me.general_breddok.blockdisplaycreator.world.guard.WGRegionAccessChecker;
+import me.general_breddok.blockdisplaycreator.world.guard.WGRegionFlags;
+import me.general_breddok.blockdisplaycreator.world.skyblock.superior.SSBIslandAccessChecker;
+import me.general_breddok.blockdisplaycreator.world.skyblock.superior.SSBIslandPrivileges;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockKey;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
@@ -36,13 +43,15 @@ import java.util.UUID;
 import java.util.logging.Level;
 
 /**
- * Lets operators move custom blocks shown through packets: shift + right click on a block shows or hides its
- * {@link Gizmo}, and while it is shown nothing else the operator clicks has an effect in the world.
+ * Lets players move custom blocks shown through packets where they may build: shift + right click on a block shows
+ * or hides its {@link Gizmo}, and while it is shown nothing else the player clicks has an effect in the world.
+ * Where the player may place and break custom blocks (WorldGuard regions, island privileges, the block's own
+ * permissions, operators' bypass) he may move them, within that same place.
  */
 public final class GizmoManager implements Listener {
 
     /**
-     * The permission to move custom blocks; operators have it.
+     * The permission to move custom blocks: everyone has it, wherever the usual checks let them build.
      */
     public static final String PERMISSION = "bdc.gizmo";
 
@@ -79,6 +88,7 @@ public final class GizmoManager implements Listener {
         if (current != null) {
             current.close();
             if (current.target() == placed) {
+                say(player, 'e', "Gizmo &efermé&7.");
                 return;
             }
         }
@@ -86,15 +96,54 @@ public final class GizmoManager implements Listener {
             return;
         }
         try {
-            Gizmo gizmo = new Gizmo(this.renderer, this.nms, player, placed);
+            Gizmo gizmo = new Gizmo(this, this.renderer, this.nms, player, placed);
             this.sessions.put(player.getUniqueId(), gizmo);
             gizmo.status();
-            player.sendMessage(ChatColor.GOLD + "Gizmo on: aim at a part (it lights up), left click to take it, left click again to drop it. "
-                    + "Shift + right click the decoration to close. Scroll changes the step while a part is held, Shift + F (or Q) turns snapping on or off, F switches local and world axes.");
+            say(player, 'e', "Gizmo &eactivé&7 : vise une pièce, &eclic gauche&7 pour la prendre, de nouveau pour la poser.");
+            player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7Q &8: &eannuler &8· &7cube blanc &8: &eéchelle (75 à 125 %) &8· &7Shift + clic droit &8: &efermer"));
         } catch (RuntimeException e) {
             this.plugin.getLogger().log(Level.WARNING, "Could not open the gizmo of custom block " + placed.modelName, e);
-            player.sendMessage(ChatColor.RED + "The gizmo could not be opened, see the console.");
+            say(player, 'c', "Le gizmo &cn'a pas pu s'ouvrir&7.");
         }
+    }
+
+    /**
+     * Sends a message in the house style: a prefix coloured by the kind of message (a success, e information,
+     * 6 warning, c error), grey text, the words that matter in the colour.
+     */
+    void say(Player player, char kind, String text) {
+        player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&8&l« &" + kind + "&lSH &8&l» &7" + text));
+    }
+
+    /**
+     * Whether the player may move this block, or leave it at this place: where he may place and break custom blocks.
+     */
+    boolean mayEditAt(Player player, PlacedDisplay placed, Location where) {
+        BDCDependentPluginsManager dependent = this.plugin.getDependentPluginsManager();
+        if (dependent.isWorldGuardAvailable()
+                && !(WGRegionAccessChecker.checkRegionAccess(where, WGRegionFlags.PLACE_CB, player)
+                && WGRegionAccessChecker.checkRegionAccess(where, WGRegionFlags.BREAK_CB, player))) {
+            return false;
+        }
+        if (dependent.isSuperiorSkyblockAvailable()
+                && !(SSBIslandAccessChecker.checkIslandAccess(where, SSBIslandPrivileges.PLACE_CB, player)
+                && SSBIslandAccessChecker.checkIslandAccess(where, SSBIslandPrivileges.BREAK_CB, player))) {
+            return false;
+        }
+        AbstractCustomBlock definition = this.plugin.getCustomBlockService().getStorage().getAbstractCustomBlock(placed.modelName);
+        CustomBlockPermissions permissions = definition == null ? null : definition.getPermissions();
+        return permissions == null || (permissions.hasPermissions(player, CustomBlockPermissions.Type.PLACE)
+                && permissions.hasPermissions(player, CustomBlockPermissions.Type.BREAK));
+    }
+
+    /**
+     * Whether a click on this block opens (or closes) the player's gizmo: his gizmo is already on it, or he may edit it.
+     * Otherwise the click is left to the usual handling, so that shift + click on a decoration out of his reach still
+     * plays its animation.
+     */
+    private boolean opens(Player player, PlacedDisplay placed) {
+        Gizmo current = this.sessions.get(player.getUniqueId());
+        return (current != null && current.target() == placed) || mayEditAt(player, placed, placed.base());
     }
 
     private void end(Player player) {
@@ -124,16 +173,20 @@ public final class GizmoManager implements Listener {
         }
         for (Map.Entry<UUID, Gizmo> entry : new ArrayList<>(this.sessions.entrySet())) {
             Gizmo gizmo = entry.getValue();
-            boolean keep;
+            String closing;
             try {
-                keep = gizmo.tick(this.tick);
+                closing = gizmo.tick(this.tick);
             } catch (RuntimeException e) {
                 this.plugin.getLogger().log(Level.WARNING, "The gizmo of " + entry.getKey() + " failed", e);
-                keep = false;
+                closing = "failed";
             }
-            if (!keep) {
+            if (closing != null) {
                 this.sessions.remove(entry.getKey());
                 gizmo.close();
+                Player player = this.plugin.getServer().getPlayer(entry.getKey());
+                if (player != null && closing.equals("far")) {
+                    say(player, '6', "Gizmo &6fermé&7 : tu t'es &6trop éloigné&7 du modèle.");
+                }
             }
         }
     }
@@ -183,7 +236,7 @@ public final class GizmoManager implements Listener {
         }
         if (mayEdit(player)) {
             PlacedDisplay placed = placedOf(event.getRightClicked());
-            if (placed != null) {
+            if (placed != null && opens(player, placed)) {
                 event.setCancelled(true);
                 toggle(player, placed);
                 return;
@@ -198,7 +251,7 @@ public final class GizmoManager implements Listener {
     public void onInteract(PlayerInteractEvent event) {
         Player player = event.getPlayer();
         boolean editing = isEditing(player);
-        if (!editing && !justToggled(player) && !(mayEdit(player) && event.getAction() == Action.RIGHT_CLICK_BLOCK)) {
+        if (!editing && !justToggled(player) && !(event.getAction() == Action.RIGHT_CLICK_BLOCK && mayEdit(player))) {
             return;
         }
         Block block = event.getClickedBlock();
@@ -207,7 +260,7 @@ public final class GizmoManager implements Listener {
             boolean empty = held == null || held.getType().isAir();
             if ((editing || empty) && new CustomBlockData(block, this.plugin).has(CustomBlockKey.NAME)) {
                 PlacedDisplay placed = this.renderer.find(block.getWorld(), block.getX(), block.getY(), block.getZ());
-                if (placed != null) {
+                if (placed != null && opens(player, placed)) {
                     event.setCancelled(true);
                     toggle(player, placed);
                     return;
@@ -221,7 +274,7 @@ public final class GizmoManager implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)
     public void onSwing(PlayerAnimationEvent event) {
-        if (event.getAnimationType() != PlayerAnimationType.ARM_SWING) {
+        if (this.sessions.isEmpty() || event.getAnimationType() != PlayerAnimationType.ARM_SWING) {
             return;
         }
         Gizmo gizmo = this.sessions.get(event.getPlayer().getUniqueId());
@@ -232,6 +285,9 @@ public final class GizmoManager implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)
     public void onScroll(PlayerItemHeldEvent event) {
+        if (this.sessions.isEmpty()) {
+            return;
+        }
         Gizmo gizmo = this.sessions.get(event.getPlayer().getUniqueId());
         if (gizmo == null || !gizmo.isDragging()) {
             return;
@@ -263,7 +319,7 @@ public final class GizmoManager implements Listener {
         Gizmo gizmo = this.sessions.get(event.getPlayer().getUniqueId());
         if (gizmo != null) {
             event.setCancelled(true);
-            gizmo.toggleSnapping();
+            gizmo.undo();
         }
     }
 

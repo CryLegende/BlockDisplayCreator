@@ -40,13 +40,14 @@ final class PlacedDisplay {
     double[] fixedPose;
     /**
      * How an operator moved the block from where its placement puts it: x, y, z in blocks, then yaw and pitch in
-     * degrees added to its rotation. All zero for a block that stayed where it was placed.
+     * degrees added to its rotation, then the factor its size was multiplied by. Zeros and a one for a block that
+     * stayed as it was placed.
      */
-    final double[] shift = new double[5];
+    final double[] shift = {0, 0, 0, 0, 0, 1};
     /**
      * The shift its interactions and collisions were last laid out for.
      */
-    final double[] hitboxShift = new double[5];
+    final double[] hitboxShift = {0, 0, 0, 0, 0, 1};
     /**
      * Whether its display entities currently glide between positions (an operator is moving it).
      */
@@ -126,7 +127,7 @@ final class PlacedDisplay {
             DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
             List<Object> parts = new ArrayList<>(played.parts().length);
             for (int i = 0; i < played.parts().length; i++) {
-                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], played.moving()[i]));
+                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], scale() == 1 ? played.moving()[i] : nms.scaledValues(played.moving()[i], (float) scale())));
             }
             packets[frame] = nms.bundle(parts);
         }
@@ -151,7 +152,7 @@ final class PlacedDisplay {
                 int part = played.parts()[i];
                 if (!posed[part]) {
                     posed[part] = true;
-                    parts.add(nms.dataPacket(this.entityIds[part], played.jumping()[i]));
+                    parts.add(nms.dataPacket(this.entityIds[part], scale() == 1 ? played.jumping()[i] : nms.scaledValues(played.jumping()[i], (float) scale())));
                 }
             }
         }
@@ -172,27 +173,70 @@ final class PlacedDisplay {
     }
 
     /**
+     * How an entity turned by a yaw and a pitch (degrees) is oriented: the yaw about the vertical axis, then the
+     * pitch about the entity's own X axis.
+     */
+    static org.joml.Quaterniond orientation(double yaw, double pitch) {
+        return new org.joml.Quaterniond().rotationYXZ(-Math.toRadians(yaw), Math.toRadians(pitch), 0);
+    }
+
+    /**
+     * The point the block turns around when an operator turns it: the middle of what it draws.
+     */
+    org.joml.Vector3d pivot(float summonedPitch) {
+        double[] pose = pose(summonedPitch);
+        org.joml.Vector3d middle = this.model.centre().mul(scale());
+        orientation(pose[3], pose[4]).transform(middle);
+        return middle.add(pose[0], pose[1], pose[2]);
+    }
+
+    /**
      * Whether an operator moved the block.
      */
     boolean isShifted() {
-        for (double value : this.shift) {
-            if (Math.abs(value) > 1.0E-6) {
+        for (int i = 0; i < 5; i++) {
+            if (Math.abs(this.shift[i]) > 1.0E-6) {
                 return true;
             }
         }
-        return false;
+        return Math.abs(this.shift[5] - 1) > 1.0E-6;
+    }
+
+    /**
+     * The factor the size of the block was multiplied by: 1 for a block that kept its size.
+     */
+    double scale() {
+        return this.shift[5];
+    }
+
+    /**
+     * Puts the shift of the hitbox entities back to none.
+     */
+    void resetHitboxShift() {
+        java.util.Arrays.fill(this.hitboxShift, 0);
+        this.hitboxShift[5] = 1;
     }
 
     /**
      * Moves the block, and forgets the packets built for where it was.
      */
     void shift(double x, double y, double z, double yaw, double pitch) {
+        shift(x, y, z, yaw, pitch, this.shift[5]);
+    }
+
+    void shift(double x, double y, double z, double yaw, double pitch, double scale) {
+        boolean resized = Math.abs(scale - this.shift[5]) > 1.0E-9;
         this.shift[0] = x;
         this.shift[1] = y;
         this.shift[2] = z;
         this.shift[3] = yaw;
         this.shift[4] = pitch;
+        this.shift[5] = scale;
         this.spawnPacket = null;
+        if (resized && this.framePackets != null) {
+            // the poses of the frames were multiplied by the old size
+            java.util.Arrays.fill(this.framePackets, null);
+        }
     }
 
     /**
@@ -202,7 +246,7 @@ final class PlacedDisplay {
         if (!isShifted()) {
             return null;
         }
-        return String.format(Locale.ROOT, "%s;%s;%s;%s;%s", this.shift[0], this.shift[1], this.shift[2], this.shift[3], this.shift[4]);
+        return String.format(Locale.ROOT, "%s;%s;%s;%s;%s;%s", this.shift[0], this.shift[1], this.shift[2], this.shift[3], this.shift[4], this.shift[5]);
     }
 
     /**
@@ -217,18 +261,21 @@ final class PlacedDisplay {
             return;
         }
         try {
-            double[] read = new double[5];
-            for (int i = 0; i < 5; i++) {
+            double[] read = {0, 0, 0, 0, 0, 1};
+            for (int i = 0; i < Math.min(6, parts.length); i++) {
                 read[i] = Double.parseDouble(parts[i]);
             }
-            shift(read[0], read[1], read[2], read[3], read[4]);
-            System.arraycopy(read, 0, this.hitboxShift, 0, 5);
+            shift(read[0], read[1], read[2], read[3], read[4], read[5]);
+            System.arraycopy(read, 0, this.hitboxShift, 0, 6);
         } catch (NumberFormatException ignored) {
             // an unreadable shift leaves the block where it was placed
         }
     }
 
-    private double[] placedPose(float summonedPitch) {
+    /**
+     * Where the block stands and how it is turned before any shift of an operator.
+     */
+    double[] placedPose(float summonedPitch) {
         if (this.fixedPose != null) {
             return this.fixedPose;
         }
@@ -285,6 +332,9 @@ final class PlacedDisplay {
                 packets.add(nms.spawnPacket(this.entityIds[i], UUID.randomUUID(), pose[0], pose[1], pose[2], (float) pose[4], (float) pose[3], element.type()));
                 // the culling box of a model is that of a model standing upright on its block
                 List<?> data = element.upright() != null && pose[4] == 0 && this.fixedPose == null ? element.upright() : element.data();
+                if (scale() != 1) {
+                    data = nms.scaledValues(data, (float) scale());
+                }
                 if (!data.isEmpty()) {
                     packets.add(nms.dataPacket(this.entityIds[i], data));
                 }

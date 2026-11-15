@@ -44,8 +44,8 @@ permissions:
       bdc.bypass.skyblock: true
 
   bdc.gizmo:
-    description: Allows players to move and turn custom blocks shown through packets (shift + right click on one)
-    default: op
+    description: Allows players to move and turn custom blocks shown through packets (shift + right click on one), where they may place and break custom blocks
+    default: true
 
   bdc.bypass.wg:
     description: Allows players to bypass WorldGuard region checks for custom blocks

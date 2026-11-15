@@ -386,15 +386,31 @@ public final class DisplayRenderer implements Listener {
      * Moves a block to where its shift puts it, for everyone who sees it.
      */
     synchronized void shift(PlacedDisplay placed, double x, double y, double z, double yaw, double pitch) {
-        placed.shift(x, y, z, yaw, pitch);
+        shift(placed, x, y, z, yaw, pitch, placed.scale());
+    }
+
+    /**
+     * Moves a block to where its shift puts it, and gives it the size it asks, for everyone who sees it.
+     */
+    synchronized void shift(PlacedDisplay placed, double x, double y, double z, double yaw, double pitch, double scale) {
+        boolean resized = Math.abs(scale - placed.scale()) > 1.0E-9;
+        placed.shift(x, y, z, yaw, pitch, scale);
         if (placed.viewers.isEmpty()) {
             return;
         }
         List<DisplayModel.Element> elements = placed.model.elements;
-        List<Object> packets = new ArrayList<>(elements.size());
+        List<Object> packets = new ArrayList<>(elements.size() * 2);
         for (int i = 0; i < elements.size(); i++) {
             double[] pose = placed.pose(elements.get(i).pitch());
             packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1], pose[2], (float) pose[3], (float) pose[4]));
+            if (resized && this.nms.canAnimate()) {
+                // each part goes to its resting pose, multiplied by the new size; a loop corrects it at its next frame
+                org.bukkit.util.Transformation rest = elements.get(i).transformation();
+                float k = (float) scale;
+                packets.add(this.nms.dataPacket(placed.entityIds[i], this.nms.poseValues(new org.joml.Vector3f(rest.getTranslation()).mul(k),
+                        new org.joml.Quaternionf(rest.getLeftRotation()), new org.joml.Vector3f(rest.getScale()).mul(k),
+                        new org.joml.Quaternionf(rest.getRightRotation()), GLIDE_TICKS)));
+            }
         }
         Object packet = this.nms.bundle(packets);
         for (Viewer viewer : placed.viewers) {
@@ -415,9 +431,25 @@ public final class DisplayRenderer implements Listener {
         } else {
             data.set(CustomBlockKey.SHIFT, PersistentDataType.STRING, text);
         }
-        if (BDCCustomBlockService.shiftHitbox(data, placed.base(), placed.hitboxShift, placed.shift)) {
-            System.arraycopy(placed.shift, 0, placed.hitboxShift, 0, 5);
+        if (BDCCustomBlockService.shiftHitbox(data, placed.placedPose(placed.model.elements.get(0).pitch()), placed.hitboxShift, placed.shift)) {
+            System.arraycopy(placed.shift, 0, placed.hitboxShift, 0, 6);
         }
+    }
+
+    /**
+     * Where the item of a broken block appears: in the middle of the model, where an operator may have moved it.
+     *
+     * @return null when the block was not moved
+     */
+    @Nullable
+    public synchronized Location dropPoint(Location block) {
+        PlacedDisplay placed = block.getWorld() == null ? null : find(block.getWorld(), block.getBlockX(), block.getBlockY(), block.getBlockZ());
+        if (placed == null || !placed.isShifted()) {
+            return null;
+        }
+        float pitch = placed.model.elements.get(0).pitch();
+        org.joml.Vector3d pivot = placed.pivot(pitch);
+        return new Location(placed.world, pivot.x, placed.pose(pitch)[1] + 0.25, pivot.z);
     }
 
     // ---------- Reload, reset, shutdown ----------
@@ -738,6 +770,12 @@ public final class DisplayRenderer implements Listener {
         if (!model.hitboxSignature.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
                 && this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service
                 && service.refreshHitbox(placed.base())) {
+            // the new entities stand around the placement: they go where the block was moved
+            placed.resetHitboxShift();
+            float pitch = model.elements.get(0).pitch();
+            if (placed.isShifted() && BDCCustomBlockService.shiftHitbox(data, placed.placedPose(pitch), placed.hitboxShift, placed.shift)) {
+                System.arraycopy(placed.shift, 0, placed.hitboxShift, 0, 6);
+            }
             this.hitboxes++;
             scheduleSummary();
         }

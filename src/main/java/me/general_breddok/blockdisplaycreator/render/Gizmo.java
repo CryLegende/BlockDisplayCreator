@@ -36,9 +36,24 @@ final class Gizmo {
     private static final int READING_HEIGHT = 1000;
     private static final double REACH = 16;
     private static final double MAX_SHIFT = 8;
+    /**
+     * How far, in blocks, the operator may walk from the block before the tool closes by itself.
+     */
+    private static final double MAX_DISTANCE = 16;
     private static final double[] MOVE_STEPS = {0.0625, 0.125, 0.25, 0.5, 1};
     private static final double[] TURN_STEPS = {1, 2.5, 5, 15, 22.5, 45, 90};
-    private static final Material[] COLORS = {Material.RED_CONCRETE, Material.LIME_CONCRETE, Material.LIGHT_BLUE_CONCRETE};
+    private static final Material[] COLORS = {Material.RED_CONCRETE, Material.LIME_CONCRETE, Material.LIGHT_BLUE_CONCRETE, Material.WHITE_CONCRETE};
+    /**
+     * How far a block may be shrunk or grown from the size it was placed with: a quarter either way.
+     */
+    private static final double SCALE_MIN = 0.75;
+    private static final double SCALE_MAX = 1.25;
+    private static final double[] SCALE_STEPS = {0.01, 0.025, 0.05, 0.1};
+    /**
+     * Where the cube that sizes the block stands, on the diagonal of the tool.
+     */
+    private static final float CUBE_AT = 0.62f;
+    private static final double CUBE_RADIUS = 0.15;
     private static final String[] AXES = {"X", "Y", "Z"};
 
     // the shapes, for a gizmo of size 1
@@ -51,7 +66,7 @@ final class Gizmo {
     private static final double RING_THICKNESS = 0.13;
     private static final int RING_SEGMENTS = 10;
 
-    private enum Kind {MOVE_AXIS, MOVE_PLANE, TURN}
+    private enum Kind {MOVE_AXIS, MOVE_PLANE, TURN, SCALE}
 
     private static final class Piece {
         final int id;
@@ -87,6 +102,7 @@ final class Gizmo {
         }
     }
 
+    private final GizmoManager manager;
     private final DisplayRenderer renderer;
     private final NmsBridge nms;
     private final Player player;
@@ -114,7 +130,8 @@ final class Gizmo {
     private int shown;
 
     // what a drag remembers from the moment the part was taken
-    private final double[] shiftStart = new double[5];
+    private final double[] shiftStart = new double[6];
+    private int scaleStep = 2;
     private final Vector3d dragOrigin = new Vector3d();
     private final Vector3d dragAxis = new Vector3d();
     private final Vector3d dragU = new Vector3d();
@@ -125,25 +142,37 @@ final class Gizmo {
     private double angleTotal;
     private double basePitch;
     private String readout = "";
+    private final Vector3d pivotStart = new Vector3d();
+    private final Vector3d centre;
+    private final Vector3d lastEye = new Vector3d(Double.NaN, 0, 0);
+    private final Vector3d lastLook = new Vector3d();
+    /**
+     * The shifts the block had before each part that was dropped, latest first: what the undo goes back to.
+     */
+    private final java.util.ArrayDeque<double[]> history = new java.util.ArrayDeque<>();
 
     /**
      * Shows the tool around a block, to its operator only.
      */
-    Gizmo(DisplayRenderer renderer, NmsBridge nms, Player player, PlacedDisplay target) {
+    Gizmo(GizmoManager manager, DisplayRenderer renderer, NmsBridge nms, Player player, PlacedDisplay target) {
+        this.manager = manager;
         this.renderer = renderer;
         this.nms = nms;
         this.player = player;
         this.target = target;
         this.summonedPitch = target.model.elements.get(0).pitch();
 
-        float[] extent = target.model.extent();
-        this.scale = Math.max(1.0, Math.min(3.0, Math.max(extent[0], extent[1]) * 0.8));
+        float[] box = target.model.bounds();
+        this.centre = target.model.centre();
+        double size = Math.max(box[3] - box[0], Math.max(box[4] - box[1], box[5] - box[2]));
+        this.scale = Math.max(1.0, Math.min(3.0, size * 0.7));
 
         read(target.world, target.chunkX(), target.chunkZ());
 
         build();
         double[] pose = target.pose(this.summonedPitch);
-        this.origin.set(pose[0], pose[1], pose[2]);
+        // the tool stands in the middle of the model, which is also what the model turns around
+        this.origin.set(target.pivot(this.summonedPitch));
         this.yaw = pose[3];
         updateFrames();
 
@@ -207,7 +236,7 @@ final class Gizmo {
 
     private void build() {
         for (int axis = 0; axis < 3; axis++) {
-            Handle arrow = new Handle(Kind.MOVE_AXIS, axis, "Move " + AXES[axis], axis);
+            Handle arrow = new Handle(Kind.MOVE_AXIS, axis, "Déplacer " + AXES[axis], axis);
             float middle = (ARROW_FROM + 0.84f) / 2;
             piece(arrow, along(axis, middle, 0.84f - ARROW_FROM, 0.045f), new Quaternionf());
             piece(arrow, along(axis, 0.92f, 0.16f, 0.13f), new Quaternionf());
@@ -216,7 +245,7 @@ final class Gizmo {
         for (int normal = 0; normal < 3; normal++) {
             int a = (normal + 1) % 3;
             int b = (normal + 2) % 3;
-            Handle square = new Handle(Kind.MOVE_PLANE, normal, "Move " + AXES[a] + "/" + AXES[b], normal);
+            Handle square = new Handle(Kind.MOVE_PLANE, normal, "Déplacer " + AXES[a] + "/" + AXES[b], normal);
             Vector3f center = new Vector3f();
             Vector3f size = new Vector3f();
             set(center, a, (PLANE_FROM + PLANE_TO) / 2);
@@ -227,9 +256,14 @@ final class Gizmo {
             piece(square, new Vector3f[]{center, size}, new Quaternionf());
             this.handles.add(square);
         }
+        if (this.nms.canAnimate()) {
+            Handle cube = new Handle(Kind.SCALE, 0, "Échelle", 3);
+            piece(cube, new Vector3f[]{new Vector3f(CUBE_AT, CUBE_AT, CUBE_AT), new Vector3f(0.17f, 0.17f, 0.17f)}, new Quaternionf());
+            this.handles.add(cube);
+        }
         // pitch (around X, tipping the block forward) and yaw (around Y)
         for (int axis = 0; axis < 2; axis++) {
-            Handle ring = new Handle(Kind.TURN, axis, axis == 1 ? "Turn" : "Tilt", axis);
+            Handle ring = new Handle(Kind.TURN, axis, axis == 1 ? "Tourner" : "Pencher", axis);
             int p = (axis + 1) % 3;
             int q = (axis + 2) % 3;
             double step = Math.PI / 2 / RING_SEGMENTS;
@@ -366,9 +400,19 @@ final class Gizmo {
         switch (handle.kind) {
             case MOVE_AXIS -> t = hitArrow(handle.axis, o, d);
             case MOVE_PLANE -> t = hitSquare(handle.axis, o, d);
+            case SCALE -> t = hitCube(o, d);
             default -> t = hitArc(handle.axis, o, d);
         }
         return t < 0 ? -1 : t * this.scale;
+    }
+
+    private static double hitCube(Vector3d o, Vector3d d) {
+        Vector3d point = new Vector3d(CUBE_AT, CUBE_AT, CUBE_AT);
+        double s = new Vector3d(point).sub(o).dot(d);
+        if (s < 0) {
+            return -1;
+        }
+        return new Vector3d(o).fma(s, d).distance(point) <= CUBE_RADIUS ? s : -1;
     }
 
     private static double component(Vector3d v, int axis) {
@@ -454,23 +498,32 @@ final class Gizmo {
     // ---------- Every tick ----------
 
     /**
-     * @return false when the tool has to close: its operator left, or the block is out of reach
+     * @return null while the tool stays open, else why it has to close: "left" (its operator went away) or "far" (he
+     * walked too far from the block)
      */
-    boolean tick(int tick) {
-        if (!this.player.isOnline() || !this.player.getWorld().equals(this.target.world)
-                || this.player.getLocation().distanceSquared(new Location(this.target.world, this.origin.x, this.origin.y, this.origin.z)) > 64 * 64) {
-            return false;
+    String tick(int tick) {
+        if (!this.player.isOnline() || !this.player.getWorld().equals(this.target.world)) {
+            return "left";
         }
         Vector3d eye = eye();
+        double reach = Math.max(MAX_DISTANCE, this.scale * 8);
+        if (eye.distanceSquared(this.origin) > reach * reach) {
+            return "far";
+        }
         Vector3d look = look();
         if (this.active == null) {
-            Handle now = pick(eye, look);
-            if (now != this.hovered) {
-                light(this.hovered, false);
-                light(now, true);
-                this.hovered = now;
-                this.readout = now == null ? "" : now.label;
-                status();
+            // the part aimed at only changes when the operator looks elsewhere, or the tool moves
+            if (!eye.equals(this.lastEye, 1e-6) || !look.equals(this.lastLook, 1e-6)) {
+                this.lastEye.set(eye);
+                this.lastLook.set(look);
+                Handle now = pick(eye, look);
+                if (now != this.hovered) {
+                    light(this.hovered, false);
+                    light(now, true);
+                    this.hovered = now;
+                    this.readout = now == null ? "" : now.label;
+                    status();
+                }
             }
         } else {
             drag(eye, look);
@@ -478,7 +531,7 @@ final class Gizmo {
         if (tick % 20 == 0 || (this.active != null && tick % 3 == 0)) {
             status();
         }
-        return true;
+        return null;
     }
 
     // ---------- Taking hold and dropping ----------
@@ -491,6 +544,7 @@ final class Gizmo {
             return;
         }
         this.lastClick = tick;
+        this.lastEye.set(Double.NaN, 0, 0);
         if (this.active != null) {
             drop();
         } else if (this.hovered != null) {
@@ -501,8 +555,9 @@ final class Gizmo {
     private void grab(Handle handle) {
         Vector3d eye = eye();
         Vector3d look = look();
-        System.arraycopy(this.target.shift, 0, this.shiftStart, 0, 5);
+        System.arraycopy(this.target.shift, 0, this.shiftStart, 0, 6);
         this.dragOrigin.set(this.origin);
+        this.pivotStart.set(this.origin);
         Quaterniond frame = frameOf(handle);
         this.basePitch = this.target.pose(this.summonedPitch)[4] - this.target.shift[4];
         switch (handle.kind) {
@@ -521,6 +576,14 @@ final class Gizmo {
                 if (!planePoint(eye, look, this.hitStart)) {
                     return;
                 }
+            }
+            case SCALE -> {
+                frame.transform(this.dragAxis.set(1, 1, 1).normalize());
+                Double t = axisParam(eye, look);
+                if (t == null || t < 0.1) {
+                    return;
+                }
+                this.paramStart = t;
             }
             default -> {
                 frame.transform(this.dragAxis.set(unit(handle.axis)));
@@ -542,10 +605,75 @@ final class Gizmo {
 
     private void drop() {
         this.active = null;
-        this.renderer.commitShift(this.target);
-        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, 1.0f);
         this.hovered = null;
+        this.lastEye.set(Double.NaN, 0, 0);
+        double[] pose = this.target.pose(this.summonedPitch);
+        if (!this.manager.mayEditAt(this.player, this.target, new Location(this.target.world, this.origin.x, pose[1], this.origin.z))) {
+            // out of what the operator may touch (another island, a protected region): it goes back
+            restore(this.shiftStart);
+            this.renderer.commitShift(this.target);
+            this.manager.say(this.player, 'c', "Tu ne peux pas &cdéplacer&7 ce modèle &chors de ton île&7.");
+            this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
+            status();
+            return;
+        }
+        this.renderer.commitShift(this.target);
+        if (!java.util.Arrays.equals(this.shiftStart, this.target.shift)) {
+            this.history.push(this.shiftStart.clone());
+            while (this.history.size() > 30) {
+                this.history.removeLast();
+            }
+        }
+        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, 1.0f);
         status();
+    }
+
+    /**
+     * Q: puts back the block as it was before the part held was taken, or, with nothing held, before the part dropped
+     * last. The tool goes back as far as the block was when it was opened.
+     */
+    void undo() {
+        if (this.active != null) {
+            this.active = null;
+            restore(this.shiftStart);
+            this.renderer.commitShift(this.target);
+            this.manager.say(this.player, 'e', "Prise &eannulée&7.");
+        } else if (!this.history.isEmpty()) {
+            restore(this.history.pop());
+            this.renderer.commitShift(this.target);
+            this.manager.say(this.player, 'e', "Dernière modification &eannulée&7.");
+        } else {
+            this.manager.say(this.player, '6', "Rien à &6annuler&7.");
+            this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
+            return;
+        }
+        this.hovered = null;
+        this.lastEye.set(Double.NaN, 0, 0);
+        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BELL, 0.6f, 0.8f);
+        status();
+    }
+
+    /**
+     * Puts the block back to a shift, and the tool around it.
+     */
+    private void restore(double[] shift) {
+        this.renderer.shift(this.target, shift[0], shift[1], shift[2], shift[3], shift[4], shift[5]);
+        refreshTool();
+    }
+
+    /**
+     * Brings the tool to the middle of the block where it now stands, turned as the block is.
+     */
+    private void refreshTool() {
+        double[] pose = this.target.pose(this.summonedPitch);
+        this.origin.set(this.target.pivot(this.summonedPitch));
+        boolean turned = Math.abs(pose[3] - this.yaw) > 1e-6;
+        this.yaw = pose[3];
+        if (turned) {
+            updateFrames();
+            sendPoses();
+        }
+        sendPosition();
     }
 
     private static Vector3d unit(int axis) {
@@ -600,6 +728,7 @@ final class Gizmo {
         double z = this.shiftStart[2];
         double turn = this.shiftStart[3];
         double tilt = this.shiftStart[4];
+        double size = this.shiftStart[5];
         switch (handle.kind) {
             case MOVE_AXIS -> {
                 Double t = axisParam(eye, look);
@@ -625,6 +754,18 @@ final class Gizmo {
                 z += this.dragU.z * a + this.dragV.z * b;
                 this.readout = String.format(Locale.ROOT, "%s %+.3f %+.3f", handle.label, a, b);
             }
+            case SCALE -> {
+                Double t = axisParam(eye, look);
+                if (t == null) {
+                    return;
+                }
+                // the cube goes out by a part of its distance, the block grows by the same part
+                size = Math.max(SCALE_MIN, Math.min(SCALE_MAX, this.shiftStart[5] * Math.max(0.1, t) / this.paramStart));
+                if (this.snapping) {
+                    size = Math.max(SCALE_MIN, Math.min(SCALE_MAX, Math.round(size / SCALE_STEPS[this.scaleStep]) * SCALE_STEPS[this.scaleStep]));
+                }
+                this.readout = String.format(Locale.ROOT, "%s %d %%", handle.label, Math.round(size * 100));
+            }
             default -> {
                 Double angle = angleOn(eye, look);
                 if (angle == null) {
@@ -649,27 +790,29 @@ final class Gizmo {
                 this.readout = String.format(Locale.ROOT, "%s %+.1f°", handle.label, degrees);
             }
         }
-        double length = Math.sqrt(x * x + y * y + z * z);
-        if (length > MAX_SHIFT) {
-            double factor = MAX_SHIFT / length;
-            x *= factor;
-            y *= factor;
-            z *= factor;
+        if (handle.kind == Kind.TURN || handle.kind == Kind.SCALE) {
+            // the model turns and grows around the middle of what it draws: its position follows so that this point stays put
+            double[] base = this.target.placedPose(this.summonedPitch);
+            Vector3d moved = PlacedDisplay.orientation(base[3] + turn, base[4] + tilt).transform(new Vector3d(this.centre).mul(size));
+            x = this.pivotStart.x - moved.x - base[0];
+            y = this.pivotStart.y - moved.y - base[1];
+            z = this.pivotStart.z - moved.z - base[2];
+        } else {
+            double length = Math.sqrt(x * x + y * y + z * z);
+            if (length > MAX_SHIFT) {
+                double factor = MAX_SHIFT / length;
+                x *= factor;
+                y *= factor;
+                z *= factor;
+            }
         }
         if (Math.abs(x - this.target.shift[0]) < 1e-9 && Math.abs(y - this.target.shift[1]) < 1e-9 && Math.abs(z - this.target.shift[2]) < 1e-9
-                && Math.abs(turn - this.target.shift[3]) < 1e-9 && Math.abs(tilt - this.target.shift[4]) < 1e-9) {
+                && Math.abs(turn - this.target.shift[3]) < 1e-9 && Math.abs(tilt - this.target.shift[4]) < 1e-9
+                && Math.abs(size - this.target.shift[5]) < 1e-9) {
             return;
         }
-        this.renderer.shift(this.target, x, y, z, turn, tilt);
-        double[] pose = this.target.pose(this.summonedPitch);
-        this.origin.set(pose[0], pose[1], pose[2]);
-        boolean turned = Math.abs(pose[3] - this.yaw) > 1e-6;
-        this.yaw = pose[3];
-        if (turned) {
-            updateFrames();
-            sendPoses();
-        }
-        sendPosition();
+        this.renderer.shift(this.target, x, y, z, turn, tilt, size);
+        refreshTool();
     }
 
     private double snap(double amount, double step) {
@@ -685,6 +828,8 @@ final class Gizmo {
         int direction = down ? 1 : -1;
         if (this.active.kind == Kind.TURN) {
             this.turnStep = Math.max(0, Math.min(TURN_STEPS.length - 1, this.turnStep + direction));
+        } else if (this.active.kind == Kind.SCALE) {
+            this.scaleStep = Math.max(0, Math.min(SCALE_STEPS.length - 1, this.scaleStep + direction));
         } else {
             this.moveStep = Math.max(0, Math.min(MOVE_STEPS.length - 1, this.moveStep + direction));
         }
@@ -707,15 +852,16 @@ final class Gizmo {
     }
 
     void status() {
-        double step = this.active != null && this.active.kind == Kind.TURN ? TURN_STEPS[this.turnStep] : MOVE_STEPS[this.moveStep];
-        actionBar(ChatColor.GOLD + "Gizmo " + ChatColor.WHITE + (this.readout.isEmpty() ? "aim at a part, left click to take it" : this.readout)
-                + ChatColor.GRAY + "  |  step " + (this.snapping ? trimmed(step) : "off") + " (scroll)"
-                + "  |  snap (Shift+F)"
-                + "  |  " + (this.local ? "local" : "world") + " (F)");
+        boolean sizing = this.active != null && this.active.kind == Kind.SCALE;
+        double step = this.active != null && this.active.kind == Kind.TURN ? TURN_STEPS[this.turnStep] : sizing ? SCALE_STEPS[this.scaleStep] * 100 : MOVE_STEPS[this.moveStep];
+        actionBar("&6&lGizmo &8» &f" + (this.readout.isEmpty() ? "vise une pièce" : this.readout)
+                + " &8| &7pas &e" + (this.snapping ? trimmed(step) : "libre")
+                + " &8| &7axes &e" + (this.local ? "du modèle" : "du monde")
+                + " &8| &7annuler &eQ");
     }
 
     private void actionBar(String text) {
-        this.player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(text));
+        this.player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(ChatColor.translateAlternateColorCodes('&', text)));
     }
 
     private static String trimmed(double value) {

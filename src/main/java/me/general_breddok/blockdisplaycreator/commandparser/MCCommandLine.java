@@ -109,16 +109,22 @@ public class MCCommandLine implements CommandLine, DeepCloneable<MCCommandLine> 
         }
     }
 
+    /**
+     * Gives the player's name to {@code %player%} (the player who clicked, for a click command), then PlaceholderAPI
+     * its placeholders when it is there.
+     */
     public CommandLine setPlaceholders(Player player, PlaceholderAPIPlugin papi) {
-        String stringCommand = toString();
-
-        if (papi == null || player == null) {
+        if (player == null) {
             return this;
-        } else {
+        }
+        String original = toString();
+        String stringCommand = original.replace("%player%", player.getName());
+
+        if (papi != null) {
             stringCommand = PlaceholderAPI.setPlaceholders(player, stringCommand);
         }
 
-        return new MCCommandLine(stringCommand);
+        return stringCommand.equals(original) ? this : new MCCommandLine(stringCommand);
     }
 
     /**

@@ -397,8 +397,16 @@ public class BDCCustomBlockService implements CustomBlockService {
             return false;
         }
 
+        // where the block really stands: an operator may have moved it from where it was placed
+        DisplayRenderer shown = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        Location dropAt = shown == null ? null : shown.dropPoint(location);
+        if (dropAt == null) {
+            dropAt = location;
+        }
+
         // Remove all entities associated with the custom block
         customBlock.getDisplays().forEach(Entity::remove);
+        removeStrayDisplays(location, customBlock.getName());
         customBlock.getInteractions().forEach(Entity::remove);
         customBlock.getCollisions().forEach(collision -> {
             Entity vehicle = collision.getVehicle();
@@ -432,17 +440,17 @@ public class BDCCustomBlockService implements CustomBlockService {
                 } else if (dropMode == CustomBlockBreakSettings.DropMode.ON_GROUND) {
 
                     // Drop the item naturally on the ground
-                    world.dropItemNaturally(location, customBlockItem);
+                    world.dropItemNaturally(dropAt, customBlockItem);
                 }
             } else {
                 // Drop the item naturally on the ground
-                world.dropItemNaturally(location, customBlockItem);
+                world.dropItemNaturally(dropAt, customBlockItem);
             }
         }
 
         // Play break sound if the option is not set to silent
         if (!silentBreak) {
-            customBlock.playBreakSound(location);
+            customBlock.playBreakSound(dropAt);
         }
 
         return true;
@@ -673,36 +681,20 @@ public class BDCCustomBlockService implements CustomBlockService {
         customBlockData.set(CustomBlockKey.COLLISION_UUID, PersistentDataTypes.UUID_ARRAY, collisions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.HITBOX, PersistentDataType.STRING, signature);
 
-        // entities summoned around the placement follow a block an operator moved
-        String shift = customBlockData.get(CustomBlockKey.SHIFT, PersistentDataType.STRING);
-        if (shift != null) {
-            String[] parts = shift.split(";");
-            if (parts.length >= 5) {
-                try {
-                    double[] to = new double[5];
-                    for (int i = 0; i < 5; i++) {
-                        to[i] = Double.parseDouble(parts[i]);
-                    }
-                    shiftHitbox(customBlockData, location, new double[5], to);
-                } catch (NumberFormatException ignored) {
-                    // an unreadable shift leaves the entities where the block was placed
-                }
-            }
-        }
         return true;
     }
 
     /**
-     * Moves the interaction and collision entities of a custom block from the shift they are laid out for to another
-     * one: the block was moved by an operator. Entities turn around the placement with the yaw; the pitch is left out,
-     * a click box being a straight box anyway.
+     * Moves the interaction and collision entities of a custom block the way its model was moved by an operator: the
+     * model goes from one pose to another (a position, a yaw and a pitch), and each entity goes with it as if it
+     * were fixed to the model. A click box stays a straight box, so only its place follows the turn.
      *
-     * @param anchor the location the block was placed at, as stored on its entities
-     * @param from   x, y, z, yaw and pitch the entities are laid out for
-     * @param to     x, y, z, yaw and pitch they are moved to
-     * @return false when an entity of the block was not loaded and stays where it is
+     * @param base the position, yaw and pitch of the model before any shift
+     * @param from the shift (x, y, z, yaw, pitch, size factor) the entities are laid out for
+     * @param to   the shift they are moved to
+     * @return false when an entity of the block was not loaded: nothing is moved then
      */
-    public static boolean shiftHitbox(@NotNull CustomBlockData data, @NotNull Location anchor, double[] from, double[] to) {
+    public static boolean shiftHitbox(@NotNull CustomBlockData data, double[] base, double[] from, double[] to) {
         // nothing is moved unless every entity of the block is loaded: the others would be left behind
         List<Entity> entities = new ArrayList<>();
         for (org.bukkit.NamespacedKey key : List.of(CustomBlockKey.INTERACTION_UUID, CustomBlockKey.COLLISION_UUID)) {
@@ -718,20 +710,25 @@ public class BDCCustomBlockService implements CustomBlockService {
                 entities.add(entity);
             }
         }
-        double turn = Math.toRadians(-(to[3] - from[3]));
-        double cos = Math.cos(turn);
-        double sin = Math.sin(turn);
+        org.joml.Quaterniond before = poseOrientation(base, from);
+        org.joml.Quaterniond turn = poseOrientation(base, to).mul(before.invert());
+        org.joml.Vector3d offset = new org.joml.Vector3d();
+        double factor = from[5] == 0 ? 1 : to[5] / from[5];
+        org.bukkit.attribute.Attribute scaleAttribute = factor == 1 ? null : me.general_breddok.blockdisplaycreator.version.VersionCompat.getScaleAttribute();
         for (Entity entity : entities) {
             Entity vehicle = entity instanceof Shulker ? entity.getVehicle() : null;
             Entity moved = vehicle != null ? vehicle : entity;
             Location at = moved.getLocation();
-            double rx = at.getX() - anchor.getX() - from[0];
-            double ry = at.getY() - anchor.getY() - from[1];
-            double rz = at.getZ() - anchor.getZ() - from[2];
-            Location target = new Location(at.getWorld(),
-                    anchor.getX() + to[0] + rx * cos + rz * sin,
-                    anchor.getY() + to[1] + ry,
-                    anchor.getZ() + to[2] - rx * sin + rz * cos,
+            turn.transform(offset.set(at.getX() - base[0] - from[0], at.getY() - base[1] - from[1], at.getZ() - base[2] - from[2])).mul(factor);
+            if (factor != 1) {
+                if (entity instanceof Interaction interaction) {
+                    interaction.setInteractionWidth((float) (interaction.getInteractionWidth() * factor));
+                    interaction.setInteractionHeight((float) (interaction.getInteractionHeight() * factor));
+                } else if (entity instanceof Shulker shulker && scaleAttribute != null && shulker.getAttribute(scaleAttribute) != null) {
+                    shulker.getAttribute(scaleAttribute).setBaseValue(shulker.getAttribute(scaleAttribute).getBaseValue() * factor);
+                }
+            }
+            Location target = new Location(at.getWorld(), base[0] + to[0] + offset.x, base[1] + to[1] + offset.y, base[2] + to[2] + offset.z,
                     at.getYaw(), at.getPitch());
             if (vehicle != null) {
                 EntityUtil.teleportEntityWithPassengers(vehicle, target);
@@ -740,6 +737,46 @@ public class BDCCustomBlockService implements CustomBlockService {
             }
         }
         return true;
+    }
+
+    private static org.joml.Quaterniond poseOrientation(double[] base, double[] shift) {
+        double yaw = Location.normalizeYaw((float) (base[3] + shift[3]));
+        double pitch = Location.normalizePitch((float) (base[4] + shift[4]));
+        return new org.joml.Quaterniond().rotationYXZ(-Math.toRadians(yaw), Math.toRadians(pitch), 0);
+    }
+
+    /**
+     * Removes the real display entities that still carry a custom block's data although the block does not list them:
+     * what an old placement or a partial conversion left behind would stay on screen, with nothing to click, once
+     * the block is broken.
+     */
+    public static void removeStrayDisplays(@NotNull Location location, @NotNull String name) {
+        World world = location.getWorld();
+        if (world == null) {
+            return;
+        }
+        for (Entity entity : world.getNearbyEntities(location, 2, 4, 2, found -> found instanceof Display)) {
+            if (isDisplayOf(entity, location.getBlockX(), location.getBlockY(), location.getBlockZ(), name)) {
+                removeWithPassengers(entity);
+            }
+        }
+    }
+
+    /**
+     * Whether a display entity was summoned for the custom block of this name at this block position.
+     */
+    public static boolean isDisplayOf(@NotNull Entity entity, int x, int y, int z, @Nullable String name) {
+        CustomBlockKey.DataHolder holder = CustomBlockKey.holder(entity);
+        Location stored = holder.getLocation();
+        return stored != null && stored.getBlockX() == x && stored.getBlockY() == y && stored.getBlockZ() == z
+                && (name == null || name.equals(holder.getName()));
+    }
+
+    public static void removeWithPassengers(@NotNull Entity entity) {
+        for (Entity passenger : new ArrayList<>(entity.getPassengers())) {
+            removeWithPassengers(passenger);
+        }
+        entity.remove();
     }
 
     /**

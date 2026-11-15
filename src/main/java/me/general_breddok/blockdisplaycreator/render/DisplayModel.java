@@ -143,6 +143,50 @@ final class DisplayModel {
         return new float[]{radius, top};
     }
 
+    private float[] bounds;
+
+    /**
+     * The box that holds what the model draws at rest: its smallest corner, then its largest (x, y, z each), in
+     * blocks around the entity. All zero for a model that draws nothing.
+     */
+    float[] bounds() {
+        if (this.bounds == null) {
+            float[] box = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+            org.joml.Vector3f corner = new org.joml.Vector3f();
+            boolean any = false;
+            for (Element element : this.elements) {
+                if (!element.drawn()) {
+                    continue;
+                }
+                Transformation rest = element.transformation();
+                org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(rest.getTranslation()).rotate(rest.getLeftRotation())
+                        .scale(rest.getScale()).rotate(rest.getRightRotation());
+                float low = element.block() ? 0f : -0.5f;
+                float high = element.block() ? 1f : 0.5f;
+                for (int i = 0; i < 8; i++) {
+                    matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
+                    box[0] = Math.min(box[0], corner.x);
+                    box[1] = Math.min(box[1], corner.y);
+                    box[2] = Math.min(box[2], corner.z);
+                    box[3] = Math.max(box[3], corner.x);
+                    box[4] = Math.max(box[4], corner.y);
+                    box[5] = Math.max(box[5], corner.z);
+                    any = true;
+                }
+            }
+            this.bounds = any ? box : new float[6];
+        }
+        return this.bounds;
+    }
+
+    /**
+     * The middle of {@link #bounds()}: where an operator's tool is shown and what the block turns around.
+     */
+    org.joml.Vector3d centre() {
+        float[] b = bounds();
+        return new org.joml.Vector3d((b[0] + b[3]) / 2.0, (b[1] + b[4]) / 2.0, (b[2] + b[5]) / 2.0);
+    }
+
     /**
      * A display entity without a culling box is drawn whenever it is in range, even behind the player. A model
      * standing on its block gets one box for all its entities: a cylinder around its vertical axis, from its base
