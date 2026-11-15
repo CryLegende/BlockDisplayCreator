@@ -25,6 +25,7 @@ import me.general_breddok.blockdisplaycreator.render.DisplayRenderer;
 import me.general_breddok.blockdisplaycreator.rotation.DirectedVector;
 import me.general_breddok.blockdisplaycreator.rotation.EntityRotation;
 import me.general_breddok.blockdisplaycreator.util.ChatUtil;
+import me.general_breddok.blockdisplaycreator.util.EntityUtil;
 import me.general_breddok.blockdisplaycreator.util.EventUtil;
 import me.general_breddok.blockdisplaycreator.util.ItemUtil;
 import me.general_breddok.blockdisplaycreator.util.OperationUtil;
@@ -671,6 +672,73 @@ public class BDCCustomBlockService implements CustomBlockService {
         customBlockData.set(CustomBlockKey.INTERACTION_UUID, PersistentDataTypes.UUID_ARRAY, interactions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.COLLISION_UUID, PersistentDataTypes.UUID_ARRAY, collisions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.HITBOX, PersistentDataType.STRING, signature);
+
+        // entities summoned around the placement follow a block an operator moved
+        String shift = customBlockData.get(CustomBlockKey.SHIFT, PersistentDataType.STRING);
+        if (shift != null) {
+            String[] parts = shift.split(";");
+            if (parts.length >= 5) {
+                try {
+                    double[] to = new double[5];
+                    for (int i = 0; i < 5; i++) {
+                        to[i] = Double.parseDouble(parts[i]);
+                    }
+                    shiftHitbox(customBlockData, location, new double[5], to);
+                } catch (NumberFormatException ignored) {
+                    // an unreadable shift leaves the entities where the block was placed
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Moves the interaction and collision entities of a custom block from the shift they are laid out for to another
+     * one: the block was moved by an operator. Entities turn around the placement with the yaw; the pitch is left out,
+     * a click box being a straight box anyway.
+     *
+     * @param anchor the location the block was placed at, as stored on its entities
+     * @param from   x, y, z, yaw and pitch the entities are laid out for
+     * @param to     x, y, z, yaw and pitch they are moved to
+     * @return false when an entity of the block was not loaded and stays where it is
+     */
+    public static boolean shiftHitbox(@NotNull CustomBlockData data, @NotNull Location anchor, double[] from, double[] to) {
+        // nothing is moved unless every entity of the block is loaded: the others would be left behind
+        List<Entity> entities = new ArrayList<>();
+        for (org.bukkit.NamespacedKey key : List.of(CustomBlockKey.INTERACTION_UUID, CustomBlockKey.COLLISION_UUID)) {
+            UUID[] uuids = data.get(key, PersistentDataTypes.UUID_ARRAY);
+            if (uuids == null) {
+                continue;
+            }
+            for (UUID uuid : uuids) {
+                Entity entity = Bukkit.getEntity(uuid);
+                if (entity == null) {
+                    return false;
+                }
+                entities.add(entity);
+            }
+        }
+        double turn = Math.toRadians(-(to[3] - from[3]));
+        double cos = Math.cos(turn);
+        double sin = Math.sin(turn);
+        for (Entity entity : entities) {
+            Entity vehicle = entity instanceof Shulker ? entity.getVehicle() : null;
+            Entity moved = vehicle != null ? vehicle : entity;
+            Location at = moved.getLocation();
+            double rx = at.getX() - anchor.getX() - from[0];
+            double ry = at.getY() - anchor.getY() - from[1];
+            double rz = at.getZ() - anchor.getZ() - from[2];
+            Location target = new Location(at.getWorld(),
+                    anchor.getX() + to[0] + rx * cos + rz * sin,
+                    anchor.getY() + to[1] + ry,
+                    anchor.getZ() + to[2] - rx * sin + rz * cos,
+                    at.getYaw(), at.getPitch());
+            if (vehicle != null) {
+                EntityUtil.teleportEntityWithPassengers(vehicle, target);
+            } else {
+                moved.teleport(target);
+            }
+        }
         return true;
     }
 
@@ -753,6 +821,7 @@ public class BDCCustomBlockService implements CustomBlockService {
         customBlockData.remove(CustomBlockKey.DISPLAY_SPAWN_COMMAND);
         customBlockData.remove(CustomBlockKey.HITBOX);
         customBlockData.remove(CustomBlockKey.RENDER);
+        customBlockData.remove(CustomBlockKey.SHIFT);
 
         DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
         Block block = customBlockData.getBlock();

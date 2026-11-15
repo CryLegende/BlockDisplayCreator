@@ -33,6 +33,10 @@ public interface CustomBlockKey {
      * Where a custom block shown through packets was placed, when it is not the centre of its block.
      */
     NamespacedKey RENDER = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-render");
+    /**
+     * How far, and how turned, an operator moved a custom block shown through packets from where it was placed.
+     */
+    NamespacedKey SHIFT = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-shift");
 
     static DataHolder holder(PersistentDataHolder holder) {
         return new DataHolder(holder);

@@ -38,6 +38,19 @@ final class PlacedDisplay {
      * Where its display entities stand and how they are turned, when it differs from what its rotation gives.
      */
     double[] fixedPose;
+    /**
+     * How an operator moved the block from where its placement puts it: x, y, z in blocks, then yaw and pitch in
+     * degrees added to its rotation. All zero for a block that stayed where it was placed.
+     */
+    final double[] shift = new double[5];
+    /**
+     * The shift its interactions and collisions were last laid out for.
+     */
+    final double[] hitboxShift = new double[5];
+    /**
+     * Whether its display entities currently glide between positions (an operator is moving it).
+     */
+    boolean gliding;
 
     DisplayModel model;
     int[] entityIds;
@@ -150,6 +163,72 @@ final class PlacedDisplay {
      * real entities. The pitch only holds for an entity summoned without one.
      */
     double[] pose(float summonedPitch) {
+        double[] placed = placedPose(summonedPitch);
+        if (!isShifted()) {
+            return placed;
+        }
+        return new double[]{placed[0] + this.shift[0], placed[1] + this.shift[1], placed[2] + this.shift[2],
+                Location.normalizeYaw((float) (placed[3] + this.shift[3])), Location.normalizePitch((float) (placed[4] + this.shift[4]))};
+    }
+
+    /**
+     * Whether an operator moved the block.
+     */
+    boolean isShifted() {
+        for (double value : this.shift) {
+            if (Math.abs(value) > 1.0E-6) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Moves the block, and forgets the packets built for where it was.
+     */
+    void shift(double x, double y, double z, double yaw, double pitch) {
+        this.shift[0] = x;
+        this.shift[1] = y;
+        this.shift[2] = z;
+        this.shift[3] = yaw;
+        this.shift[4] = pitch;
+        this.spawnPacket = null;
+    }
+
+    /**
+     * The shift to store with the block, or null for a block that stayed where it was placed.
+     */
+    String shiftText() {
+        if (!isShifted()) {
+            return null;
+        }
+        return String.format(Locale.ROOT, "%s;%s;%s;%s;%s", this.shift[0], this.shift[1], this.shift[2], this.shift[3], this.shift[4]);
+    }
+
+    /**
+     * Reads back what {@link #shiftText()} stored; the hitbox entities are taken to be laid out for it.
+     */
+    void shiftText(String stored) {
+        if (stored == null || stored.isEmpty()) {
+            return;
+        }
+        String[] parts = stored.split(";");
+        if (parts.length < 5) {
+            return;
+        }
+        try {
+            double[] read = new double[5];
+            for (int i = 0; i < 5; i++) {
+                read[i] = Double.parseDouble(parts[i]);
+            }
+            shift(read[0], read[1], read[2], read[3], read[4]);
+            System.arraycopy(read, 0, this.hitboxShift, 0, 5);
+        } catch (NumberFormatException ignored) {
+            // an unreadable shift leaves the block where it was placed
+        }
+    }
+
+    private double[] placedPose(float summonedPitch) {
         if (this.fixedPose != null) {
             return this.fixedPose;
         }

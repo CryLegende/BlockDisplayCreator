@@ -118,6 +118,32 @@ final class DisplayModel {
     }
 
     /**
+     * How far what the model draws reaches at rest: its radius around the vertical axis, then its height above the
+     * floor, in blocks.
+     */
+    float[] extent() {
+        float radius = 0;
+        float top = 0;
+        org.joml.Vector3f corner = new org.joml.Vector3f();
+        for (Element element : this.elements) {
+            if (!element.drawn()) {
+                continue;
+            }
+            Transformation rest = element.transformation();
+            org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(rest.getTranslation()).rotate(rest.getLeftRotation())
+                    .scale(rest.getScale()).rotate(rest.getRightRotation());
+            float low = element.block() ? 0f : -0.5f;
+            float high = element.block() ? 1f : 0.5f;
+            for (int i = 0; i < 8; i++) {
+                matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
+                radius = Math.max(radius, (float) Math.sqrt(corner.x * corner.x + corner.z * corner.z));
+                top = Math.max(top, corner.y);
+            }
+        }
+        return new float[]{radius, top};
+    }
+
+    /**
      * A display entity without a culling box is drawn whenever it is in range, even behind the player. A model
      * standing on its block gets one box for all its entities: a cylinder around its vertical axis, from its base
      * to its top, with some room. Models that reach below their base, that move, or whose entities face the

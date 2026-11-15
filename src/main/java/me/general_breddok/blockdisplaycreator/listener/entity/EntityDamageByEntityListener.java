@@ -41,6 +41,13 @@ public class EntityDamageByEntityListener implements Listener {
         if (!(event.getDamager() instanceof Player player))
             return;
 
+        // an operator who has a gizmo open takes hold of its parts with his clicks: nothing is broken
+        me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        if (renderer != null && renderer.gizmos() != null && renderer.gizmos().isEditing(player)) {
+            event.setCancelled(true);
+            return;
+        }
+
         if (player.getGameMode() == GameMode.ADVENTURE)
             return;
 

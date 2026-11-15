@@ -44,6 +44,15 @@ final class NmsBridge {
      * without their animations.
      */
     private final Poses poses;
+    /**
+     * What teleporting an entity and setting its flags takes, or null on a server that names it otherwise: display
+     * entities can then not be moved once shown.
+     */
+    private final Moves moves;
+    /**
+     * Why {@link #moves} is missing, when it is.
+     */
+    private final Throwable movesFailure;
 
     private NmsBridge() throws ReflectiveOperationException {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -88,6 +97,112 @@ final class NmsBridge {
             poses = null;
         }
         this.poses = poses;
+
+        Moves moves;
+        Throwable failure = null;
+        try {
+            moves = new Moves(lookup, packets, vec3, this.noMovement, type.getDeclaringClass().getClassLoader());
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            moves = null;
+            failure = e;
+        }
+        this.moves = moves;
+        this.movesFailure = failure;
+    }
+
+    /**
+     * Builds the packet that teleports an entity, and the synced values that smooth the teleports of a display.
+     */
+    private static final class Moves {
+        private final MethodHandle newVec3;
+        private final MethodHandle newPosition;
+        private final MethodHandle newTeleport;
+        private final Object noMovement;
+        private final Method createValue;
+        private final Object teleportDurationAccessor;
+        private final Object flagsAccessor;
+
+        Moves(MethodHandles.Lookup lookup, String packets, Class<?> vec3, Object noMovement, ClassLoader server) throws ReflectiveOperationException {
+            Class<?> position = Class.forName("net.minecraft.world.entity.PositionMoveRotation", true, server);
+            this.newVec3 = lookup.findConstructor(vec3, MethodType.methodType(void.class, double.class, double.class, double.class));
+            this.newPosition = lookup.findConstructor(position, MethodType.methodType(void.class, vec3, vec3, float.class, float.class));
+            this.newTeleport = lookup.findConstructor(Class.forName(packets + "ClientboundTeleportEntityPacket", true, server),
+                    MethodType.methodType(void.class, int.class, position, java.util.Set.class, boolean.class));
+            this.noMovement = noMovement;
+
+            Class<?> accessor = Class.forName("net.minecraft.network.syncher.EntityDataAccessor", true, server);
+            Class<?> value = Class.forName("net.minecraft.network.syncher.SynchedEntityData$DataValue", true, server);
+            this.createValue = value.getMethod("create", accessor, Object.class);
+            this.teleportDurationAccessor = field(Class.forName("net.minecraft.world.entity.Display", true, server), "DATA_POS_ROT_INTERPOLATION_DURATION_ID");
+            this.flagsAccessor = field(Class.forName("net.minecraft.world.entity.Entity", true, server), "DATA_SHARED_FLAGS_ID");
+        }
+
+        private static Object field(Class<?> type, String name) throws ReflectiveOperationException {
+            Field field = type.getDeclaredField(name);
+            field.setAccessible(true);
+            return field.get(null);
+        }
+
+        Object teleport(int id, double x, double y, double z, float yaw, float pitch) throws Throwable {
+            Object where = this.newVec3.invoke(x, y, z);
+            Object change = this.newPosition.invoke(where, this.noMovement, yaw, pitch);
+            return this.newTeleport.invoke(id, change, java.util.Set.of(), false);
+        }
+
+        Object teleportDuration(int ticks) throws ReflectiveOperationException {
+            return this.createValue.invoke(null, this.teleportDurationAccessor, ticks);
+        }
+
+        Object flags(byte flags) throws ReflectiveOperationException {
+            return this.createValue.invoke(null, this.flagsAccessor, flags);
+        }
+    }
+
+    /**
+     * Whether display entities can be teleported once shown on this server.
+     */
+    boolean canMove() {
+        return this.moves != null;
+    }
+
+    /**
+     * Why custom blocks cannot be moved on this server, or null when they can.
+     */
+    Throwable movesFailure() {
+        return this.movesFailure;
+    }
+
+    /**
+     * The packet that teleports a shown entity, with the yaw and pitch it ends up with.
+     */
+    Object teleportPacket(int id, double x, double y, double z, float yaw, float pitch) {
+        try {
+            return this.moves.teleport(id, x, y, z, yaw, pitch);
+        } catch (Throwable e) {
+            throw failure(e);
+        }
+    }
+
+    /**
+     * The synced values that make a display entity glide to a teleport over the given ticks instead of jumping.
+     */
+    List<?> teleportDurationValues(int ticks) {
+        try {
+            return List.of(this.moves.teleportDuration(ticks));
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * The synced value that sets the flags every entity has (bit 6 glowing, 0 for none).
+     */
+    Object flagsValue(byte flags) {
+        try {
+            return this.moves.flags(flags);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /**

@@ -74,11 +74,19 @@ public final class DisplayRenderer implements Listener {
      * Ticks before a model that could not be read is read again.
      */
     private static final int MODEL_RETRY_PERIOD = 600;
+    /**
+     * Ticks a display entity takes to glide to a position it is teleported to while an operator moves it.
+     */
+    private static final int GLIDE_TICKS = 2;
     private static final String REGISTRY_FILE = "packet-display-chunks.txt";
     private static final String RESET_MARK = ";reset";
 
     private final BlockDisplayCreator plugin;
     private final NmsBridge nms;
+    /**
+     * What operators move custom blocks with, or null on a server that cannot teleport display entities.
+     */
+    private GizmoManager gizmos;
 
     private final Map<UUID, Map<Long, List<PlacedDisplay>>> index = new ConcurrentHashMap<>();
     private final Map<UUID, Viewer> viewers = new HashMap<>();
@@ -154,6 +162,13 @@ public final class DisplayRenderer implements Listener {
             DisplayRenderer renderer = new DisplayRenderer(plugin, NmsBridge.create());
             Bukkit.getPluginManager().registerEvents(renderer, plugin);
             Bukkit.getScheduler().runTaskTimer(plugin, renderer::tick, 1L, 1L);
+            if (renderer.nms.canMove()) {
+                renderer.gizmos = new GizmoManager(plugin, renderer, renderer.nms);
+                Bukkit.getPluginManager().registerEvents(renderer.gizmos, plugin);
+                Bukkit.getScheduler().runTaskTimer(plugin, renderer.gizmos::tick, 1L, 1L);
+            } else {
+                plugin.getLogger().warning("Operators cannot move custom blocks on this server: " + renderer.nms.movesFailure());
+            }
             return renderer;
         } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
             plugin.getLogger().warning("Custom blocks keep their real display entities on this server: " + e);
@@ -166,6 +181,14 @@ public final class DisplayRenderer implements Listener {
      */
     public boolean isActive() {
         return BooleanConfigValue.PACKET_DISPLAY;
+    }
+
+    /**
+     * What operators move custom blocks with, or null where display entities cannot be teleported.
+     */
+    @Nullable
+    public GizmoManager gizmos() {
+        return this.gizmos;
     }
 
     /**
@@ -310,6 +333,91 @@ public final class DisplayRenderer implements Listener {
             count += placed.entityIds.length;
         }
         return count;
+    }
+
+    // ---------- Moving blocks (operators) ----------
+
+    /**
+     * The placed block of a block position, if it is shown through packets.
+     */
+    @Nullable
+    synchronized PlacedDisplay find(World world, int x, int y, int z) {
+        Map<Long, List<PlacedDisplay>> chunks = this.index.get(world.getUID());
+        List<PlacedDisplay> list = chunks == null ? null : chunks.get(chunkKey(x >> 4, z >> 4));
+        if (list != null) {
+            for (PlacedDisplay placed : list) {
+                if (placed.x == x && placed.y == y && placed.z == z) {
+                    return placed;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The packet that makes the display entities of a block glide to the next position they are teleported to.
+     */
+    private Object glidePacket(PlacedDisplay placed) {
+        List<?> values = this.nms.teleportDurationValues(GLIDE_TICKS);
+        List<Object> packets = new ArrayList<>(placed.entityIds.length);
+        for (int id : placed.entityIds) {
+            packets.add(this.nms.dataPacket(id, values));
+        }
+        return this.nms.bundle(packets);
+    }
+
+    /**
+     * Makes the clients that see a block glide, rather than jump, to the positions it is moved to.
+     */
+    synchronized void beginShift(PlacedDisplay placed) {
+        if (placed.gliding) {
+            return;
+        }
+        placed.gliding = true;
+        if (!placed.viewers.isEmpty()) {
+            Object packet = glidePacket(placed);
+            for (Viewer viewer : placed.viewers) {
+                this.nms.send(viewer.player, packet);
+            }
+        }
+    }
+
+    /**
+     * Moves a block to where its shift puts it, for everyone who sees it.
+     */
+    synchronized void shift(PlacedDisplay placed, double x, double y, double z, double yaw, double pitch) {
+        placed.shift(x, y, z, yaw, pitch);
+        if (placed.viewers.isEmpty()) {
+            return;
+        }
+        List<DisplayModel.Element> elements = placed.model.elements;
+        List<Object> packets = new ArrayList<>(elements.size());
+        for (int i = 0; i < elements.size(); i++) {
+            double[] pose = placed.pose(elements.get(i).pitch());
+            packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1], pose[2], (float) pose[3], (float) pose[4]));
+        }
+        Object packet = this.nms.bundle(packets);
+        for (Viewer viewer : placed.viewers) {
+            this.nms.send(viewer.player, packet);
+        }
+    }
+
+    /**
+     * Stores where an operator left a block, and takes its interactions and collisions there.
+     */
+    synchronized void commitShift(PlacedDisplay placed) {
+        placed.gliding = false;
+        Block block = placed.world.getBlockAt(placed.x, placed.y, placed.z);
+        CustomBlockData data = new CustomBlockData(block, this.plugin);
+        String text = placed.shiftText();
+        if (text == null) {
+            data.remove(CustomBlockKey.SHIFT);
+        } else {
+            data.set(CustomBlockKey.SHIFT, PersistentDataType.STRING, text);
+        }
+        if (BDCCustomBlockService.shiftHitbox(data, placed.base(), placed.hitboxShift, placed.shift)) {
+            System.arraycopy(placed.shift, 0, placed.hitboxShift, 0, 5);
+        }
     }
 
     // ---------- Reload, reset, shutdown ----------
@@ -614,6 +722,7 @@ public final class DisplayRenderer implements Listener {
             return;
         }
 
+        placed.shiftText(data.get(CustomBlockKey.SHIFT, PersistentDataType.STRING));
         refreshHitbox(placed, model, data);
 
         placed.bind(model, this.nms);
@@ -850,6 +959,9 @@ public final class DisplayRenderer implements Listener {
     private void attach(Viewer viewer, PlacedDisplay placed) {
         placed.viewers.add(viewer);
         this.nms.send(viewer.player, placed.spawnPacket(this.nms));
+        if (placed.gliding) {
+            this.nms.send(viewer.player, glidePacket(placed));
+        }
 
         List<DisplayAnimation> animations = placed.model.animations;
         for (int i = 0; i < animations.size(); i++) {
@@ -948,6 +1060,9 @@ public final class DisplayRenderer implements Listener {
     }
 
     private void hide(PlacedDisplay placed) {
+        if (this.gizmos != null) {
+            this.gizmos.forget(placed);
+        }
         this.looping.remove(placed);
         if (placed.viewers.isEmpty()) {
             return;
