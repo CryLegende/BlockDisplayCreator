@@ -37,6 +37,11 @@ public interface CustomBlockKey {
      * How far, and how turned, an operator moved a custom block shown through packets from where it was placed.
      */
     NamespacedKey SHIFT = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-shift");
+    /**
+     * How the click boxes of a moved block were laid out: absent for the old way, where they kept their shape when
+     * the model was tipped over.
+     */
+    NamespacedKey HITBOX_LAYOUT = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-hitbox-layout");
 
     static DataHolder holder(PersistentDataHolder holder) {
         return new DataHolder(holder);

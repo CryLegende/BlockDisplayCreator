@@ -513,38 +513,43 @@ public class BDCCustomBlockService implements CustomBlockService {
      * Summons the interaction entities of a custom block and gives them their rotation, offset and block data.
      */
     public List<Interaction> summonInteractions(AbstractCustomBlock abstractCustomBlock, Location location, CustomBlockRotation rotation) {
-        return abstractCustomBlock.getConfiguredInteractions().stream().map(configuredInteraction -> {
-            if (isUseless(configuredInteraction)) {
-                return null;
-            }
-            Interaction interaction = configuredInteraction.summon(location);
+        return abstractCustomBlock.getConfiguredInteractions().stream()
+                .map(configuredInteraction -> isUseless(configuredInteraction) ? null : summonInteraction(abstractCustomBlock, configuredInteraction, location, rotation))
+                .filter(Objects::nonNull).collect(OperationUtil.toArrayList());
+    }
 
-            // If the interaction failed to summon, skip it
-            if (interaction == null) {
-                return null;
-            }
-            // Adjusts the rotation and offset of the interaction depending on the settings selected
-            rotation.adjustInteractionRotation(interaction, configuredInteraction.getOffset(), abstractCustomBlock.getSidesCount());
+    /**
+     * Summons one interaction entity of a custom block, as its file places it, with its rotation, offset and block data.
+     */
+    @Nullable
+    private static Interaction summonInteraction(AbstractCustomBlock abstractCustomBlock, ConfiguredInteraction configuredInteraction, Location location, CustomBlockRotation rotation) {
+        Interaction interaction = configuredInteraction.summon(location);
 
-            // Get the interaction identifier that was specified in the block file as its section name.
-            String configuredInteractionIdentifier = configuredInteraction.getIdentifier();
+        // If the interaction failed to summon, skip it
+        if (interaction == null) {
+            return null;
+        }
+        // Adjusts the rotation and offset of the interaction depending on the settings selected
+        rotation.adjustInteractionRotation(interaction, configuredInteraction.getOffset(), abstractCustomBlock.getSidesCount());
 
-            // Set custom block data for the interaction entity
-            CustomBlockKey.holder(interaction)
-                    .setServiceClass(BDCCustomBlockService.class.getName())
-                    .setName(abstractCustomBlock.getName())
-                    .setLocation(location)
-                    .setInteractionIdentifier(configuredInteractionIdentifier);
+        // Get the interaction identifier that was specified in the block file as its section name.
+        String configuredInteractionIdentifier = configuredInteraction.getIdentifier();
 
-            // Add scoreboard tags for easy identification and use in data packs
-            interaction.addScoreboardTag("custom-block");
-            interaction.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
-            interaction.addScoreboardTag("custom-block-interaction");
-            interaction.addScoreboardTag("custom-block-interaction-id:" + configuredInteractionIdentifier);
-            interaction.addScoreboardTag("custom-block-location:" + location.toVector());
+        // Set custom block data for the interaction entity
+        CustomBlockKey.holder(interaction)
+                .setServiceClass(BDCCustomBlockService.class.getName())
+                .setName(abstractCustomBlock.getName())
+                .setLocation(location)
+                .setInteractionIdentifier(configuredInteractionIdentifier);
 
-            return interaction;
-        }).filter(Objects::nonNull).collect(OperationUtil.toArrayList());
+        // Add scoreboard tags for easy identification and use in data packs
+        interaction.addScoreboardTag("custom-block");
+        interaction.addScoreboardTag("custom-block-name:" + abstractCustomBlock.getName());
+        interaction.addScoreboardTag("custom-block-interaction");
+        interaction.addScoreboardTag("custom-block-interaction-id:" + configuredInteractionIdentifier);
+        interaction.addScoreboardTag("custom-block-location:" + location.toVector());
+
+        return interaction;
     }
 
     /**
@@ -685,31 +690,184 @@ public class BDCCustomBlockService implements CustomBlockService {
     }
 
     /**
-     * Moves the interaction and collision entities of a custom block the way its model was moved by an operator: the
-     * model goes from one pose to another (a position, a yaw and a pitch), and each entity goes with it as if it
-     * were fixed to the model. A click box stays a straight box, so only its place follows the turn.
+     * The most square click boxes one click box of a file is cut into, when a tipped model lies along it.
+     */
+    private static final int MAX_CLICK_PIECES = 6;
+    /**
+     * Stored with a moved block once its click boxes follow the shape of its tipped model.
+     */
+    public static final String HITBOX_LAYOUT_VERSION = "2";
+    private static final double[] NO_SHIFT = {0, 0, 0, 0, 0, 1};
+
+    /**
+     * Lays out the interaction and collision entities of a custom block the way its model was moved by an operator:
+     * the model goes from one pose to another (a position, a yaw, a pitch and a size factor).
+     * <p>
+     * A collision goes with the model as if it were fixed to it. A click box is summoned again from the file and
+     * given the shape of what the moved model covers. It stays a straight box with a square base, so a box tipped
+     * over (a snowman of 1 by 3 lying down) is cut along its length into square boxes (three of 1 by 1).
      *
-     * @param base the position, yaw and pitch of the model before any shift
-     * @param from the shift (x, y, z, yaw, pitch, size factor) the entities are laid out for
-     * @param to   the shift they are moved to
+     * @param location where the block was placed, as stored on its entities
+     * @param base     the position, yaw and pitch of the model before any shift
+     * @param from     the shift (x, y, z, yaw, pitch, size factor) the collisions are laid out for
+     * @param to       the shift they are laid out for afterwards
      * @return false when an entity of the block was not loaded: nothing is moved then
      */
-    public static boolean shiftHitbox(@NotNull CustomBlockData data, double[] base, double[] from, double[] to) {
+    public boolean layHitbox(@NotNull CustomBlockData data, @NotNull Location location, double[] base, double[] from, double[] to) {
         // nothing is moved unless every entity of the block is loaded: the others would be left behind
-        List<Entity> entities = new ArrayList<>();
-        for (org.bukkit.NamespacedKey key : List.of(CustomBlockKey.INTERACTION_UUID, CustomBlockKey.COLLISION_UUID)) {
-            UUID[] uuids = data.get(key, PersistentDataTypes.UUID_ARRAY);
-            if (uuids == null) {
+        List<Entity> interactions = loadedEntities(data, CustomBlockKey.INTERACTION_UUID);
+        List<Entity> collisions = loadedEntities(data, CustomBlockKey.COLLISION_UUID);
+        if (interactions == null || collisions == null) {
+            return false;
+        }
+        moveRigidly(collisions, base, from, to);
+
+        String name = data.get(CustomBlockKey.NAME, PersistentDataType.STRING);
+        AbstractCustomBlock abstractCustomBlock = name == null ? null : storage.getAbstractCustomBlock(name);
+        CustomBlockRotation rotation = data.get(CustomBlockKey.BLOCK_ROTATION, PersistentDataTypes.CUSTOM_BLOCK_ROTATION);
+        if (abstractCustomBlock == null || rotation == null) {
+            // without its file, a click box can only go with the model as it is
+            moveRigidly(interactions, base, from, to);
+            return true;
+        }
+
+        interactions.forEach(Entity::remove);
+        org.joml.Quaterniond yawFrom = new org.joml.Quaterniond().rotationY(-Math.toRadians(base[3]));
+        org.joml.Quaterniond yawTo = new org.joml.Quaterniond().rotationY(-Math.toRadians(base[3] + to[3]));
+        org.joml.Quaterniond turn = poseOrientation(base, to).mul(poseOrientation(base, NO_SHIFT).invert());
+        // what is left of the turn once the yaw is taken out: the model tipped over in its own axes
+        org.joml.Quaterniond tilt = new org.joml.Quaterniond(yawTo).invert().mul(turn).mul(yawFrom);
+        List<UUID> uuids = new ArrayList<>();
+        for (ConfiguredInteraction configured : abstractCustomBlock.getConfiguredInteractions()) {
+            if (isUseless(configured)) {
                 continue;
             }
-            for (UUID uuid : uuids) {
-                Entity entity = Bukkit.getEntity(uuid);
-                if (entity == null) {
-                    return false;
+            Interaction first = summonInteraction(abstractCustomBlock, configured, location, rotation);
+            if (first == null) {
+                continue;
+            }
+            List<double[]> boxes = clickBoxes(first, base, to, yawFrom, yawTo, tilt);
+            for (int i = 0; i < boxes.size(); i++) {
+                Interaction piece = i == 0 ? first : summonInteraction(abstractCustomBlock, configured, location, rotation);
+                if (piece == null) {
+                    continue;
                 }
-                entities.add(entity);
+                double[] box = boxes.get(i);
+                piece.setInteractionWidth((float) box[3]);
+                piece.setInteractionHeight((float) box[4]);
+                Location at = piece.getLocation();
+                piece.teleport(new Location(at.getWorld(), box[0], box[1], box[2], at.getYaw(), at.getPitch()));
+                uuids.add(piece.getUniqueId());
             }
         }
+        data.set(CustomBlockKey.INTERACTION_UUID, PersistentDataTypes.UUID_ARRAY, uuids.toArray(UUID[]::new));
+        data.set(CustomBlockKey.HITBOX_LAYOUT, PersistentDataType.STRING, HITBOX_LAYOUT_VERSION);
+        return true;
+    }
+
+    /**
+     * The click boxes one interaction of the file becomes once the model is moved: x, y, z of the middle of its
+     * floor, then its width and height.
+     */
+    static List<double[]> clickBoxes(Interaction interaction, double[] base, double[] to,
+                                     org.joml.Quaterniond yawFrom, org.joml.Quaterniond yawTo, org.joml.Quaterniond tilt) {
+        Location at = interaction.getLocation();
+        return clickBoxes(at.getX(), at.getY(), at.getZ(), interaction.getInteractionWidth(), interaction.getInteractionHeight(),
+                base, to, yawFrom, yawTo, tilt);
+    }
+
+    static List<double[]> clickBoxes(double x, double y, double z, double width, double height, double[] base, double[] to,
+                                     org.joml.Quaterniond yawFrom, org.joml.Quaterniond yawTo, org.joml.Quaterniond tilt) {
+        double size = to[5];
+        // the middle of the box, from the model's origin, in the model's own axes; its square base is taken to
+        // turn with the model's yaw without growing, as a click box always did
+        org.joml.Vector3d middle = yawFrom.transformInverse(new org.joml.Vector3d(x - base[0], y + height / 2 - base[1], z - base[2]));
+        double[] half = {width / 2, height / 2, width / 2};
+        org.joml.Vector3d[] columns = new org.joml.Vector3d[3];
+        for (int j = 0; j < 3; j++) {
+            columns[j] = tilt.transform(new org.joml.Vector3d(j == 0 ? 1 : 0, j == 1 ? 1 : 0, j == 2 ? 1 : 0));
+        }
+        double[] reach = reach(columns, half);
+
+        // a box that now lies along one horizontal axis is cut into square ones along it
+        int longAxis = reach[0] >= reach[2] ? 0 : 2;
+        double longHalf = Math.max(reach[0], reach[2]);
+        double shortHalf = Math.min(reach[0], reach[2]);
+        int pieces = 1;
+        int cut = -1;
+        if (shortHalf > 1.0E-3 && longHalf > shortHalf * 1.25) {
+            pieces = (int) Math.min(MAX_CLICK_PIECES, Math.ceil(longHalf / shortHalf - 0.15));
+            // the side of the box that reaches the furthest along that axis is the one cut
+            double most = -1;
+            for (int j = 0; j < 3; j++) {
+                double along = Math.abs(component(columns[j], longAxis)) * half[j];
+                if (along > most) {
+                    most = along;
+                    cut = j;
+                }
+            }
+        }
+
+        List<double[]> boxes = new ArrayList<>(pieces);
+        for (int i = 0; i < pieces; i++) {
+            double[] part = half.clone();
+            org.joml.Vector3d centre = new org.joml.Vector3d(middle);
+            if (pieces > 1) {
+                part[cut] = half[cut] / pieces;
+                double offset = half[cut] * ((2 * i + 1.0) / pieces - 1);
+                centre.add(cut == 0 ? offset : 0, cut == 1 ? offset : 0, cut == 2 ? offset : 0);
+            }
+            double[] partReach = reach(columns, part);
+            tilt.transform(centre);
+            yawTo.transform(centre).mul(size).add(base[0] + to[0], base[1] + to[1], base[2] + to[2]);
+            double boxWidth = 2 * Math.max(partReach[0], partReach[2]) * size;
+            double boxHeight = 2 * partReach[1] * size;
+            boxes.add(new double[]{centre.x, centre.y - boxHeight / 2, centre.z, boxWidth, boxHeight});
+        }
+        return boxes;
+    }
+
+    /**
+     * How far a box of these half sizes reaches along each axis once turned (the columns of the turn).
+     */
+    private static double[] reach(org.joml.Vector3d[] columns, double[] half) {
+        double[] reach = new double[3];
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                reach[i] += Math.abs(component(columns[j], i)) * half[j];
+            }
+        }
+        return reach;
+    }
+
+    private static double component(org.joml.Vector3d vector, int axis) {
+        return axis == 0 ? vector.x : axis == 1 ? vector.y : vector.z;
+    }
+
+    /**
+     * The entities of a block listed under a key, or null when one of them is not loaded.
+     */
+    @Nullable
+    private static List<Entity> loadedEntities(CustomBlockData data, org.bukkit.NamespacedKey key) {
+        List<Entity> entities = new ArrayList<>();
+        UUID[] uuids = data.get(key, PersistentDataTypes.UUID_ARRAY);
+        if (uuids == null) {
+            return entities;
+        }
+        for (UUID uuid : uuids) {
+            Entity entity = Bukkit.getEntity(uuid);
+            if (entity == null) {
+                return null;
+            }
+            entities.add(entity);
+        }
+        return entities;
+    }
+
+    /**
+     * Moves entities of a block as if they were fixed to its model, from one shift to another.
+     */
+    private static void moveRigidly(List<Entity> entities, double[] base, double[] from, double[] to) {
         org.joml.Quaterniond before = poseOrientation(base, from);
         org.joml.Quaterniond turn = poseOrientation(base, to).mul(before.invert());
         org.joml.Vector3d offset = new org.joml.Vector3d();
@@ -736,7 +894,6 @@ public class BDCCustomBlockService implements CustomBlockService {
                 moved.teleport(target);
             }
         }
-        return true;
     }
 
     private static org.joml.Quaterniond poseOrientation(double[] base, double[] shift) {

@@ -26,7 +26,6 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.player.PlayerAnimationEvent;
 import org.bukkit.event.player.PlayerAnimationType;
-import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
@@ -71,6 +70,7 @@ public final class GizmoManager implements Listener {
         this.plugin = plugin;
         this.renderer = renderer;
         this.nms = nms;
+        listenToUnknownEntities();
     }
 
     /**
@@ -100,7 +100,7 @@ public final class GizmoManager implements Listener {
             this.sessions.put(player.getUniqueId(), gizmo);
             gizmo.status();
             say(player, 'e', "Gizmo &eactivé&7 : vise une pièce, &eclic gauche&7 pour la prendre, de nouveau pour la poser.");
-            player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7Q &8: &eannuler &8· &7cube blanc &8: &eéchelle (75 à 125 %) &8· &7Shift + clic droit &8: &efermer"));
+            player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (75 à 125 %) &8· &7Shift + clic droit &8: &efermer"));
         } catch (RuntimeException e) {
             this.plugin.getLogger().log(Level.WARNING, "Could not open the gizmo of custom block " + placed.modelName, e);
             say(player, 'c', "Le gizmo &cn'a pas pu s'ouvrir&7.");
@@ -234,16 +234,17 @@ public final class GizmoManager implements Listener {
             }
             return;
         }
+        if (editing) {
+            event.setCancelled(true);
+            rightClick(player, placedOf(event.getRightClicked()));
+            return;
+        }
         if (mayEdit(player)) {
             PlacedDisplay placed = placedOf(event.getRightClicked());
             if (placed != null && opens(player, placed)) {
                 event.setCancelled(true);
                 toggle(player, placed);
-                return;
             }
-        }
-        if (editing) {
-            event.setCancelled(true);
         }
     }
 
@@ -255,11 +256,18 @@ public final class GizmoManager implements Listener {
             return;
         }
         Block block = event.getClickedBlock();
+        if (editing) {
+            // the click box around his eyes usually takes his clicks: these come when it missed them
+            event.setCancelled(true);
+            if ((event.getAction() == Action.RIGHT_CLICK_BLOCK || event.getAction() == Action.RIGHT_CLICK_AIR) && event.getHand() == EquipmentSlot.HAND) {
+                rightClick(player, block == null ? null : placedAt(block));
+            }
+            return;
+        }
         if (event.getAction() == Action.RIGHT_CLICK_BLOCK && event.getHand() == EquipmentSlot.HAND && block != null && mayEdit(player)) {
             ItemStack held = event.getItem();
-            boolean empty = held == null || held.getType().isAir();
-            if ((editing || empty) && new CustomBlockData(block, this.plugin).has(CustomBlockKey.NAME)) {
-                PlacedDisplay placed = this.renderer.find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+            if (held == null || held.getType().isAir()) {
+                PlacedDisplay placed = placedAt(block);
                 if (placed != null && opens(player, placed)) {
                     event.setCancelled(true);
                     toggle(player, placed);
@@ -267,9 +275,80 @@ public final class GizmoManager implements Listener {
                 }
             }
         }
-        if (editing || justToggled(player)) {
+        if (justToggled(player)) {
             event.setCancelled(true);
         }
+    }
+
+    /**
+     * The placed block whose central block this is, if it is shown through packets.
+     */
+    private PlacedDisplay placedAt(Block block) {
+        if (!new CustomBlockData(block, this.plugin).has(CustomBlockKey.NAME)) {
+            return null;
+        }
+        return this.renderer.find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+    }
+
+    /**
+     * A right click while the gizmo is open. With shift held, it closes the gizmo wherever the player aims, or moves
+     * it to the decoration he aims at; without, the part he aims at is put back as it was placed.
+     *
+     * @param clicked the decoration the click reached, when it reached one
+     */
+    private void rightClick(Player player, PlacedDisplay clicked) {
+        Gizmo gizmo = this.sessions.get(player.getUniqueId());
+        if (gizmo == null || justToggled(player)) {
+            return;
+        }
+        if (player.isSneaking() || this.sneaking.contains(player.getUniqueId())) {
+            PlacedDisplay other = clicked != null ? clicked : aimed(player);
+            toggle(player, other != null && other != gizmo.target() && player.hasPermission(PERMISSION) && opens(player, other) ? other : gizmo.target());
+            return;
+        }
+        gizmo.rightClick(this.tick);
+    }
+
+    /**
+     * The decoration whose click box the player aims at, within his reach.
+     */
+    private PlacedDisplay aimed(Player player) {
+        Location eye = player.getEyeLocation();
+        org.bukkit.util.RayTraceResult hit = player.getWorld().rayTraceEntities(eye, eye.getDirection(), 6, 0,
+                entity -> entity instanceof Interaction && placedOf(entity) != null);
+        return hit == null || hit.getHitEntity() == null ? null : placedOf(hit.getHitEntity());
+    }
+
+    /**
+     * Takes the clicks on the entities of the gizmo, which exist on its player's client only. The event is Paper's:
+     * on a server without it, a right click with an empty hand aiming at nothing does not reach the gizmo.
+     */
+    private void listenToUnknownEntities() {
+        Class<? extends org.bukkit.event.Event> type;
+        java.lang.reflect.Method entityId;
+        java.lang.reflect.Method attack;
+        try {
+            type = Class.forName("com.destroystokyo.paper.event.player.PlayerUseUnknownEntityEvent").asSubclass(org.bukkit.event.Event.class);
+            entityId = type.getMethod("getEntityId");
+            attack = type.getMethod("isAttack");
+        } catch (ReflectiveOperationException e) {
+            return;
+        }
+        this.plugin.getServer().getPluginManager().registerEvent(type, this, EventPriority.NORMAL, (listener, event) -> {
+            if (this.sessions.isEmpty() || !type.isInstance(event)) {
+                return;
+            }
+            Player player = ((org.bukkit.event.player.PlayerEvent) event).getPlayer();
+            Gizmo gizmo = this.sessions.get(player.getUniqueId());
+            try {
+                // a left click is the arm swing that comes with it
+                if (gizmo != null && !(boolean) attack.invoke(event) && gizmo.owns((int) entityId.invoke(event))) {
+                    rightClick(player, null);
+                }
+            } catch (ReflectiveOperationException e) {
+                this.plugin.getLogger().log(Level.WARNING, "Could not read a click on the gizmo", e);
+            }
+        }, this.plugin, false);
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
@@ -311,15 +390,6 @@ public final class GizmoManager implements Listener {
             } else {
                 gizmo.toggleSpace();
             }
-        }
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST)
-    public void onDrop(PlayerDropItemEvent event) {
-        Gizmo gizmo = this.sessions.get(event.getPlayer().getUniqueId());
-        if (gizmo != null) {
-            event.setCancelled(true);
-            gizmo.undo();
         }
     }
 

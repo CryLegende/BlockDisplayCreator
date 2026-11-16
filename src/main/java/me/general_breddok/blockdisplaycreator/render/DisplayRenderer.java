@@ -431,7 +431,15 @@ public final class DisplayRenderer implements Listener {
         } else {
             data.set(CustomBlockKey.SHIFT, PersistentDataType.STRING, text);
         }
-        if (BDCCustomBlockService.shiftHitbox(data, placed.placedPose(placed.model.elements.get(0).pitch()), placed.hitboxShift, placed.shift)) {
+        layHitbox(placed, data);
+    }
+
+    /**
+     * Takes the interactions and collisions of a block where its shift puts its model, shaped as the model now lies.
+     */
+    private void layHitbox(PlacedDisplay placed, CustomBlockData data) {
+        if (this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service
+                && service.layHitbox(data, placed.base(), placed.placedPose(placed.model.elements.get(0).pitch()), placed.hitboxShift, placed.shift)) {
             System.arraycopy(placed.shift, 0, placed.hitboxShift, 0, 6);
         }
     }
@@ -772,12 +780,14 @@ public final class DisplayRenderer implements Listener {
                 && service.refreshHitbox(placed.base())) {
             // the new entities stand around the placement: they go where the block was moved
             placed.resetHitboxShift();
-            float pitch = model.elements.get(0).pitch();
-            if (placed.isShifted() && BDCCustomBlockService.shiftHitbox(data, placed.placedPose(pitch), placed.hitboxShift, placed.shift)) {
-                System.arraycopy(placed.shift, 0, placed.hitboxShift, 0, 6);
+            if (placed.isShifted()) {
+                layHitbox(placed, data);
             }
             this.hitboxes++;
             scheduleSummary();
+        } else if (placed.isShifted() && !BDCCustomBlockService.HITBOX_LAYOUT_VERSION.equals(data.get(CustomBlockKey.HITBOX_LAYOUT, PersistentDataType.STRING))) {
+            // moved before click boxes followed a tipped model: they are laid out again where the model lies
+            layHitbox(placed, data);
         }
     }
 
