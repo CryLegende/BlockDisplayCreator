@@ -71,11 +71,19 @@ final class DisplayAnimation {
 
     /**
      * @param at      the tick it starts at
+     * @param over    the ticks its parts take to get to their poses
      * @param parts   the display entities it moves, as indexes in the model
      * @param moving  for each part, the synced values that take it to its pose over the frame's time
      * @param jumping for each part, the synced values that put it in its pose at once
+     * @param targets for each part, its pose, as the client is sent it (null when the server cannot split a matrix)
      */
-    record Frame(int at, int[] parts, List<?>[] moving, List<?>[] jumping, String sound, float volume, float pitch) {
+    record Frame(int at, int over, int[] parts, List<?>[] moving, List<?>[] jumping, Transformation[] targets, String sound, float volume, float pitch) {
+    }
+
+    /**
+     * Where a frame puts a part: what is sent to take it there over time or at once, and the pose itself.
+     */
+    private record Pose(List<?> moving, List<?> jumping, Transformation target) {
     }
 
     /**
@@ -158,14 +166,16 @@ final class DisplayAnimation {
 
             List<?>[] moving = new List<?>[parts.length];
             List<?>[] jumping = new List<?>[parts.length];
+            Transformation[] targets = new Transformation[parts.length];
             Vector3f pivot = entry.get("pivot") == null ? centre(parts, elements) : vector(entry.get("pivot"), "pivot").mul(scale);
             for (int i = 0; i < parts.length; i++) {
-                List<?>[] values = pose(entry, pivot, elements.get(parts[i]), parts.length, over, scale, nms);
-                moving[i] = values[0];
-                jumping[i] = values[1];
+                Pose pose = pose(entry, pivot, elements.get(parts[i]), parts.length, over, scale, nms);
+                moving[i] = pose.moving();
+                jumping[i] = pose.jumping();
+                targets[i] = pose.target();
             }
             Object sound = entry.get("sound");
-            frames.add(new Frame(at, parts, moving, jumping, sound == null ? null : sound.toString(),
+            frames.add(new Frame(at, over, parts, moving, jumping, targets, sound == null ? null : sound.toString(),
                     number(entry.get("volume"), 1f).floatValue(), number(entry.get("pitch"), 1f).floatValue()));
         }
         frames.sort(Comparator.comparingInt(Frame::at));
@@ -192,9 +202,9 @@ final class DisplayAnimation {
      * translation, rotations and scale directly. Stretching it along an axis, or giving a whole matrix, has no such
      * answer: the server splits the matrix, as it does for the matrix of a summon command.
      *
-     * @return the synced values that take the entity there over the frame's time, then those that jump there
+     * @return the synced values that take the entity there over the frame's time, those that jump there, and the pose
      */
-    private static List<?>[] pose(Map<?, ?> frame, Vector3f pivot, DisplayModel.Element element, int partCount, int over, float modelScale, NmsBridge nms) {
+    private static Pose pose(Map<?, ?> frame, Vector3f pivot, DisplayModel.Element element, int partCount, int over, float modelScale, NmsBridge nms) {
         Transformation rest = element.transformation();
         Object absolute = frame.get("transformation");
         Object scale = frame.get("scale");
@@ -216,8 +226,9 @@ final class DisplayAnimation {
             Quaternionf leftRotation = new Quaternionf(turn).mul(rest.getLeftRotation());
             Vector3f scaled = new Vector3f(rest.getScale()).mul(factor);
             Quaternionf rightRotation = new Quaternionf(rest.getRightRotation());
-            return new List<?>[]{nms.poseValues(translation, leftRotation, scaled, rightRotation, over),
-                    nms.poseValues(translation, leftRotation, scaled, rightRotation, 0)};
+            return new Pose(nms.poseValues(translation, leftRotation, scaled, rightRotation, over),
+                    nms.poseValues(translation, leftRotation, scaled, rightRotation, 0),
+                    new Transformation(new Vector3f(translation), new Quaternionf(leftRotation), new Vector3f(scaled), new Quaternionf(rightRotation)));
         }
 
         Matrix4f pose = new Matrix4f();
@@ -240,7 +251,7 @@ final class DisplayAnimation {
             pose.translate(move).translate(pivot).rotate(turn).scale(vector(scale, "scale"))
                     .translate(-pivot.x, -pivot.y, -pivot.z).mul(resting(rest));
         }
-        return new List<?>[]{nms.poseValues(pose, over), nms.poseValues(pose, 0)};
+        return new Pose(nms.poseValues(pose, over), nms.poseValues(pose, 0), nms.split(pose));
     }
 
     private static Matrix4f resting(Transformation transformation) {

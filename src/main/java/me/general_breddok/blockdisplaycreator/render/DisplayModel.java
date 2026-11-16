@@ -114,7 +114,7 @@ final class DisplayModel {
             }
         }
         List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
-        return new DisplayModel(definition, List.copyOf(read.isEmpty() ? withCullingBox(nms, elements) : elements), read, viewDistance);
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance);
     }
 
     /**
@@ -188,37 +188,67 @@ final class DisplayModel {
     }
 
     /**
+     * Steps a pose change is looked at in, on the way the clients draw it, when an animated model gets its box.
+     */
+    private static final int INTERPOLATION_STEPS = 8;
+
+    /**
      * A display entity without a culling box is drawn whenever it is in range, even behind the player. A model
      * standing on its block gets one box for all its entities: a cylinder around its vertical axis, from its base
-     * to its top, with some room. Models that reach below their base, that move, or whose entities face the
-     * player keep being drawn at all times.
+     * to its top, with some room. An animated model gets the box that holds it in every pose of its animations and
+     * on the way between them, as the clients draw it. Models that reach below their base (at rest or in a pose),
+     * or whose entities face the player, keep being drawn at all times.
      */
-    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements) {
-        float radius = 0;
-        float top = 0;
-        org.joml.Vector3f corner = new org.joml.Vector3f();
+    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations) {
+        // radius around the vertical axis, then height above the base
+        float[] reach = {0, 0};
         for (Element element : elements) {
             if (!element.drawn()) {
                 continue;
             }
-            if (!element.boxed()) {
+            if (!element.boxed() || !reach(element, element.transformation(), reach)) {
                 return elements;
             }
-            Transformation rest = element.transformation();
-            org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(rest.getTranslation()).rotate(rest.getLeftRotation())
-                    .scale(rest.getScale()).rotate(rest.getRightRotation());
-            // a block display draws the unit cube, the others are drawn around their origin
-            float low = element.block() ? 0f : -0.5f;
-            float high = element.block() ? 1f : 0.5f;
-            for (int i = 0; i < 8; i++) {
-                matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
-                if (corner.y < -0.6f) {
-                    return elements;
+        }
+        for (DisplayAnimation animation : animations) {
+            for (int part = 0; part < elements.size(); part++) {
+                Element element = elements.get(part);
+                if (!element.drawn()) {
+                    continue;
                 }
-                radius = Math.max(radius, (float) Math.sqrt(corner.x * corner.x + corner.z * corner.z));
-                top = Math.max(top, corner.y);
+                // the poses the part goes through, in their order: rest, those of its frames, rest again
+                List<Transformation> path = new ArrayList<>();
+                path.add(element.transformation());
+                for (DisplayAnimation.Frame frame : animation.frames) {
+                    for (int i = 0; i < frame.parts().length; i++) {
+                        if (frame.parts()[i] == part) {
+                            if (frame.targets()[i] == null) {
+                                return elements;
+                            }
+                            path.add(frame.targets()[i]);
+                        }
+                    }
+                }
+                if (path.size() == 1) {
+                    continue;
+                }
+                path.add(element.transformation());
+                if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
+                    // a new round starts from where the last one left the part
+                    path.add(path.get(path.size() - 2));
+                    path.add(path.get(1));
+                }
+                for (int i = 1; i < path.size(); i++) {
+                    for (int step = 1; step <= INTERPOLATION_STEPS; step++) {
+                        if (!reach(element, between(path.get(i - 1), path.get(i), step / (float) INTERPOLATION_STEPS), reach)) {
+                            return elements;
+                        }
+                    }
+                }
             }
         }
+        float radius = reach[0];
+        float top = reach[1];
         if (radius == 0 || top <= 0) {
             return elements;
         }
@@ -231,6 +261,41 @@ final class DisplayModel {
                     element.block(), element.drawn(), element.boxed(), nms.withCullingBox(element.data(), width, height)));
         }
         return boxed;
+    }
+
+    /**
+     * Widens a reach (radius around the vertical axis, height above the base) to hold an element in a pose.
+     *
+     * @return false when the element goes under its base, where the box does not reach
+     */
+    private static boolean reach(Element element, Transformation pose, float[] reach) {
+        org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(pose.getTranslation()).rotate(pose.getLeftRotation())
+                .scale(pose.getScale()).rotate(pose.getRightRotation());
+        // a block display draws the unit cube, the others are drawn around their origin
+        float low = element.block() ? 0f : -0.5f;
+        float high = element.block() ? 1f : 0.5f;
+        org.joml.Vector3f corner = new org.joml.Vector3f();
+        for (int i = 0; i < 8; i++) {
+            matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
+            if (corner.y < -0.6f) {
+                return false;
+            }
+            reach[0] = Math.max(reach[0], (float) Math.sqrt(corner.x * corner.x + corner.z * corner.z));
+            reach[1] = Math.max(reach[1], corner.y);
+        }
+        return true;
+    }
+
+    /**
+     * A pose on the way from one to another, as a client draws it: translation and scale in a straight line, the
+     * rotations along the shortest arc.
+     */
+    private static Transformation between(Transformation from, Transformation to, float progress) {
+        return new Transformation(
+                new org.joml.Vector3f(from.getTranslation()).lerp(to.getTranslation(), progress),
+                new org.joml.Quaternionf(from.getLeftRotation()).slerp(to.getLeftRotation(), progress),
+                new org.joml.Vector3f(from.getScale()).lerp(to.getScale(), progress),
+                new org.joml.Quaternionf(from.getRightRotation()).slerp(to.getRightRotation(), progress));
     }
 
     /**

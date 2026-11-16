@@ -330,6 +330,14 @@ final class NmsBridge {
             return field.get(null);
         }
 
+        org.bukkit.util.Transformation split(Matrix4f matrix) throws ReflectiveOperationException {
+            Object transformation = this.decompose.newInstance(matrix);
+            return new org.bukkit.util.Transformation(new Vector3f((Vector3f) this.translation.invoke(transformation)),
+                    new Quaternionf((Quaternionf) this.leftRotation.invoke(transformation)),
+                    new Vector3f((Vector3f) this.scale.invoke(transformation)),
+                    new Quaternionf((Quaternionf) this.rightRotation.invoke(transformation)));
+        }
+
         List<?> values(Matrix4f matrix, int duration) throws ReflectiveOperationException {
             Object transformation = this.decompose.newInstance(matrix);
             return values(this.translation.invoke(transformation), this.leftRotation.invoke(transformation),
@@ -365,6 +373,21 @@ final class NmsBridge {
             return this.poses.values(matrix, duration);
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * A matrix split into the translation, rotations and scale a client is sent for it, as the server splits it; null
+     * on a server that does not allow it.
+     */
+    org.bukkit.util.Transformation split(Matrix4f matrix) {
+        if (this.poses == null) {
+            return null;
+        }
+        try {
+            return this.poses.split(matrix);
+        } catch (ReflectiveOperationException | ClassCastException e) {
+            return null;
         }
     }
 
