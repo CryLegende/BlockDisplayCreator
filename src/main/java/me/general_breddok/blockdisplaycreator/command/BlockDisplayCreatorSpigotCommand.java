@@ -657,6 +657,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                 }
             }
             case "import" -> importModel(sender, args);
+            case "animation" -> animation(sender, args);
             case "erasecbdata" -> {
 
                 if (!sender.hasPermission(DefaultPermissions.BDC.Command.ERASE_CB_DATA)) {
@@ -780,9 +781,12 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
             StringUtil.copyPartialMatches(arg1, List.of(
                     "custom-block",
                     "import",
+                    "animation",
                     "erasecbdata",
                     "reload"
             ), result);
+        } else if (arg1.equals("animation")) {
+            animationTab(args, lookingLocation, result);
         } else if (arg1.equals("import")) {
             if (args.length == 2) {
                 result.add("<number>");
@@ -1014,6 +1018,169 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                 }
             }));
         });
+    }
+
+    private static final String ANIMATION_USAGE = "&6/bdc animation play <player|selector|*> <animation> <x> <y> <z> [world]&7, "
+            + "&6/bdc animation stop <player|selector|*> <x> <y> <z> [world]&7, &6/bdc animation list <x> <y> <z> [world]";
+
+    /**
+     * /bdc animation play|stop|list: plays an animation of a placed custom block for some players (the others keep
+     * seeing it as it is) or for everyone (*), stops it, or lists the animations of the block. Coordinates are those
+     * of the block the custom block was placed in; ~ counts from the sender. Run from the console, a success says
+     * nothing, so that plugins can run it at every use.
+     */
+    private void animation(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("bdc.command.animation")) {
+            ChatUtil.sendMessage(sender, "&cYou do not have permission to use this command");
+            return;
+        }
+        me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = this.plugin.getDisplayRenderer();
+        if (renderer == null || !renderer.isActive()) {
+            ChatUtil.sendMessage(sender, "&cAnimations need the custom blocks to be shown through packets (packet-display: true in config.yml).");
+            return;
+        }
+        String action = args.length > 1 ? args[1].toLowerCase(java.util.Locale.ROOT) : "";
+        int blockAt = switch (action) {
+            case "play" -> 4;
+            case "stop" -> 3;
+            case "list" -> 2;
+            default -> -1;
+        };
+        if (blockAt < 0 || args.length < blockAt + 3) {
+            ChatUtil.sendMessage(sender, ANIMATION_USAGE);
+            return;
+        }
+        Block block = commandBlock(sender, args, blockAt);
+        if (block == null) {
+            return;
+        }
+        String where = block.getX() + " " + block.getY() + " " + block.getZ() + " in " + block.getWorld().getName();
+        if (action.equals("list")) {
+            java.util.Map.Entry<String, List<String>> found = renderer.animations(block);
+            if (found == null) {
+                ChatUtil.sendMessage(sender, "&cNo custom block shown through packets at " + where + ".");
+            } else if (found.getValue().isEmpty()) {
+                ChatUtil.sendMessage(sender, "&e" + found.getKey() + " &7has no animation.");
+            } else {
+                ChatUtil.sendMessage(sender, "&e" + found.getKey() + "&7: " + String.join(", ", found.getValue()));
+            }
+            return;
+        }
+        List<Player> players = null;
+        if (!args[2].equals("*")) {
+            players = new ArrayList<>();
+            try {
+                for (Entity entity : Bukkit.selectEntities(sender, args[2])) {
+                    if (entity instanceof Player target) {
+                        players.add(target);
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                ChatUtil.sendMessage(sender, "&c'" + args[2] + "' is neither an online player nor a valid selector.");
+                return;
+            }
+            if (players.isEmpty()) {
+                ChatUtil.sendMessage(sender, "&cNo online player matches '" + args[2] + "'.");
+                return;
+            }
+        }
+        boolean quiet = sender instanceof org.bukkit.command.ConsoleCommandSender;
+        String forWhom = players == null ? "everyone" : players.size() == 1 ? players.get(0).getName() : players.size() + " players";
+        if (action.equals("stop")) {
+            int stopped = renderer.stop(block, players);
+            if (stopped < 0) {
+                ChatUtil.sendMessage(sender, "&cNo custom block shown through packets at " + where + ".");
+            } else if (!quiet) {
+                ChatUtil.sendMessage(sender, "&aStopped " + stopped + " animation(s) of the block at " + where + " for " + forWhom + ".");
+            }
+            return;
+        }
+        String name = args[3];
+        switch (renderer.play(block, name, players)) {
+            case PLAYED -> {
+                if (!quiet) {
+                    ChatUtil.sendMessage(sender, "&aPlaying &e" + name + " &aat " + where + " for " + forWhom + ".");
+                }
+            }
+            case NO_BLOCK -> ChatUtil.sendMessage(sender, "&cNo custom block shown through packets at " + where + ".");
+            case NO_ANIMATION -> {
+                java.util.Map.Entry<String, List<String>> found = renderer.animations(block);
+                ChatUtil.sendMessage(sender, "&c" + (found == null ? "The block" : found.getKey()) + " has no animation named '" + name + "'"
+                        + (found == null || found.getValue().isEmpty() ? "." : ": " + String.join(", ", found.getValue())));
+            }
+            case LOOPING -> ChatUtil.sendMessage(sender, "&c" + name + " plays in a loop for everyone: it cannot be started.");
+        }
+    }
+
+    private void animationTab(String[] args, @Nullable Location looking, List<String> result) {
+        String typed = args[args.length - 1];
+        if (args.length == 2) {
+            StringUtil.copyPartialMatches(typed, List.of("play", "stop", "list"), result);
+            return;
+        }
+        String action = args[1].toLowerCase(java.util.Locale.ROOT);
+        int blockAt = action.equals("play") ? 4 : action.equals("stop") ? 3 : action.equals("list") ? 2 : -1;
+        if (blockAt < 0) {
+            return;
+        }
+        int index = args.length - 1;
+        if (index == 2 && blockAt > 2) {
+            List<String> targets = new ArrayList<>(List.of("*", "@a", "@p", "@s"));
+            Bukkit.getOnlinePlayers().forEach(online -> targets.add(online.getName()));
+            StringUtil.copyPartialMatches(typed, targets, result);
+        } else if (index == 3 && blockAt == 4) {
+            me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = this.plugin.getDisplayRenderer();
+            if (renderer != null) {
+                StringUtil.copyPartialMatches(typed, renderer.playableAnimations(), result);
+            }
+        } else if (index >= blockAt && index < blockAt + 3 && looking != null) {
+            // the block looked at, its remaining coordinates at once
+            int[] coordinates = {looking.getBlockX(), looking.getBlockY(), looking.getBlockZ()};
+            StringBuilder rest = new StringBuilder();
+            for (int i = index - blockAt; i < 3; i++) {
+                rest.append(i > index - blockAt ? " " : "").append(coordinates[i]);
+            }
+            StringUtil.copyPartialMatches(typed, List.of(rest.toString()), result);
+        } else if (index == blockAt + 3) {
+            List<String> worlds = new ArrayList<>();
+            Bukkit.getWorlds().forEach(world -> worlds.add(world.getName()));
+            StringUtil.copyPartialMatches(typed, worlds, result);
+        }
+    }
+
+    /**
+     * The block at three coordinates of a command, ~ counting from the sender, in the world that follows them, or
+     * the sender's (the main world for the console).
+     */
+    @Nullable
+    private Block commandBlock(CommandSender sender, String[] args, int at) {
+        Location origin = sender instanceof Entity entity ? entity.getLocation()
+                : sender instanceof org.bukkit.command.BlockCommandSender block ? block.getBlock().getLocation().add(0.5, 0, 0.5) : null;
+        org.bukkit.World world = origin != null ? origin.getWorld() : Bukkit.getWorlds().get(0);
+        if (args.length > at + 3) {
+            world = Bukkit.getWorld(args[at + 3]);
+            if (world == null) {
+                ChatUtil.sendMessage(sender, "&cNo world named '" + args[at + 3] + "'.");
+                return null;
+            }
+        }
+        double[] position = new double[3];
+        for (int i = 0; i < 3; i++) {
+            String text = args[at + i];
+            boolean relative = text.startsWith("~");
+            if (relative && origin == null) {
+                ChatUtil.sendMessage(sender, "&c~ needs a sender with a position: give the coordinates of the block.");
+                return null;
+            }
+            try {
+                double value = relative ? (text.length() == 1 ? 0 : Double.parseDouble(text.substring(1))) : Double.parseDouble(text);
+                position[i] = relative ? value + (i == 0 ? origin.getX() : i == 1 ? origin.getY() : origin.getZ()) : value;
+            } catch (NumberFormatException e) {
+                ChatUtil.sendMessage(sender, "&c'" + text + "' is not a coordinate.");
+                return null;
+            }
+        }
+        return world.getBlockAt((int) Math.floor(position[0]), (int) Math.floor(position[1]), (int) Math.floor(position[2]));
     }
 
     private void eraseCbData(BoundingBox boundingBox, Player sender) {

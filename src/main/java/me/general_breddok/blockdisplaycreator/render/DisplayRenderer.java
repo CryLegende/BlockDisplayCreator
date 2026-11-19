@@ -114,6 +114,10 @@ public final class DisplayRenderer implements Listener {
      */
     private final Set<PlacedDisplay> playing = new HashSet<>();
     /**
+     * By player, the animations {@code /bdc animation play} plays for them alone.
+     */
+    private final Map<UUID, List<PrivatePlay>> privatePlays = new HashMap<>();
+    /**
      * The chunks holding custom blocks shown through packets, kept on disk: a chunk wiped while it is not loaded
      * (value true) is cleaned of them when it next loads.
      */
@@ -144,6 +148,44 @@ public final class DisplayRenderer implements Listener {
     }
 
     private record ChunkTask(UUID world, int x, int z, boolean unload) {
+    }
+
+    /**
+     * An animation of a block played for one player: the others keep seeing the block as it is.
+     */
+    private static final class PrivatePlay {
+        final PlacedDisplay placed;
+        final int animation;
+        final int startedAt;
+        /**
+         * The last frame played, -1 before the first.
+         */
+        int lastFrame = -1;
+
+        PrivatePlay(PlacedDisplay placed, int animation, int startedAt) {
+            this.placed = placed;
+            this.animation = animation;
+            this.startedAt = startedAt;
+        }
+    }
+
+    /**
+     * What became of a request to play an animation.
+     */
+    public enum PlayResult {
+        PLAYED,
+        /**
+         * No custom block shown through packets at that position.
+         */
+        NO_BLOCK,
+        /**
+         * Its model has no animation of that name.
+         */
+        NO_ANIMATION,
+        /**
+         * The animation plays in a loop, for everyone, all the time.
+         */
+        LOOPING
     }
 
     private DisplayRenderer(BlockDisplayCreator plugin, NmsBridge nms) {
@@ -254,6 +296,179 @@ public final class DisplayRenderer implements Listener {
                 return;
             }
         }
+    }
+
+    // ---------- Animations played by a command ----------
+
+    /**
+     * Plays an animation of the custom block of a block from its start, whatever starts it in its file.
+     *
+     * @param players the players it is played for: the others keep seeing the block as it is, and once it ends these
+     *                players see it as the others do. Null plays it for everyone who sees the block and those who
+     *                come to see it while it plays, as a click does
+     */
+    public synchronized PlayResult play(Block block, String name, @Nullable java.util.Collection<? extends Player> players) {
+        PlacedDisplay placed = find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+        if (placed == null || placed.model == null) {
+            return PlayResult.NO_BLOCK;
+        }
+        int index = animationIndex(placed.model, name);
+        if (index < 0) {
+            return PlayResult.NO_ANIMATION;
+        }
+        if (placed.model.animations.get(index).trigger == DisplayAnimation.Trigger.LOOP) {
+            return PlayResult.LOOPING;
+        }
+        if (players == null) {
+            // its first frame goes out with the next tick, over what it was playing
+            placed.startedAt[index] = this.tick + 1;
+            this.playing.add(placed);
+            return PlayResult.PLAYED;
+        }
+        for (Player player : players) {
+            UUID id = player.getUniqueId();
+            List<PrivatePlay> plays = this.privatePlays.computeIfAbsent(id, k -> new ArrayList<>(1));
+            for (Iterator<PrivatePlay> iterator = plays.iterator(); iterator.hasNext(); ) {
+                PrivatePlay old = iterator.next();
+                if (old.placed == placed) {
+                    // started again: the parts the other animation moved go back to rest, the frames take the rest
+                    iterator.remove();
+                    Viewer viewer = this.viewers.get(id);
+                    if (old.animation != index && viewer != null && viewer.player == player && viewer.shown.contains(placed)) {
+                        this.nms.send(player, placed.restPacket(this.nms, old.animation));
+                    }
+                }
+            }
+            plays.add(new PrivatePlay(placed, index, this.tick + 1));
+            placed.privateFor.add(id);
+        }
+        return PlayResult.PLAYED;
+    }
+
+    /**
+     * Stops the animations a command plays on the custom block of a block.
+     *
+     * @param players the players whose own animations are stopped: they see the block as the others do. Null stops
+     *                those played for everyone, and the block goes back to rest
+     * @return the number of animations stopped, -1 when there is no custom block shown through packets there
+     */
+    public synchronized int stop(Block block, @Nullable java.util.Collection<? extends Player> players) {
+        PlacedDisplay placed = find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+        if (placed == null || placed.model == null) {
+            return -1;
+        }
+        int stopped = 0;
+        if (players == null) {
+            List<DisplayAnimation> animations = placed.model.animations;
+            for (int i = 0; i < animations.size(); i++) {
+                if (animations.get(i).trigger == DisplayAnimation.Trigger.LOOP || placed.lastFrame[i] < 0 && placed.startedAt[i] < 0) {
+                    continue;
+                }
+                if (placed.startedAt[i] >= 0) {
+                    stopped++;
+                }
+                placed.startedAt[i] = -1;
+                placed.lastFrame[i] = -1;
+                Object packet = placed.restPacket(this.nms, i);
+                for (Viewer viewer : placed.viewers) {
+                    if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        this.nms.send(viewer.player, packet);
+                    }
+                }
+            }
+            return stopped;
+        }
+        for (Player player : players) {
+            List<PrivatePlay> plays = this.privatePlays.get(player.getUniqueId());
+            if (plays == null) {
+                continue;
+            }
+            for (Iterator<PrivatePlay> iterator = plays.iterator(); iterator.hasNext(); ) {
+                PrivatePlay play = iterator.next();
+                if (play.placed == placed) {
+                    iterator.remove();
+                    end(player.getUniqueId(), play);
+                    stopped++;
+                }
+            }
+            if (plays.isEmpty()) {
+                this.privatePlays.remove(player.getUniqueId());
+            }
+        }
+        return stopped;
+    }
+
+    /**
+     * The name of the custom block of a block and the animations of its model, or null when there is no custom
+     * block shown through packets there.
+     */
+    @Nullable
+    public synchronized Map.Entry<String, List<String>> animations(Block block) {
+        PlacedDisplay placed = find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+        if (placed == null || placed.model == null) {
+            return null;
+        }
+        List<String> names = new ArrayList<>();
+        for (DisplayAnimation animation : placed.model.animations) {
+            names.add(animation.name + " (" + animation.trigger.name().toLowerCase(java.util.Locale.ROOT) + ", " + animation.duration + " ticks)");
+        }
+        return Map.entry(placed.modelName, names);
+    }
+
+    /**
+     * The names of the animations a command can play, among the models read so far.
+     */
+    public synchronized Set<String> playableAnimations() {
+        Set<String> names = new java.util.TreeSet<>();
+        for (DisplayModel model : this.models.values()) {
+            for (DisplayAnimation animation : model.animations) {
+                if (animation.trigger != DisplayAnimation.Trigger.LOOP) {
+                    names.add(animation.name);
+                }
+            }
+        }
+        return names;
+    }
+
+    private static int animationIndex(DisplayModel model, String name) {
+        for (int i = 0; i < model.animations.size(); i++) {
+            if (model.animations.get(i).name.equalsIgnoreCase(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Ends an animation played for a player: they see the block as the others do again.
+     */
+    private void end(UUID id, PrivatePlay play) {
+        PlacedDisplay placed = play.placed;
+        placed.privateFor.remove(id);
+        Viewer viewer = this.viewers.get(id);
+        if (viewer != null && viewer.player.isOnline() && viewer.shown.contains(placed)) {
+            this.nms.send(viewer.player, placed.restPacket(this.nms, play.animation));
+            catchUp(viewer, placed);
+        }
+    }
+
+    /**
+     * Drops the animations played for players on a block that is no longer shown.
+     */
+    private void dropPrivatePlays(PlacedDisplay placed) {
+        if (placed.privateFor.isEmpty()) {
+            return;
+        }
+        for (UUID id : placed.privateFor) {
+            List<PrivatePlay> plays = this.privatePlays.get(id);
+            if (plays != null) {
+                plays.removeIf(play -> play.placed == placed);
+                if (plays.isEmpty()) {
+                    this.privatePlays.remove(id);
+                }
+            }
+        }
+        placed.privateFor.clear();
     }
 
     /**
@@ -473,6 +688,11 @@ public final class DisplayRenderer implements Listener {
         this.ranges.clear();
         this.farthest = 0;
         this.playing.clear();
+        // the blocks are read again and get new entity ids: what was played for players is dropped
+        for (List<PrivatePlay> plays : this.privatePlays.values()) {
+            plays.forEach(play -> play.placed.privateFor.clear());
+        }
+        this.privatePlays.clear();
 
         if (!isActive()) {
             // every block shown through packets is read again, and given real entities
@@ -535,6 +755,7 @@ public final class DisplayRenderer implements Listener {
         this.viewers.clear();
         this.looping.clear();
         this.playing.clear();
+        this.privatePlays.clear();
         if (this.registryDirty) {
             this.registryDirty = false;
             saveRegistry();
@@ -575,9 +796,14 @@ public final class DisplayRenderer implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         synchronized (this) {
-            Viewer viewer = this.viewers.remove(event.getPlayer().getUniqueId());
+            UUID id = event.getPlayer().getUniqueId();
+            Viewer viewer = this.viewers.remove(id);
             if (viewer != null) {
                 forget(viewer);
+            }
+            List<PrivatePlay> plays = this.privatePlays.remove(id);
+            if (plays != null) {
+                plays.forEach(play -> play.placed.privateFor.remove(id));
             }
         }
     }
@@ -1010,7 +1236,37 @@ public final class DisplayRenderer implements Listener {
         if (placed.gliding) {
             this.nms.send(viewer.player, glidePacket(placed));
         }
+        PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(viewer.player.getUniqueId(), placed);
+        if (own != null) {
+            // where the animation played for this player has taken the block
+            if (own.lastFrame >= 0) {
+                this.nms.send(viewer.player, placed.catchUpPacket(this.nms, own.animation, own.lastFrame));
+            }
+        } else {
+            catchUp(viewer, placed);
+        }
+        if (placed.model.loops) {
+            this.looping.add(placed);
+        }
+    }
 
+    @Nullable
+    private PrivatePlay privatePlay(UUID id, PlacedDisplay placed) {
+        List<PrivatePlay> plays = this.privatePlays.get(id);
+        if (plays != null) {
+            for (PrivatePlay play : plays) {
+                if (play.placed == placed) {
+                    return play;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Sends a player who sees a block where the animations everyone sees have taken it.
+     */
+    private void catchUp(Viewer viewer, PlacedDisplay placed) {
         List<DisplayAnimation> animations = placed.model.animations;
         for (int i = 0; i < animations.size(); i++) {
             DisplayAnimation animation = animations.get(i);
@@ -1030,16 +1286,16 @@ public final class DisplayRenderer implements Listener {
                 this.nms.send(viewer.player, placed.catchUpPacket(this.nms, i, last));
             }
         }
-        if (placed.model.loops) {
-            this.looping.add(placed);
-        }
     }
 
     /**
-     * Plays the frames due at this tick: those of the loops of the blocks someone sees, all in step, and those of
-     * the animations a click or a placement started.
+     * Plays the frames due at this tick: those of the loops of the blocks someone sees, all in step, those of the
+     * animations a click, a placement or a command started for everyone, and those commands play for some players.
      */
     private void animate() {
+        if (!this.privatePlays.isEmpty()) {
+            animatePrivate();
+        }
         for (PlacedDisplay placed : this.looping) {
             List<DisplayAnimation> animations = placed.model.animations;
             for (int i = 0; i < animations.size(); i++) {
@@ -1076,6 +1332,54 @@ public final class DisplayRenderer implements Listener {
         }
     }
 
+    /**
+     * The frames and sounds due at this tick of the animations played for single players: only they get them.
+     */
+    private void animatePrivate() {
+        for (Iterator<Map.Entry<UUID, List<PrivatePlay>>> entries = this.privatePlays.entrySet().iterator(); entries.hasNext(); ) {
+            Map.Entry<UUID, List<PrivatePlay>> entry = entries.next();
+            Viewer viewer = this.viewers.get(entry.getKey());
+            Player player = viewer != null ? viewer.player : Bukkit.getPlayer(entry.getKey());
+            for (Iterator<PrivatePlay> iterator = entry.getValue().iterator(); iterator.hasNext(); ) {
+                PrivatePlay play = iterator.next();
+                DisplayAnimation animation = play.placed.model.animations.get(play.animation);
+                int elapsed = this.tick - play.startedAt;
+                if (elapsed >= 0 && elapsed < animation.duration) {
+                    boolean sees = viewer != null && viewer.shown.contains(play.placed);
+                    // sounds come from the block: heard in its world only
+                    boolean hears = player != null && player.getWorld() == play.placed.world;
+                    int[] starting = animation.startingAt[elapsed];
+                    if (starting != null) {
+                        for (int frame : starting) {
+                            if (sees) {
+                                this.nms.send(viewer.player, play.placed.framePacket(this.nms, play.animation, frame));
+                            }
+                            DisplayAnimation.Frame played = animation.frames[frame];
+                            if (hears && played.sound() != null) {
+                                player.playSound(play.placed.base(), played.sound(), played.volume(), played.pitch());
+                            }
+                            play.lastFrame = frame;
+                        }
+                    }
+                    int[] due = animation.notesAt[elapsed];
+                    if (hears && due != null) {
+                        for (int note : due) {
+                            DisplayAnimation.Note played = animation.notes[note];
+                            player.playSound(play.placed.base(), played.sound(), played.volume(), played.pitch());
+                        }
+                    }
+                }
+                if (elapsed >= animation.duration) {
+                    iterator.remove();
+                    end(entry.getKey(), play);
+                }
+            }
+            if (entry.getValue().isEmpty()) {
+                entries.remove();
+            }
+        }
+    }
+
     private void sound(PlacedDisplay placed, DisplayAnimation animation, int at) {
         int[] due = animation.notesAt[at];
         if (due == null) {
@@ -1096,7 +1400,10 @@ public final class DisplayRenderer implements Listener {
             if (!placed.viewers.isEmpty()) {
                 Object packet = placed.framePacket(this.nms, index, frame);
                 for (Viewer viewer : placed.viewers) {
-                    this.nms.send(viewer.player, packet);
+                    // a player watching an animation played for them alone gets the others' frames once it ends
+                    if (placed.privateFor.isEmpty() || !placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        this.nms.send(viewer.player, packet);
+                    }
                 }
             }
             DisplayAnimation.Frame played = animation.frames[frame];
@@ -1112,6 +1419,7 @@ public final class DisplayRenderer implements Listener {
             this.gizmos.forget(placed);
         }
         this.looping.remove(placed);
+        dropPrivatePlays(placed);
         if (placed.viewers.isEmpty()) {
             return;
         }

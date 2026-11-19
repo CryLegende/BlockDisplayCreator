@@ -18,7 +18,7 @@ import java.util.TreeSet;
  * <pre>
  * animations:
  *   lid:
- *     trigger: click          # loop, click or place
+ *     trigger: click          # loop, click, place or command (/bdc animation play, for some players or all)
  *     interaction: main       # click only: the interaction that starts it, any when absent
  *     duration: 40            # ticks; a loop starts over after them. By def the end of the last frame
  *     frames:
@@ -45,7 +45,11 @@ import java.util.TreeSet;
 final class DisplayAnimation {
 
     enum Trigger {
-        LOOP, CLICK, PLACE
+        LOOP, CLICK, PLACE,
+        /**
+         * Only played by {@code /bdc animation play}: for chosen players, the others keep seeing the block at rest.
+         */
+        COMMAND
     }
 
     final String name;
@@ -68,6 +72,10 @@ final class DisplayAnimation {
      * For each tick of the animation, the indexes of the notes played at it, or null.
      */
     final int[][] notesAt;
+    /**
+     * The display entities some frame of the animation moves, in increasing order.
+     */
+    final int[] touched;
 
     /**
      * @param at      the tick it starts at
@@ -107,12 +115,17 @@ final class DisplayAnimation {
             extended[extended.length - 1] = i;
             this.notesAt[notes[i].at()] = extended;
         }
+        TreeSet<Integer> touched = new TreeSet<>();
         for (int i = 0; i < frames.length; i++) {
             int[] starting = this.startingAt[frames[i].at()];
             int[] extended = starting == null ? new int[1] : java.util.Arrays.copyOf(starting, starting.length + 1);
             extended[extended.length - 1] = i;
             this.startingAt[frames[i].at()] = extended;
+            for (int part : frames[i].parts()) {
+                touched.add(part);
+            }
         }
+        this.touched = touched.stream().mapToInt(Integer::intValue).toArray();
     }
 
     /**
@@ -147,7 +160,7 @@ final class DisplayAnimation {
         try {
             trigger = Trigger.valueOf(section.getString("trigger", "loop").toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("trigger must be loop, click or place");
+            throw new IllegalArgumentException("trigger must be loop, click, place or command");
         }
         List<Map<?, ?>> entries = section.getMapList("frames");
         if (entries.isEmpty()) {

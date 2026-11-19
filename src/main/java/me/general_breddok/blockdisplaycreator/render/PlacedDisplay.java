@@ -27,6 +27,11 @@ final class PlacedDisplay {
     final String modelName;
     final CustomBlockRotation rotation;
     final List<DisplayRenderer.Viewer> viewers = new ArrayList<>(2);
+    /**
+     * The players a command plays an animation of the block for: until it ends, they get none of the frames the
+     * others see.
+     */
+    final java.util.Set<UUID> privateFor = new java.util.HashSet<>(2);
 
     /**
      * Where the block was placed: the point its interactions and collisions are laid out around.
@@ -66,6 +71,7 @@ final class PlacedDisplay {
     private Object spawnPacket;
     private Object removePacket;
     private Object[][] framePackets;
+    private Object[] restPackets;
 
     PlacedDisplay(World world, int x, int y, int z, String modelName, CustomBlockRotation rotation) {
         this.world = world;
@@ -111,8 +117,26 @@ final class PlacedDisplay {
         this.startedAt = new int[animations];
         this.lastFrame = new int[animations];
         this.framePackets = new Object[animations][];
+        this.restPackets = new Object[animations];
         java.util.Arrays.fill(this.startedAt, -1);
         java.util.Arrays.fill(this.lastFrame, -1);
+    }
+
+    /**
+     * The packet that puts the parts an animation moves back at rest at once.
+     */
+    Object restPacket(NmsBridge nms, int animation) {
+        if (this.restPackets[animation] == null) {
+            int[] touched = this.model.animations.get(animation).touched;
+            List<Object> parts = new ArrayList<>(touched.length);
+            for (int part : touched) {
+                org.bukkit.util.Transformation rest = this.model.elements.get(part).transformation();
+                List<?> values = nms.poseValues(rest.getTranslation(), rest.getLeftRotation(), rest.getScale(), rest.getRightRotation(), 0);
+                parts.add(nms.dataPacket(this.entityIds[part], scale() == 1 ? values : nms.scaledValues(values, (float) scale())));
+            }
+            this.restPackets[animation] = nms.bundle(parts);
+        }
+        return this.restPackets[animation];
     }
 
     /**
@@ -236,6 +260,7 @@ final class PlacedDisplay {
         if (resized && this.framePackets != null) {
             // the poses of the frames were multiplied by the old size
             java.util.Arrays.fill(this.framePackets, null);
+            java.util.Arrays.fill(this.restPackets, null);
         }
     }
 

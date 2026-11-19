@@ -14,7 +14,7 @@ loadbefore:
 commands:
   blockdisplaycreator:
     description: Main command for BlockDisplayCreator
-    usage: /bdc <custom-block|import|reload|erase>
+    usage: /bdc <custom-block|import|animation|reload|erase>
     aliases: [bdc]
 
   cb:
@@ -66,8 +66,13 @@ permissions:
       bdc.command.custom-block: true
       bdc.command.reload: true
       bdc.command.import: true
+      bdc.command.animation: true
       bdc.command.erasecbdata: true
 
+
+  bdc.command.animation:
+    description: Allows to play an animation of a placed custom block for some players or for everyone (/bdc animation)
+    default: op
 
   bdc.command.custom-block.*:
     description: Allows players to use /bdc custom-block command

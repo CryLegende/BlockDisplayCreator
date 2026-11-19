@@ -93,7 +93,10 @@ sound:
 #animations:
 #  #Animation name
 #  hop:
-#    #What starts it: loop (plays on and on), click (a right click on an interaction) or place (when the block is placed).   By def loop
+#    #What starts it: loop (plays on and on), click (a right click on an interaction), place (when the block is placed)
+#    #or command (only /bdc animation play <player|selector|*> <animation> <x> <y> <z> [world], which can also start the others but loops).
+#    #Played for chosen players, only they see it and hear its sounds, and once it ends they see the block as the others do; * plays it for everyone.
+#    #   By def loop
 #    trigger: click
 #    #Click only: the interaction that starts it.   By def any interaction
 #    interaction: interaction
