@@ -42,6 +42,10 @@ final class DisplayModel {
      */
     final boolean loops;
     /**
+     * Whether one of its entities stands lower than the block when it stands on its block (see {@link Element#sink()}).
+     */
+    final boolean sinks;
+    /**
      * How far, in blocks, players are sent the model: its file's {@code display.view-distance}, 0 for the distance
      * the world tracks display entities at.
      */
@@ -55,6 +59,7 @@ final class DisplayModel {
         this.elements = elements;
         this.animations = animations;
         this.loops = animations.stream().anyMatch(animation -> animation.trigger == DisplayAnimation.Trigger.LOOP);
+        this.sinks = elements.stream().anyMatch(element -> element.sink() > 0);
 
         GroupSummoner<Display> summoner = definition.getDisplaySummoner();
         DirectedVector translation = summoner instanceof TranslationVectorAdjustable adjustable ? adjustable.getTranslation() : null;
@@ -72,11 +77,17 @@ final class DisplayModel {
      * @param transformation its resting transformation
      * @param block          whether it is a block display, drawn from its corner rather than around its origin
      * @param drawn          whether it shows something: the root of a bdengine model is an empty block display
-     * @param boxed          whether a box drawn around the model is enough to tell if it is on screen
+     * @param shape          what it draws before its transformation, as a box (smallest x, y, z then largest), null
+     *                       when that is not known
+     * @param billboard      how it turns to face the player: {@link #BILLBOARD_FIXED}, {@link #BILLBOARD_VERTICAL} or
+     *                       {@link #BILLBOARD_ALL}
      * @param upright        its synced data when the model stands on its block: with a culling box if it can have one
+     * @param sink           how much lower than the model its entity stands when the model stands on its block, in
+     *                       blocks of the model, its translation raised as much (0 for none): a client draws a culling box
+     *                       from the entity up
      */
-    record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation, boolean block, boolean drawn, boolean boxed,
-                   List<?> upright) {
+    record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation, boolean block, boolean drawn,
+                   float[] shape, byte billboard, List<?> upright, float sink) {
     }
 
     /**
@@ -193,29 +204,37 @@ final class DisplayModel {
     private static final int INTERPOLATION_STEPS = 8;
 
     /**
-     * A display entity without a culling box is drawn whenever it is in range, even behind the player. A model
-     * standing on its block gets one box for all its entities: a cylinder around its vertical axis, from its base
-     * to its top, with some room. An animated model gets the box that holds it in every pose of its animations and
-     * on the way between them, as the clients draw it. Models that reach below their base (at rest or in a pose),
-     * or whose entities face the player, keep being drawn at all times.
+     * How far under its base a part may be lowered so that its box holds it: past that, it stays drawn at all times.
+     */
+    private static final float MAX_SINK = 32f;
+
+    /**
+     * A display entity without a culling box is drawn whenever it is in range, even behind the player. Each entity
+     * of a model standing on its block gets its own box: a cylinder around the vertical axis of the model, from its
+     * base to the top of what the entity draws, with some room, holding it at rest, in every pose of its animations
+     * and on the way between them, as the clients draw it.
+     * <p>
+     * A client draws a box from the entity up only. A part that goes further under the base than the half block of
+     * room clients add is lowered by its {@link Element#sink() sink}: its entity stands that much lower and its
+     * translation is raised as much, so that it is drawn at the same place (see {@link PlacedDisplay}).
+     * <p>
+     * Texts are boxed by the size their text can take at most, parts turning on themselves to face the player
+     * (billboard {@code vertical}) by their cylinder, which they do not leave; parts facing the player on every axis
+     * by the sphere they turn in. An entity whose pose cannot be followed keeps being drawn at all times.
      */
     private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations) {
-        // radius around the vertical axis, then height above the base
-        float[] reach = {0, 0};
-        for (Element element : elements) {
-            if (!element.drawn()) {
+        List<Element> boxed = new ArrayList<>(elements.size());
+        for (int part = 0; part < elements.size(); part++) {
+            Element element = elements.get(part);
+            if (!element.drawn() || element.shape() == null) {
+                boxed.add(element);
                 continue;
             }
-            if (!element.boxed() || !reach(element, element.transformation(), reach)) {
-                return elements;
-            }
-        }
-        for (DisplayAnimation animation : animations) {
-            for (int part = 0; part < elements.size(); part++) {
-                Element element = elements.get(part);
-                if (!element.drawn()) {
-                    continue;
-                }
+            // radius around the vertical axis, height of the top, height of the bottom
+            float[] reach = {0, -Float.MAX_VALUE, Float.MAX_VALUE};
+            boolean followed = true;
+            reach(element, element.transformation(), reach);
+            for (DisplayAnimation animation : animations) {
                 // the poses the part goes through, in their order: rest, those of its frames, rest again
                 List<Transformation> path = new ArrayList<>();
                 path.add(element.transformation());
@@ -223,11 +242,14 @@ final class DisplayModel {
                     for (int i = 0; i < frame.parts().length; i++) {
                         if (frame.parts()[i] == part) {
                             if (frame.targets()[i] == null) {
-                                return elements;
+                                followed = false;
                             }
                             path.add(frame.targets()[i]);
                         }
                     }
+                }
+                if (!followed) {
+                    break;
                 }
                 if (path.size() == 1) {
                     continue;
@@ -240,50 +262,94 @@ final class DisplayModel {
                 }
                 for (int i = 1; i < path.size(); i++) {
                     for (int step = 1; step <= INTERPOLATION_STEPS; step++) {
-                        if (!reach(element, between(path.get(i - 1), path.get(i), step / (float) INTERPOLATION_STEPS), reach)) {
-                            return elements;
-                        }
+                        reach(element, between(path.get(i - 1), path.get(i), step / (float) INTERPOLATION_STEPS), reach);
                     }
                 }
             }
-        }
-        float radius = reach[0];
-        float top = reach[1];
-        if (radius == 0 || top <= 0) {
-            return elements;
-        }
-        // the box starts at the entity: what little goes under it is covered by the room given all around
-        float width = radius * 2.2f + 1.5f;
-        float height = top * 1.1f + 0.75f;
-        List<Element> boxed = new ArrayList<>(elements.size());
-        for (Element element : elements) {
-            boxed.add(new Element(element.type(), element.data(), element.yaw(), element.pitch(), element.transformation(),
-                    element.block(), element.drawn(), element.boxed(), nms.withCullingBox(element.data(), width, height)));
+            float sink = reach[2] < -0.5f ? (float) Math.ceil((-reach[2] - 0.5f) * 16f + 1f) / 16f : 0f;
+            float top = reach[1] + sink;
+            if (!followed || sink > MAX_SINK || top <= 0 || !nms.canAnimate() && sink > 0) {
+                boxed.add(element);
+                continue;
+            }
+            // the box starts at the entity: what little goes under it is covered by the room given all around
+            float width = reach[0] * 2.2f + 1.5f;
+            float height = top * 1.1f + 0.75f;
+            boxed.add(new Element(element.type(), element.data(), element.yaw(), element.pitch(), element.transformation(), element.block(),
+                    element.drawn(), element.shape(), element.billboard(), nms.withCullingBox(element.data(), width, height), sink));
         }
         return boxed;
     }
 
     /**
-     * Widens a reach (radius around the vertical axis, height above the base) to hold an element in a pose.
-     *
-     * @return false when the element goes under its base, where the box does not reach
+     * Widens a reach (radius around the vertical axis, height of the top, height of the bottom) to hold what an
+     * element draws in a pose.
      */
-    private static boolean reach(Element element, Transformation pose, float[] reach) {
+    private static void reach(Element element, Transformation pose, float[] reach) {
         org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(pose.getTranslation()).rotate(pose.getLeftRotation())
                 .scale(pose.getScale()).rotate(pose.getRightRotation());
-        // a block display draws the unit cube, the others are drawn around their origin
-        float low = element.block() ? 0f : -0.5f;
-        float high = element.block() ? 1f : 0.5f;
+        float[] shape = element.shape();
         org.joml.Vector3f corner = new org.joml.Vector3f();
         for (int i = 0; i < 8; i++) {
-            matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
-            if (corner.y < -0.6f) {
-                return false;
+            matrix.transformPosition(corner.set((i & 1) == 0 ? shape[0] : shape[3], (i & 2) == 0 ? shape[1] : shape[4], (i & 4) == 0 ? shape[2] : shape[5]));
+            if (element.billboard() == BILLBOARD_ALL) {
+                // turned on every axis around the entity: anywhere on the sphere it draws at
+                float distance = corner.length();
+                reach[0] = Math.max(reach[0], distance);
+                reach[1] = Math.max(reach[1], distance);
+                reach[2] = Math.min(reach[2], -distance);
+            } else {
+                // fixed, or turned around the vertical axis only, which keeps it in the same cylinder
+                reach[0] = Math.max(reach[0], (float) Math.sqrt(corner.x * corner.x + corner.z * corner.z));
+                reach[1] = Math.max(reach[1], corner.y);
+                reach[2] = Math.min(reach[2], corner.y);
             }
-            reach[0] = Math.max(reach[0], (float) Math.sqrt(corner.x * corner.x + corner.z * corner.z));
-            reach[1] = Math.max(reach[1], corner.y);
         }
-        return true;
+    }
+
+    static final byte BILLBOARD_FIXED = 0;
+    static final byte BILLBOARD_VERTICAL = 1;
+    static final byte BILLBOARD_ALL = 2;
+
+    /**
+     * Width of a character of text at most, in pixels of a text display (bold, and the wide signs of the fallback
+     * font, included).
+     */
+    private static final int CHARACTER_WIDTH = 10;
+
+    /**
+     * What a display entity draws around its origin before its transformation, as a box (smallest x, y, z then
+     * largest x, y, z), in blocks.
+     * <p>
+     * A text display draws its text flat, centred on its origin, from the origin up, at 40 pixels a block: lines of
+     * 10 pixels, as wide as their text up to the line width, past which a line wraps. The size is taken at its
+     * largest: every character as wide as the widest, a wrapped line counted twice.
+     */
+    private static float[] shape(Display display) {
+        if (display instanceof BlockDisplay) {
+            return new float[]{0, 0, 0, 1, 1, 1};
+        }
+        if (!(display instanceof org.bukkit.entity.TextDisplay text)) {
+            return new float[]{-0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f};
+        }
+        String legacy = text.getText();
+        String plain = legacy == null ? "" : org.bukkit.ChatColor.stripColor(legacy);
+        int lineWidth = Math.max(1, text.getLineWidth());
+        int widest = 0;
+        int lines = 0;
+        for (String line : plain.split("\n", -1)) {
+            int width = line.codePointCount(0, line.length()) * CHARACTER_WIDTH;
+            if (width <= lineWidth) {
+                lines++;
+                widest = Math.max(widest, width);
+            } else {
+                lines += 2 * (int) Math.ceil(width / (double) lineWidth);
+                widest = lineWidth;
+            }
+        }
+        float halfWidth = (widest / 2f + 4) / 40f;
+        float height = (lines * 10 + 4) / 40f;
+        return new float[]{-halfWidth, -0.1f, -0.1f, halfWidth, height, 0.1f};
     }
 
     /**
@@ -343,8 +409,13 @@ final class DisplayModel {
     private static void collect(NmsBridge nms, Display display, List<Element> elements) {
         Object handle = nms.handle(display);
         Location location = display.getLocation();
-        elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation(), display instanceof BlockDisplay, isDrawn(display),
-                !(display instanceof org.bukkit.entity.TextDisplay) && display.getBillboard() == Display.Billboard.FIXED, null));
+        byte billboard = switch (display.getBillboard()) {
+            case FIXED -> BILLBOARD_FIXED;
+            case VERTICAL -> BILLBOARD_VERTICAL;
+            default -> BILLBOARD_ALL;
+        };
+        elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation(),
+                display instanceof BlockDisplay, isDrawn(display), shape(display), billboard, null, 0f));
         for (Entity passenger : display.getPassengers()) {
             if (passenger instanceof Display child) {
                 collect(nms, child, elements);

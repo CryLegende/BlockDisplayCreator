@@ -617,14 +617,13 @@ public final class DisplayRenderer implements Listener {
         List<Object> packets = new ArrayList<>(elements.size() * 2);
         for (int i = 0; i < elements.size(); i++) {
             double[] pose = placed.pose(elements.get(i).pitch());
-            packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1], pose[2], (float) pose[3], (float) pose[4]));
-            if (resized && this.nms.canAnimate()) {
-                // each part goes to its resting pose, multiplied by the new size; a loop corrects it at its next frame
+            packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1] - placed.sink(i), pose[2], (float) pose[3], (float) pose[4]));
+            if ((resized || elements.get(i).sink() > 0) && this.nms.canAnimate()) {
+                // each part goes to its resting pose, multiplied by the new size, raised as much as it stands lower
+                // than the block; a loop corrects it at its next frame
                 org.bukkit.util.Transformation rest = elements.get(i).transformation();
-                float k = (float) scale;
-                packets.add(this.nms.dataPacket(placed.entityIds[i], this.nms.poseValues(new org.joml.Vector3f(rest.getTranslation()).mul(k),
-                        new org.joml.Quaternionf(rest.getLeftRotation()), new org.joml.Vector3f(rest.getScale()).mul(k),
-                        new org.joml.Quaternionf(rest.getRightRotation()), GLIDE_TICKS)));
+                packets.add(this.nms.dataPacket(placed.entityIds[i], placed.sent(this.nms, i, this.nms.poseValues(rest.getTranslation(),
+                        rest.getLeftRotation(), rest.getScale(), rest.getRightRotation(), GLIDE_TICKS))));
             }
         }
         Object packet = this.nms.bundle(packets);

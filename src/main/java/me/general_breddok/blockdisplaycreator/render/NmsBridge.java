@@ -223,6 +223,7 @@ final class NmsBridge {
         private final Object rightRotationAccessor;
         private final Object widthAccessor;
         private final Object heightAccessor;
+        private final Object brightnessAccessor;
         private final Method accessorId;
         private final Method valueId;
         private final Method valueOf;
@@ -255,6 +256,7 @@ final class NmsBridge {
 
             this.widthAccessor = accessor(display, "DATA_WIDTH_ID");
             this.heightAccessor = accessor(display, "DATA_HEIGHT_ID");
+            this.brightnessAccessor = accessor(display, "DATA_BRIGHTNESS_OVERRIDE_ID");
 
             Class<?> accessor = Class.forName("net.minecraft.network.syncher.EntityDataAccessor", true, server);
             Class<?> value = Class.forName("net.minecraft.network.syncher.SynchedEntityData$DataValue", true, server);
@@ -313,6 +315,51 @@ final class NmsBridge {
             if (!hasScale) {
                 out.add(this.createValue.invoke(null, this.scaleAccessor, new Vector3f(factor, factor, factor)));
             }
+            return List.copyOf(out);
+        }
+
+        /**
+         * The synced values of a display entity whose translation is raised by a height, in blocks: a translation
+         * left out (the default one) is given.
+         */
+        List<?> raised(List<?> values, float height) throws ReflectiveOperationException {
+            Object translationId = this.accessorId.invoke(this.translationAccessor);
+            List<Object> out = new java.util.ArrayList<>(values.size() + 1);
+            boolean hasTranslation = false;
+            for (Object value : values) {
+                if (this.valueId.invoke(value).equals(translationId)) {
+                    hasTranslation = true;
+                    out.add(this.createValue.invoke(null, this.translationAccessor,
+                            new Vector3f((org.joml.Vector3fc) this.valueOf.invoke(value)).add(0, height, 0)));
+                } else {
+                    out.add(value);
+                }
+            }
+            if (!hasTranslation) {
+                out.add(this.createValue.invoke(null, this.translationAccessor, new Vector3f(0, height, 0)));
+            }
+            return List.copyOf(out);
+        }
+
+        /**
+         * Whether the synced values of a display entity give it a light of its own.
+         */
+        boolean lit(List<?> values) throws ReflectiveOperationException {
+            Object brightnessId = this.accessorId.invoke(this.brightnessAccessor);
+            for (Object value : values) {
+                if (this.valueId.invoke(value).equals(brightnessId)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * The synced values of a display entity, given a light of its own (packed as a client reads it).
+         */
+        List<?> lit(List<?> values, int packed) throws ReflectiveOperationException {
+            List<Object> out = new java.util.ArrayList<>(values);
+            out.add(this.createValue.invoke(null, this.brightnessAccessor, packed));
             return List.copyOf(out);
         }
 
@@ -416,6 +463,36 @@ final class NmsBridge {
         }
         try {
             return this.poses.withCullingBox(values, width, height);
+        } catch (ReflectiveOperationException e) {
+            return values;
+        }
+    }
+
+    /**
+     * The synced values of a display entity whose translation is raised by a height, in blocks. Returned unchanged
+     * on a server that does not allow it.
+     */
+    List<?> raisedValues(List<?> values, float height) {
+        if (this.poses == null || height == 0f) {
+            return values;
+        }
+        try {
+            return this.poses.raised(values, height);
+        } catch (ReflectiveOperationException e) {
+            return values;
+        }
+    }
+
+    /**
+     * The synced values of a display entity drawn with the light of the given levels (0 to 15) unless its values
+     * already give it one. Returned unchanged on a server that does not allow it.
+     */
+    List<?> litValues(List<?> values, int blockLight, int skyLight) {
+        if (this.poses == null) {
+            return values;
+        }
+        try {
+            return this.poses.lit(values) ? values : this.poses.lit(values, blockLight << 4 | skyLight << 20);
         } catch (ReflectiveOperationException e) {
             return values;
         }

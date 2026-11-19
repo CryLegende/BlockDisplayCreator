@@ -132,7 +132,7 @@ final class PlacedDisplay {
             for (int part : touched) {
                 org.bukkit.util.Transformation rest = this.model.elements.get(part).transformation();
                 List<?> values = nms.poseValues(rest.getTranslation(), rest.getLeftRotation(), rest.getScale(), rest.getRightRotation(), 0);
-                parts.add(nms.dataPacket(this.entityIds[part], scale() == 1 ? values : nms.scaledValues(values, (float) scale())));
+                parts.add(nms.dataPacket(this.entityIds[part], sent(nms, part, values)));
             }
             this.restPackets[animation] = nms.bundle(parts);
         }
@@ -151,7 +151,7 @@ final class PlacedDisplay {
             DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
             List<Object> parts = new ArrayList<>(played.parts().length);
             for (int i = 0; i < played.parts().length; i++) {
-                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], scale() == 1 ? played.moving()[i] : nms.scaledValues(played.moving()[i], (float) scale())));
+                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], sent(nms, played.parts()[i], played.moving()[i])));
             }
             packets[frame] = nms.bundle(parts);
         }
@@ -176,11 +176,39 @@ final class PlacedDisplay {
                 int part = played.parts()[i];
                 if (!posed[part]) {
                     posed[part] = true;
-                    parts.add(nms.dataPacket(this.entityIds[part], scale() == 1 ? played.jumping()[i] : nms.scaledValues(played.jumping()[i], (float) scale())));
+                    parts.add(nms.dataPacket(this.entityIds[part], sent(nms, part, played.jumping()[i])));
                 }
             }
         }
         return nms.bundle(parts);
+    }
+
+    /**
+     * Whether an entity of the block is shown with its culling box: the block stands on its block, as placed.
+     */
+    boolean upright(DisplayModel.Element element) {
+        return element.upright() != null && this.fixedPose == null && pose(element.pitch())[4] == 0;
+    }
+
+    /**
+     * How much lower than the block an entity of it stands, in blocks of the world (0 for none): what its culling
+     * box needs, when it has one.
+     */
+    double sink(int part) {
+        DisplayModel.Element element = this.model.elements.get(part);
+        return element.sink() > 0 && upright(element) ? element.sink() * scale() : 0;
+    }
+
+    /**
+     * Synced values of an entity of the block, as its clients are sent them: multiplied by the size of the block,
+     * and raised by as much as the entity stands lower than the block.
+     */
+    List<?> sent(NmsBridge nms, int part, List<?> values) {
+        DisplayModel.Element element = this.model.elements.get(part);
+        if (element.sink() > 0 && upright(element)) {
+            values = nms.raisedValues(values, element.sink());
+        }
+        return scale() == 1 ? values : nms.scaledValues(values, (float) scale());
     }
 
     /**
@@ -257,8 +285,8 @@ final class PlacedDisplay {
         this.shift[4] = pitch;
         this.shift[5] = scale;
         this.spawnPacket = null;
-        if (resized && this.framePackets != null) {
-            // the poses of the frames were multiplied by the old size
+        if ((resized || this.model != null && this.model.sinks) && this.framePackets != null) {
+            // the poses of the frames were multiplied by the old size, or raised for a block standing upright
             java.util.Arrays.fill(this.framePackets, null);
             java.util.Arrays.fill(this.restPackets, null);
         }
@@ -354,12 +382,16 @@ final class PlacedDisplay {
             for (int i = 0; i < elements.size(); i++) {
                 DisplayModel.Element element = elements.get(i);
                 double[] pose = pose(element.pitch());
-                packets.add(nms.spawnPacket(this.entityIds[i], UUID.randomUUID(), pose[0], pose[1], pose[2], (float) pose[4], (float) pose[3], element.type()));
+                double sink = sink(i);
+                packets.add(nms.spawnPacket(this.entityIds[i], UUID.randomUUID(), pose[0], pose[1] - sink, pose[2], (float) pose[4], (float) pose[3], element.type()));
                 // the culling box of a model is that of a model standing upright on its block
-                List<?> data = element.upright() != null && pose[4] == 0 && this.fixedPose == null ? element.upright() : element.data();
-                if (scale() != 1) {
-                    data = nms.scaledValues(data, (float) scale());
+                List<?> data = upright(element) ? element.upright() : element.data();
+                if (sink > 0) {
+                    // a client lights an entity where it stands: the lowered one keeps the light of the block
+                    org.bukkit.block.Block lit = this.world.getBlockAt((int) Math.floor(pose[0]), (int) Math.floor(pose[1]), (int) Math.floor(pose[2]));
+                    data = nms.litValues(data, lit.getLightFromBlocks(), lit.getLightFromSky());
                 }
+                data = sent(nms, i, data);
                 if (!data.isEmpty()) {
                     packets.add(nms.dataPacket(this.entityIds[i], data));
                 }
