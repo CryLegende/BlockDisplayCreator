@@ -50,10 +50,17 @@ final class DisplayModel {
      * the world tracks display entities at.
      */
     final int viewDistance;
+    /**
+     * Its file's {@code display.visible-if}: the conditions a player must meet to be sent the model, empty for a model
+     * everyone is sent.
+     */
+    final List<Condition> visibleIf;
 
-    private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance) {
+    private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
+                         List<Condition> visibleIf) {
         this.name = definition.getName();
         this.viewDistance = viewDistance;
+        this.visibleIf = visibleIf;
         this.sidesCount = definition.getSidesCount();
         this.hitboxSignature = BDCCustomBlockService.hitboxSignature(definition);
         this.elements = elements;
@@ -96,11 +103,12 @@ final class DisplayModel {
      *
      * @param animations   the {@code animations} section of its file, or null
      * @param viewDistance how far players are sent it, in blocks, 0 for the world's distance
+     * @param visibleIf    the conditions a player must meet to be sent it, empty for none
      * @param problems     receives what could not be read of its animations
      * @return the model, without any element when the summon commands of the block create nothing
      */
     static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
-                             ConfigurationSection animations, int viewDistance, List<String> problems) {
+                             ConfigurationSection animations, int viewDistance, List<Condition> visibleIf, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -125,7 +133,14 @@ final class DisplayModel {
             }
         }
         List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
-        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance);
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance, visibleIf);
+    }
+
+    /**
+     * Whether only the players who meet its {@code display.visible-if} are sent the model.
+     */
+    boolean conditional() {
+        return !this.visibleIf.isEmpty();
     }
 
     /**

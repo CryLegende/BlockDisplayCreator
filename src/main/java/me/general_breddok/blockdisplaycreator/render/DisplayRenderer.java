@@ -19,7 +19,9 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Interaction;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Shulker;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -78,6 +80,11 @@ public final class DisplayRenderer implements Listener {
      * Ticks a display entity takes to glide to a position it is teleported to while an operator moves it.
      */
     private static final int GLIDE_TICKS = 2;
+    /**
+     * Ticks between two checks of the {@code display.visible-if} of the blocks around each player.
+     */
+    private static final int VISIBILITY_PERIOD = 20;
+    private static final String VISIBLE_IF = "display.visible-if";
     private static final String REGISTRY_FILE = "packet-display-chunks.txt";
     private static final String RESET_MARK = ";reset";
 
@@ -123,6 +130,12 @@ public final class DisplayRenderer implements Listener {
      */
     private final Map<String, Boolean> registry = new ConcurrentHashMap<>();
     private volatile boolean registryDirty;
+    /**
+     * Whether a model read since the last reload has a {@code display.visible-if}: only then are the blocks around
+     * the players checked every second.
+     */
+    private volatile boolean anyConditional;
+    private final Set<String> reportedConditions = new HashSet<>();
 
     private int tick;
     private int converted;
@@ -137,6 +150,15 @@ public final class DisplayRenderer implements Listener {
     static final class Viewer {
         final Player player;
         final Set<PlacedDisplay> shown = new HashSet<>();
+        /**
+         * The blocks in range whose model has a {@code display.visible-if}, shown or not: their conditions are
+         * checked again every second.
+         */
+        final Set<PlacedDisplay> guarded = new HashSet<>();
+        /**
+         * Among them, those not sent because their conditions are false for this player.
+         */
+        final Set<PlacedDisplay> withheld = new HashSet<>();
         UUID world;
         int chunkX;
         int chunkZ;
@@ -275,6 +297,7 @@ public final class DisplayRenderer implements Listener {
         }
         removed(location.getBlock());
         placed.bind(model, this.nms);
+        guardHitbox(placed, data);
         add(placed);
         start(placed, DisplayAnimation.Trigger.PLACE, null);
     }
@@ -447,6 +470,12 @@ public final class DisplayRenderer implements Listener {
         placed.privateFor.remove(id);
         Viewer viewer = this.viewers.get(id);
         if (viewer != null && viewer.player.isOnline() && viewer.shown.contains(placed)) {
+            if (placed.model.conditional() && !visibleTo(viewer.player, placed)) {
+                // its conditions turned false while it played (the click that started it marked it found): it
+                // goes now, from where the animation left it
+                withhold(viewer, placed);
+                return;
+            }
             this.nms.send(viewer.player, placed.restPacket(this.nms, play.animation));
             catchUp(viewer, placed);
         }
@@ -646,6 +675,8 @@ public final class DisplayRenderer implements Listener {
             data.set(CustomBlockKey.SHIFT, PersistentDataType.STRING, text);
         }
         layHitbox(placed, data);
+        // its click boxes were summoned again
+        guardHitbox(placed, data);
     }
 
     /**
@@ -686,6 +717,9 @@ public final class DisplayRenderer implements Listener {
         this.retryChunks.clear();
         this.ranges.clear();
         this.farthest = 0;
+        this.anyConditional = false;
+        this.reportedConditions.clear();
+        warnWithoutPlaceholders();
         this.playing.clear();
         // the blocks are read again and get new entity ids: what was played for players is dropped
         for (List<PrivatePlay> plays : this.privatePlays.values()) {
@@ -710,8 +744,11 @@ public final class DisplayRenderer implements Listener {
                     if (model == null) {
                         iterator.remove();
                     } else {
-                        refreshHitbox(placed, model, new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin));
+                        CustomBlockData data = new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin);
+                        refreshHitbox(placed, model, data);
                         placed.bind(model, this.nms);
+                        // a visible-if added, changed or removed applies to the blocks already placed
+                        guardHitbox(placed, data);
                         show(placed);
                     }
                 }
@@ -771,6 +808,37 @@ public final class DisplayRenderer implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onEntitiesLoad(EntitiesLoadEvent event) {
         queue(event.getChunk());
+        if (this.anyConditional) {
+            guardLoaded(event.getEntities());
+        }
+    }
+
+    /**
+     * Hides at once the interactions and collisions of blocks with a {@code display.visible-if} that come back with
+     * their chunk, before anyone can click them: they may stand in another chunk than their block, read later.
+     */
+    private synchronized void guardLoaded(List<Entity> entities) {
+        for (Entity entity : entities) {
+            if (!(entity instanceof Interaction) && !(entity instanceof Shulker)) {
+                continue;
+            }
+            CustomBlockKey.DataHolder holder = CustomBlockKey.holder(entity);
+            String name = holder.getName();
+            DisplayModel model = name == null ? null : this.models.get(name);
+            if (model == null || !model.conditional()) {
+                continue;
+            }
+            Location at = holder.getLocation();
+            PlacedDisplay placed = at == null ? null : find(entity.getWorld(), at.getBlockX(), at.getBlockY(), at.getBlockZ());
+            for (Entity part : hitboxParts(entity)) {
+                part.setVisibleByDefault(false);
+                if (placed != null && this.plugin.isEnabled()) {
+                    for (Viewer viewer : placed.viewers) {
+                        viewer.player.showEntity(this.plugin, part);
+                    }
+                }
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -872,6 +940,9 @@ public final class DisplayRenderer implements Listener {
             for (Player player : Bukkit.getOnlinePlayers()) {
                 update(player);
             }
+        }
+        if (this.anyConditional && this.tick % VISIBILITY_PERIOD == 0) {
+            recheck();
         }
         if (this.registryDirty) {
             this.registryDirty = false;
@@ -983,6 +1054,8 @@ public final class DisplayRenderer implements Listener {
                 return;
             }
         } else if (!isActive()) {
+            // its real display entities are everyone's: so are its click boxes
+            guardHitbox(placed, data);
             restore(placed, data);
             return;
         }
@@ -991,6 +1064,7 @@ public final class DisplayRenderer implements Listener {
         refreshHitbox(placed, model, data);
 
         placed.bind(model, this.nms);
+        guardHitbox(placed, data);
         list.add(placed);
         show(placed);
     }
@@ -1140,7 +1214,8 @@ public final class DisplayRenderer implements Listener {
         }
         List<String> problems = new ArrayList<>();
         try {
-            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), viewDistance(name), problems);
+            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), viewDistance(name),
+                    visibleIf(name, problems), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
                 this.plugin.getLogger().log(Level.WARNING, "Could not read the display entities of the custom block " + name, e);
@@ -1162,7 +1237,48 @@ public final class DisplayRenderer implements Listener {
         this.models.put(name, model);
         // players moving look that much further for blocks; the blocks of this model are shown as they are added
         this.farthest = Math.max(this.farthest, model.viewDistance);
+        if (model.conditional()) {
+            this.anyConditional = true;
+        }
         return model;
+    }
+
+    /**
+     * Without PlaceholderAPI, the placeholders of a {@code display.visible-if} stay as written: said once, when the
+     * files of the blocks have been read.
+     */
+    private void warnWithoutPlaceholders() {
+        if (this.plugin.getDependentPluginsManager().isPlaceholderApiAvailable()
+                || !(this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage)
+                || storage.getCustomBlockRepository() == null) {
+            return;
+        }
+        for (CustomBlockConfigurationFile file : storage.getCustomBlockRepository().getFiles()) {
+            if (file.get(VISIBLE_IF) != null) {
+                this.plugin.getLogger().warning("Custom block " + file.getName() + " has a " + VISIBLE_IF + ", but PlaceholderAPI is not installed: "
+                        + "its placeholders stay as written, so its conditions are usually false");
+                return;
+            }
+        }
+    }
+
+    /**
+     * The {@code display.visible-if} of the file of a custom block: empty when it has none.
+     *
+     * @param problems receives the lines that are not conditions
+     */
+    private List<Condition> visibleIf(String name, List<String> problems) {
+        CustomBlockConfigurationFile file = file(name);
+        return file == null ? List.of() : Condition.readAll(file.get(VISIBLE_IF), VISIBLE_IF, problems);
+    }
+
+    @Nullable
+    private CustomBlockConfigurationFile file(String name) {
+        if (this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
+                && storage.getCustomBlockRepository() != null) {
+            return storage.getCustomBlockRepository().getFile(name);
+        }
+        return null;
     }
 
     /**
@@ -1220,9 +1336,217 @@ public final class DisplayRenderer implements Listener {
         for (Viewer viewer : this.viewers.values()) {
             if (!viewer.stale && world.equals(viewer.world)
                     && inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed))
-                    && viewer.shown.add(placed)) {
-                attach(viewer, placed);
+                    && !viewer.shown.contains(placed) && !viewer.withheld.contains(placed)) {
+                reach(viewer, placed);
             }
+        }
+    }
+
+    /**
+     * Sends a custom block that came in range to a player, unless its {@code display.visible-if} holds it back from
+     * him: it is then sent once its conditions turn true.
+     */
+    private void reach(Viewer viewer, PlacedDisplay placed) {
+        if (placed.model.conditional()) {
+            viewer.guarded.add(placed);
+            if (!visibleTo(viewer.player, placed)) {
+                viewer.withheld.add(placed);
+                hitbox(viewer.player, placed, false);
+                return;
+            }
+        }
+        viewer.shown.add(placed);
+        attach(viewer, placed);
+    }
+
+    /**
+     * Takes back a block with a {@code display.visible-if} from a player whose conditions turned false: his client
+     * forgets it, he gets none of its frames and sounds, and can neither click it nor bump into it.
+     */
+    private void withhold(Viewer viewer, PlacedDisplay placed) {
+        viewer.shown.remove(placed);
+        placed.viewers.remove(viewer);
+        if (placed.viewers.isEmpty()) {
+            this.looping.remove(placed);
+        }
+        viewer.withheld.add(placed);
+        this.nms.send(viewer.player, placed.removePacket(this.nms));
+        hitbox(viewer.player, placed, false);
+    }
+
+    /**
+     * Checks again the conditions of the blocks with a {@code display.visible-if} around each player: a block appears
+     * or disappears within a second of his quest moving on. A block he sees stays while an animation played for him
+     * alone runs on it, and goes when it ends.
+     */
+    private void recheck() {
+        for (Viewer viewer : this.viewers.values()) {
+            if (viewer.guarded.isEmpty() || !viewer.player.isOnline()) {
+                continue;
+            }
+            List<PlacedDisplay> changed = null;
+            for (PlacedDisplay placed : viewer.guarded) {
+                if (visibleTo(viewer.player, placed) != viewer.shown.contains(placed)) {
+                    if (changed == null) {
+                        changed = new ArrayList<>(2);
+                    }
+                    changed.add(placed);
+                }
+            }
+            if (changed == null) {
+                continue;
+            }
+            for (PlacedDisplay placed : changed) {
+                if (viewer.withheld.remove(placed)) {
+                    viewer.shown.add(placed);
+                    attach(viewer, placed);
+                } else if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                    withhold(viewer, placed);
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether the conditions of the {@code display.visible-if} of a block are true for a player. Their {@code {x}}
+     * {@code {y}} {@code {z}} and {@code {world}} are the block it was placed in, {@code %player%} is the player, then
+     * PlaceholderAPI gives its placeholders.
+     */
+    private boolean visibleTo(Player player, PlacedDisplay placed) {
+        try {
+            return Condition.all(placed.model.visibleIf, text -> placeholders(player, placed, text));
+        } catch (RuntimeException e) {
+            if (this.reportedConditions.add(placed.modelName)) {
+                this.plugin.getLogger().log(Level.WARNING, "Could not check the " + VISIBLE_IF + " of the custom block " + placed.modelName
+                        + " for " + player.getName() + ": it is not shown", e);
+            }
+            return false;
+        }
+    }
+
+    private String placeholders(Player player, PlacedDisplay placed, String text) {
+        if (text.indexOf('{') >= 0) {
+            text = text.replace("{x}", Integer.toString(placed.x))
+                    .replace("{y}", Integer.toString(placed.y))
+                    .replace("{z}", Integer.toString(placed.z))
+                    .replace("{world}", placed.world.getName());
+        }
+        if (text.indexOf('%') >= 0) {
+            text = text.replace("%player%", player.getName());
+            if (text.indexOf('%') >= 0 && this.plugin.getDependentPluginsManager().isPlaceholderApiAvailable()) {
+                text = me.clip.placeholderapi.PlaceholderAPI.setPlaceholders(player, text);
+            }
+        }
+        return text;
+    }
+
+    /**
+     * Whether a player is sent a block: always, unless its model has a {@code display.visible-if}.
+     */
+    synchronized boolean sees(Player player, PlacedDisplay placed) {
+        if (placed.model == null || !placed.model.conditional()) {
+            return true;
+        }
+        Viewer viewer = this.viewers.get(player.getUniqueId());
+        return viewer != null && viewer.player == player && viewer.shown.contains(placed);
+    }
+
+    /**
+     * Whether the custom block placed at a location has a {@code display.visible-if} that keeps it from a player at
+     * the moment: his clicks on it are ignored.
+     *
+     * @param location the location the block was placed at, as stored on its interactions
+     */
+    public synchronized boolean hides(Player player, @Nullable Location location) {
+        if (location == null || location.getWorld() == null) {
+            return false;
+        }
+        PlacedDisplay placed = find(location.getWorld(), location.getBlockX(), location.getBlockY(), location.getBlockZ());
+        return placed != null && !sees(player, placed);
+    }
+
+    /**
+     * Hides the interactions and collisions of a block whose model has a {@code display.visible-if} from every player
+     * but those it is sent to, or gives those of a block whose model no longer has one back to everyone. Called
+     * whenever they may be new entities: when the block is placed or read, and when they are laid out again.
+     */
+    private void guardHitbox(PlacedDisplay placed, CustomBlockData data) {
+        boolean conditional = isActive() && placed.model != null && placed.model.conditional();
+        if (!conditional && placed.hitbox == null && !data.has(CustomBlockKey.HIDDEN_HITBOX)) {
+            // the other blocks
+            return;
+        }
+        List<UUID> uuids = new ArrayList<>();
+        for (org.bukkit.NamespacedKey key : List.of(CustomBlockKey.INTERACTION_UUID, CustomBlockKey.COLLISION_UUID)) {
+            UUID[] stored = data.get(key, PersistentDataTypes.UUID_ARRAY);
+            if (stored != null) {
+                uuids.addAll(List.of(stored));
+            }
+        }
+        for (UUID uuid : uuids) {
+            Entity entity = Bukkit.getEntity(uuid);
+            if (entity != null) {
+                // hidden from all, or shown to all, whatever was shown to whom before
+                for (Entity part : hitboxParts(entity)) {
+                    part.setVisibleByDefault(!conditional);
+                }
+            }
+        }
+        if (conditional) {
+            placed.hitbox = uuids.toArray(UUID[]::new);
+            data.set(CustomBlockKey.HIDDEN_HITBOX, PersistentDataType.BYTE, (byte) 1);
+            for (Viewer viewer : placed.viewers) {
+                hitbox(viewer.player, placed, true);
+            }
+        } else {
+            placed.hitbox = null;
+            data.remove(CustomBlockKey.HIDDEN_HITBOX);
+        }
+    }
+
+    /**
+     * Shows the interactions and collisions of a block with a {@code display.visible-if} to a player, or hides them
+     * from him: he can click it and bump into it only while he is sent it.
+     */
+    private void hitbox(Player player, PlacedDisplay placed, boolean visible) {
+        if (placed.hitbox == null || !this.plugin.isEnabled()) {
+            return;
+        }
+        for (UUID uuid : placed.hitbox) {
+            Entity entity = Bukkit.getEntity(uuid);
+            if (entity == null) {
+                continue;
+            }
+            for (Entity part : hitboxParts(entity)) {
+                if (visible) {
+                    player.showEntity(this.plugin, part);
+                } else {
+                    player.hideEntity(this.plugin, part);
+                }
+            }
+        }
+    }
+
+    /**
+     * A hitbox entity of a block, with the empty interaction a collision rides.
+     */
+    private static List<Entity> hitboxParts(Entity entity) {
+        Entity vehicle = entity instanceof Shulker ? entity.getVehicle() : null;
+        return vehicle == null ? List.of(entity) : List.of(entity, vehicle);
+    }
+
+    /**
+     * Plays a sound at a block: heard by everyone around it, or by the players it is sent to only when its model has
+     * a {@code display.visible-if}.
+     */
+    private void playSound(PlacedDisplay placed, String sound, float volume, float pitch) {
+        Location where = placed.base();
+        if (!placed.model.conditional()) {
+            placed.world.playSound(where, sound, volume, pitch);
+            return;
+        }
+        for (Viewer viewer : placed.viewers) {
+            viewer.player.playSound(where, sound, volume, pitch);
         }
     }
 
@@ -1231,6 +1555,9 @@ public final class DisplayRenderer implements Listener {
      */
     private void attach(Viewer viewer, PlacedDisplay placed) {
         placed.viewers.add(viewer);
+        if (placed.hitbox != null) {
+            hitbox(viewer.player, placed, true);
+        }
         this.nms.send(viewer.player, placed.spawnPacket(this.nms));
         if (placed.gliding) {
             this.nms.send(viewer.player, glidePacket(placed));
@@ -1345,8 +1672,9 @@ public final class DisplayRenderer implements Listener {
                 int elapsed = this.tick - play.startedAt;
                 if (elapsed >= 0 && elapsed < animation.duration) {
                     boolean sees = viewer != null && viewer.shown.contains(play.placed);
-                    // sounds come from the block: heard in its world only
-                    boolean hears = player != null && player.getWorld() == play.placed.world;
+                    // sounds come from the block: heard in its world only, and by those it is sent to when it has a
+                    // visible-if
+                    boolean hears = player != null && player.getWorld() == play.placed.world && (sees || !play.placed.model.conditional());
                     int[] starting = animation.startingAt[elapsed];
                     if (starting != null) {
                         for (int frame : starting) {
@@ -1384,10 +1712,9 @@ public final class DisplayRenderer implements Listener {
         if (due == null) {
             return;
         }
-        Location where = placed.base();
         for (int note : due) {
             DisplayAnimation.Note played = animation.notes[note];
-            placed.world.playSound(where, played.sound(), played.volume(), played.pitch());
+            playSound(placed, played.sound(), played.volume(), played.pitch());
         }
     }
 
@@ -1407,7 +1734,7 @@ public final class DisplayRenderer implements Listener {
             }
             DisplayAnimation.Frame played = animation.frames[frame];
             if (played.sound() != null) {
-                placed.world.playSound(placed.base(), played.sound(), played.volume(), played.pitch());
+                playSound(placed, played.sound(), played.volume(), played.pitch());
             }
             placed.lastFrame[index] = frame;
         }
@@ -1419,6 +1746,12 @@ public final class DisplayRenderer implements Listener {
         }
         this.looping.remove(placed);
         dropPrivatePlays(placed);
+        if (placed.model != null && placed.model.conditional()) {
+            for (Viewer viewer : this.viewers.values()) {
+                viewer.guarded.remove(placed);
+                viewer.withheld.remove(placed);
+            }
+        }
         if (placed.viewers.isEmpty()) {
             return;
         }
@@ -1427,6 +1760,7 @@ public final class DisplayRenderer implements Listener {
             viewer.shown.remove(placed);
             if (viewer.player.isOnline()) {
                 this.nms.send(viewer.player, packet);
+                hitbox(viewer.player, placed, false);
             }
         }
         placed.viewers.clear();
@@ -1436,13 +1770,19 @@ public final class DisplayRenderer implements Listener {
      * Drops what a client was shown without telling it: it has already forgotten it, or is gone.
      */
     private void forget(Viewer viewer) {
+        boolean online = viewer.player.isOnline();
         for (PlacedDisplay placed : viewer.shown) {
             placed.viewers.remove(viewer);
             if (placed.viewers.isEmpty()) {
                 this.looping.remove(placed);
             }
+            if (placed.hitbox != null && online) {
+                hitbox(viewer.player, placed, false);
+            }
         }
         viewer.shown.clear();
+        viewer.guarded.clear();
+        viewer.withheld.clear();
         viewer.stale = true;
     }
 
@@ -1486,10 +1826,24 @@ public final class DisplayRenderer implements Listener {
                 if (placed.viewers.isEmpty()) {
                     this.looping.remove(placed);
                 }
+                if (placed.model.conditional()) {
+                    viewer.guarded.remove(placed);
+                    hitbox(player, placed, false);
+                }
                 if (leaving == null) {
                     leaving = new ArrayList<>();
                 }
                 leaving.add(placed);
+            }
+        }
+        if (!viewer.withheld.isEmpty()) {
+            // the blocks held back from him that are now out of his range are no longer checked
+            for (Iterator<PlacedDisplay> iterator = viewer.withheld.iterator(); iterator.hasNext(); ) {
+                PlacedDisplay placed = iterator.next();
+                if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius(placed))) {
+                    iterator.remove();
+                    viewer.guarded.remove(placed);
+                }
             }
         }
         if (leaving != null) {
@@ -1534,7 +1888,8 @@ public final class DisplayRenderer implements Listener {
 
     private void showAll(Viewer viewer, List<PlacedDisplay> list) {
         for (PlacedDisplay placed : list) {
-            if (!inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed)) || viewer.shown.contains(placed)) {
+            if (!inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed)) || viewer.shown.contains(placed)
+                    || viewer.withheld.contains(placed)) {
                 continue;
             }
             if (!chunkSent(viewer.player, placed.chunkX(), placed.chunkZ())) {
@@ -1542,8 +1897,7 @@ public final class DisplayRenderer implements Listener {
                 viewer.stale = true;
                 continue;
             }
-            viewer.shown.add(placed);
-            attach(viewer, placed);
+            reach(viewer, placed);
         }
     }
 

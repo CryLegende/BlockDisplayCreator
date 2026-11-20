@@ -143,7 +143,8 @@ public final class GizmoManager implements Listener {
      */
     private boolean opens(Player player, PlacedDisplay placed) {
         Gizmo current = this.sessions.get(player.getUniqueId());
-        return (current != null && current.target() == placed) || mayEditAt(player, placed, placed.base());
+        // a block with a visible-if that keeps it from him cannot be selected
+        return (current != null && current.target() == placed) || this.renderer.sees(player, placed) && mayEditAt(player, placed, placed.base());
     }
 
     private void end(Player player) {

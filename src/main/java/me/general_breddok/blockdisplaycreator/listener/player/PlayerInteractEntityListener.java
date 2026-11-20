@@ -68,6 +68,13 @@ public class PlayerInteractEntityListener implements Listener {
         if (blockName == null)
             return;
 
+        // a block whose display.visible-if keeps it from this player: he does not see it, his click does nothing
+        DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        if (renderer != null && renderer.hides(player, CustomBlockKey.holder(interaction).getLocation())) {
+            event.setCancelled(true);
+            return;
+        }
+
         if (!BooleanConfigValue.BLOCKS_INTERACTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_INTERACTION)) {
                 event.setCancelled(true);
@@ -106,7 +113,6 @@ public class PlayerInteractEntityListener implements Listener {
 
         customBlock.handleClick(configuredInteraction, interaction, player, new CustomBlockPlaceholder(customBlock), new InteractionPlaceholder(interaction));
 
-        DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
         if (renderer != null) {
             renderer.clicked(customBlock.getLocation().getBlock(), configuredInteraction.getIdentifier());
         }

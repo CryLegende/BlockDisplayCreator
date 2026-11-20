@@ -63,6 +63,10 @@ public class EntityDamageByEntityListener implements Listener {
 
         event.setCancelled(true);
 
+        // a block whose display.visible-if keeps it from this player cannot be broken by him either
+        if (renderer != null && renderer.hides(player, CustomBlockKey.holder(entity).getLocation()))
+            return;
+
         if (!BooleanConfigValue.BLOCKS_DESTRUCTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
                 ChatUtil.sendMessage(player, StringMessagesValue.PERMISSION_DENIED_BREAK);

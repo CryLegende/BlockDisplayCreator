@@ -32,6 +32,11 @@ final class PlacedDisplay {
      * others see.
      */
     final java.util.Set<UUID> privateFor = new java.util.HashSet<>(2);
+    /**
+     * The interactions and collisions of a block whose model has a {@code display.visible-if}: hidden from every
+     * player but those it is sent to. Null for the other blocks.
+     */
+    UUID[] hitbox;
 
     /**
      * Where the block was placed: the point its interactions and collisions are laid out around.

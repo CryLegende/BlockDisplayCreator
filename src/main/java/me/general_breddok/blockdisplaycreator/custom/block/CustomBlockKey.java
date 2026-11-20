@@ -42,6 +42,11 @@ public interface CustomBlockKey {
      * the model was tipped over.
      */
     NamespacedKey HITBOX_LAYOUT = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-hitbox-layout");
+    /**
+     * Set while the interactions and collisions of a custom block are hidden from the players who are not sent it
+     * (its file has a {@code display.visible-if}): they are given back to everyone once the file no longer has one.
+     */
+    NamespacedKey HIDDEN_HITBOX = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-hidden-hitbox");
 
     static DataHolder holder(PersistentDataHolder holder) {
         return new DataHolder(holder);
