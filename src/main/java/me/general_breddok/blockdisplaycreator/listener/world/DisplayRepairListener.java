@@ -177,7 +177,8 @@ public class DisplayRepairListener implements Listener {
             return;
         }
         CustomBlockData data = new CustomBlockData(location.getBlock(), this.plugin);
-        if (!data.has(CustomBlockKey.NAME) || expected.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))) {
+        if (!data.has(CustomBlockKey.NAME) || (expected.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
+                && !(this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service && service.hasLostCollision(location)))) {
             return;
         }
         Bukkit.getScheduler().runTask(this.plugin, () -> {

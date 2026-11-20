@@ -652,7 +652,8 @@ public class BDCCustomBlockService implements CustomBlockService {
             return false;
         }
         String signature = hitboxSignature(abstractCustomBlock);
-        if (signature.equals(customBlockData.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))) {
+        if (signature.equals(customBlockData.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
+                && !hasLostCollision(customBlockData, abstractCustomBlock, location)) {
             return false;
         }
 
@@ -664,29 +665,112 @@ public class BDCCustomBlockService implements CustomBlockService {
             }
             for (UUID uuid : uuids) {
                 Entity entity = Bukkit.getEntity(uuid);
-                if (entity == null) {
+                if (entity != null) {
+                    outdated.add(entity);
+                } else if (!entitiesLoadedAround(location)) {
+                    // it may stand in a chunk that is not loaded: it would be left behind
                     return false;
                 }
-                outdated.add(entity);
+                // otherwise it is gone for good (a collision whose summon was refused): nothing to remove
             }
         }
         CustomBlockRotation rotation = customBlockData.get(CustomBlockKey.BLOCK_ROTATION, PersistentDataTypes.CUSTOM_BLOCK_ROTATION);
 
-        for (Entity entity : outdated) {
-            Entity vehicle = entity instanceof Shulker ? entity.getVehicle() : null;
-            entity.remove();
-            if (vehicle != null) {
-                vehicle.remove();
-            }
-        }
+        // the new entities first: when one is refused, the block keeps the ones it has
         List<Interaction> interactions = summonInteractions(abstractCustomBlock, location, rotation);
         List<Shulker> collisions = summonCollisions(abstractCustomBlock, location, rotation);
+        if (collisions.size() < expectedCollisions(abstractCustomBlock) || !interactions.stream().allMatch(Entity::isValid)) {
+            // another plugin refused the summon (SuperiorSkyblock2 stops every spawn on an island nobody is active
+            // on): tried again at a later load
+            interactions.forEach(Entity::remove);
+            collisions.forEach(BDCCustomBlockService::removeCollision);
+            return false;
+        }
+        for (Entity entity : outdated) {
+            removeCollision(entity);
+        }
 
         customBlockData.set(CustomBlockKey.INTERACTION_UUID, PersistentDataTypes.UUID_ARRAY, interactions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.COLLISION_UUID, PersistentDataTypes.UUID_ARRAY, collisions.stream().map(Entity::getUniqueId).toArray(UUID[]::new));
         customBlockData.set(CustomBlockKey.HITBOX, PersistentDataType.STRING, signature);
 
         return true;
+    }
+
+    /**
+     * Whether a placed block lost a collision its file gives it: a collision entity it lists is gone although every
+     * chunk around the block has its entities, or it lists fewer than its file describes (a summon was refused).
+     * Players would walk through it.
+     */
+    public boolean hasLostCollision(@NotNull CustomBlockData customBlockData, @NotNull AbstractCustomBlock abstractCustomBlock, @NotNull Location location) {
+        int expected = expectedCollisions(abstractCustomBlock);
+        if (expected == 0) {
+            return false;
+        }
+        UUID[] uuids = customBlockData.get(CustomBlockKey.COLLISION_UUID, PersistentDataTypes.UUID_ARRAY);
+        if (uuids != null && uuids.length >= expected) {
+            boolean missing = false;
+            for (UUID uuid : uuids) {
+                if (Bukkit.getEntity(uuid) == null) {
+                    missing = true;
+                    break;
+                }
+            }
+            if (!missing) {
+                return false;
+            }
+        }
+        return entitiesLoadedAround(location);
+    }
+
+    /**
+     * Same, for a block known by its location only.
+     */
+    public boolean hasLostCollision(@NotNull Location location) {
+        CustomBlockData customBlockData = new CustomBlockData(location.getBlock(), BlockDisplayCreator.getInstance());
+        String name = customBlockData.get(CustomBlockKey.NAME, PersistentDataType.STRING);
+        AbstractCustomBlock abstractCustomBlock = name == null ? null : storage.getAbstractCustomBlock(name);
+        return abstractCustomBlock != null && hasLostCollision(customBlockData, abstractCustomBlock, location);
+    }
+
+    private static int expectedCollisions(AbstractCustomBlock abstractCustomBlock) {
+        int expected = 0;
+        for (ConfiguredCollision collision : abstractCustomBlock.getConfiguredCollisions()) {
+            if (!isUseless(collision, abstractCustomBlock)) {
+                expected++;
+            }
+        }
+        return expected;
+    }
+
+    /**
+     * True when the chunk of this location and the eight around it are loaded with their entities.
+     */
+    private static boolean entitiesLoadedAround(Location location) {
+        World world = location.getWorld();
+        if (world == null) {
+            return false;
+        }
+        int chunkX = location.getBlockX() >> 4, chunkZ = location.getBlockZ() >> 4;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (!world.isChunkLoaded(chunkX + dx, chunkZ + dz) || !world.getChunkAt(chunkX + dx, chunkZ + dz).isEntitiesLoaded()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Removes a hitbox entity, and the interaction a collision rides.
+     */
+    private static void removeCollision(Entity entity) {
+        Entity vehicle = entity instanceof Shulker ? entity.getVehicle() : null;
+        entity.remove();
+        if (vehicle != null) {
+            vehicle.remove();
+        }
     }
 
     /**

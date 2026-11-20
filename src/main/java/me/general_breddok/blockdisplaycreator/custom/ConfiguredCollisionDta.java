@@ -57,6 +57,11 @@ public class ConfiguredCollisionDta implements ConfiguredCollision {
         }
 
         Shulker shulker = this.summoner.summon(summonLocation);
+        if (!shulker.isValid()) {
+            // refused by another plugin (SuperiorSkyblock2 stops every spawn on an island nobody is active on): no
+            // interaction is left behind without its shulker
+            return null;
+        }
 
         Interaction vehicle = location.getWorld().spawn(summonLocation, Interaction.class);
         vehicle.setInteractionHeight(0);

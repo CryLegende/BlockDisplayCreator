@@ -1000,8 +1000,8 @@ public final class DisplayRenderer implements Listener {
      * a click box changed by hand, or a new scale.
      */
     private void refreshHitbox(PlacedDisplay placed, DisplayModel model, CustomBlockData data) {
-        if (!model.hitboxSignature.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
-                && this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service
+        if (this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service
+                && (!model.hitboxSignature.equals(data.get(CustomBlockKey.HITBOX, PersistentDataType.STRING)) || service.hasLostCollision(placed.base()))
                 && service.refreshHitbox(placed.base())) {
             // the new entities stand around the placement: they go where the block was moved
             placed.resetHitboxShift();
