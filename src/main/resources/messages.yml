@@ -15,6 +15,10 @@ region-denied:
   break: "&c&lHey! &r&7Sorry, but you can`t break that custom block here."
   interact: "&c&lHey! &r&7Sorry, but you can`t interact with that custom block here."
 
+#Message displayed to a player allowed to break custom blocks who hits one whose file says breakable: false (%x% %y% %z% %world% = the block)
+protected:
+  break: "&7This custom block is protected (breakable: false). Remove it with &f/bdc custom-block break %x% %y% %z% %world%&7."
+
 #Messages displayed when a player performs an action on a Skyblock island and that action is denied (due to lack of access)
 island-denied:
   place: "&c&lError | &7This island is protected. You cannot place custom blocks here."

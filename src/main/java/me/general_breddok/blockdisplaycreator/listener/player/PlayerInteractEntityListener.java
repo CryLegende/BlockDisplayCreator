@@ -28,6 +28,7 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Interaction;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Shulker;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -36,6 +37,7 @@ import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Collection;
 import java.util.function.Predicate;
@@ -60,8 +62,19 @@ public class PlayerInteractEntityListener implements Listener {
         Player player = event.getPlayer();
         EquipmentSlot hand = event.getHand();
 
-        if (!(event.getRightClicked() instanceof Interaction interaction))
+        Interaction interaction;
+        if (event.getRightClicked() instanceof Interaction clickBox) {
+            interaction = clickBox;
+        } else if (event.getRightClicked() instanceof Shulker collision && CustomBlockKey.holder(collision).getName() != null) {
+            // the collision of a custom block (an invisible shulker) often stands in front of its click box, on a big
+            // model above all: a right click on it is the click of the block, on its nearest click box
+            event.setCancelled(true);
+            interaction = clickBoxOf(collision);
+            if (interaction == null)
+                return;
+        } else {
             return;
+        }
 
         String blockName = CustomBlockKey.holder(interaction).getName();
 
@@ -144,6 +157,29 @@ public class PlayerInteractEntityListener implements Listener {
 
         PlayerInteractEvent playerInteractEvent = new PlayerInteractEvent(player, Action.RIGHT_CLICK_BLOCK, player.getInventory().getItem(hand), world.getBlockAt(hitPosition.getBlockX(), hitPosition.getBlockY(), hitPosition.getBlockZ()), blockFace, hand);
         EventUtil.call(playerInteractEvent);*/
+    }
+
+    /**
+     * The click box of the custom block a collision belongs to that is nearest to it, or null when it has none loaded.
+     */
+    @Nullable
+    private Interaction clickBoxOf(Shulker collision) {
+        CustomBlock customBlock = CustomBlockService.getService(serviceManager, collision).getCustomBlock(collision);
+        if (customBlock == null || customBlock.getInteractions() == null)
+            return null;
+        Vector at = collision.getBoundingBox().getCenter();
+        Interaction nearest = null;
+        double best = Double.MAX_VALUE;
+        for (Interaction candidate : customBlock.getInteractions()) {
+            if (candidate == null || !candidate.isValid())
+                continue;
+            double distance = candidate.getBoundingBox().getCenter().distanceSquared(at);
+            if (distance < best) {
+                best = distance;
+                nearest = candidate;
+            }
+        }
+        return nearest;
     }
 
     private static boolean checkAccess(CustomBlock customBlock, Player player) {

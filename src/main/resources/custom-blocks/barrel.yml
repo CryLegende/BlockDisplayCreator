@@ -138,6 +138,10 @@ sound:
 #  #        pitch: 1.2
 #  #        volume: 1
 
+#Whether a hit breaks the placed blocks of this file.   By def true
+#With false, nobody breaks them by hitting them, not even an operator (who is told how to remove one): /bdc custom-block break <x> <y> <z> [world] does.
+#breakable: false
+
 #Settings of the display section above for blocks shown through packets (packet-display in config.yml).   The fields may be missing
 #display:
 #  #How far players are sent the block, in blocks.   By def the distance the world tracks display entities at

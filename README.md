@@ -59,3 +59,9 @@ The commands of an interaction (`interactions.<name>.command`, run by the player
 | `{world}` | the name of its world |
 
 For example `bdc animation play %player% open {x} {y} {z} {world}`. The same placeholders work in the place and break commands of a block.
+
+A collision of a custom block is an invisible shulker that often stands in front of its click box (on a big model above all): a right click on it counts as a click on the nearest click box of that block.
+
+## Blocks nobody breaks by hitting them
+
+`breakable: false` at the root of a block file: no hit breaks its placed blocks, not even from an operator, who is told how to remove one instead (`protected.break` in `messages.yml`, with `%x%` `%y%` `%z%` `%world%`). `/bdc custom-block break <x> <y> <z> [world]` still removes it. Meant for characters and props other features rely on (quest NPCs, puzzle pieces).

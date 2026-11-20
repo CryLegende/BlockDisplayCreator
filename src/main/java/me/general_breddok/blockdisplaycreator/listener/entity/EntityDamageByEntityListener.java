@@ -2,12 +2,14 @@ package me.general_breddok.blockdisplaycreator.listener.entity;
 
 import me.general_breddok.blockdisplaycreator.BlockDisplayCreator;
 import me.general_breddok.blockdisplaycreator.common.BDCDependentPluginsManager;
+import me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockConfigStorage;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlock;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockKey;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockPermissions;
 import me.general_breddok.blockdisplaycreator.custom.block.CustomBlockService;
 import me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockBreakOption;
 import me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockOption;
+import me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockConfigurationFile;
 import me.general_breddok.blockdisplaycreator.file.config.value.BooleanConfigValue;
 import me.general_breddok.blockdisplaycreator.file.config.value.StringMessagesValue;
 import me.general_breddok.blockdisplaycreator.permission.DefaultPermissions;
@@ -67,6 +69,20 @@ public class EntityDamageByEntityListener implements Listener {
         if (renderer != null && renderer.hides(player, CustomBlockKey.holder(entity).getLocation()))
             return;
 
+        // a file with "breakable: false" (a quest character, a decor players rely on) is never broken by a hit, not
+        // even by an operator: /bdc custom-block break <x> <y> <z> removes it. Those allowed to break are told so.
+        if (!breakable(blockName)) {
+            if (BooleanConfigValue.BLOCKS_DESTRUCTION || player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
+                Location at = CustomBlockKey.holder(entity).getLocation();
+                if (at != null && at.getWorld() != null) {
+                    ChatUtil.sendMessage(player, StringMessagesValue.PROTECTED_BREAK
+                            .replace("%x%", String.valueOf(at.getBlockX())).replace("%y%", String.valueOf(at.getBlockY()))
+                            .replace("%z%", String.valueOf(at.getBlockZ())).replace("%world%", at.getWorld().getName()));
+                }
+            }
+            return;
+        }
+
         if (!BooleanConfigValue.BLOCKS_DESTRUCTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
                 ChatUtil.sendMessage(player, StringMessagesValue.PERMISSION_DENIED_BREAK);
@@ -97,6 +113,18 @@ public class EntityDamageByEntityListener implements Listener {
             customBlockService.breakBlock(customBlock, player, options);
         } catch (IllegalArgumentException ignore) {
         }
+    }
+
+    /**
+     * Whether a hit may break the placed blocks of this file: false only when it says {@code breakable: false}.
+     */
+    private static boolean breakable(String name) {
+        if (BlockDisplayCreator.getInstance().getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
+                && storage.getCustomBlockRepository() != null) {
+            CustomBlockConfigurationFile file = storage.getCustomBlockRepository().getFile(name);
+            return file == null || !Boolean.FALSE.equals(file.get("breakable"));
+        }
+        return true;
     }
 
     private static boolean checkAccess(Player player, CustomBlock customBlock) {
