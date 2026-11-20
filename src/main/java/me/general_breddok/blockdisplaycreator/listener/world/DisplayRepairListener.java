@@ -67,6 +67,29 @@ public class DisplayRepairListener implements Listener {
     public void onEntitiesLoad(EntitiesLoadEvent event) {
         repairAll(event.getEntities());
         sweepStray(event.getEntities());
+        sweepEmptyCarriers(event.getEntities());
+    }
+
+    private final AtomicInteger carriers = new AtomicInteger();
+
+    /**
+     * Removes the interactions a collision rode and lost: no size, no rider, nothing marking them. Older versions
+     * left one behind each time a collision's shulker was refused (SuperiorSkyblock2 stops every spawn on an island
+     * nobody is active on). It can be neither seen, clicked nor hit, and nothing else summons such an interaction.
+     */
+    private void sweepEmptyCarriers(Iterable<? extends Entity> entities) {
+        for (Entity entity : entities) {
+            if (entity instanceof org.bukkit.entity.Interaction interaction && interaction.isValid()
+                    && interaction.getInteractionWidth() == 0f && interaction.getInteractionHeight() == 0f
+                    && interaction.getPassengers().isEmpty() && !interaction.isInsideVehicle()
+                    && interaction.getScoreboardTags().isEmpty() && interaction.getPersistentDataContainer().isEmpty()) {
+                interaction.remove();
+                if (this.carriers.getAndIncrement() == 0) {
+                    Bukkit.getScheduler().runTaskLater(this.plugin, () -> this.plugin.getLogger().info(
+                            "Removed " + this.carriers.getAndSet(0) + " empty collision interaction(s) left without their shulker"), 200L);
+                }
+            }
+        }
     }
 
     private final AtomicInteger swept = new AtomicInteger();
