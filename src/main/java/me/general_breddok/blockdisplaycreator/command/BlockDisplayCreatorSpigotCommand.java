@@ -191,6 +191,8 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
 
                     case "place" -> place(sender, args, storage);
 
+                    case "break" -> breakAt(sender, args);
+
                     case "give" -> {
 
                         if (!sender.hasPermission(DefaultPermissions.BDC.Command.GIVE_CB)) {
@@ -753,6 +755,56 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
         Bukkit.getScheduler().runTask(this.plugin, placing);
     }
 
+    private static final String BREAK_USAGE = "&6/bdc custom-block break <x> <y> <z> [world]";
+
+    /**
+     * /bdc custom-block break &lt;x&gt; &lt;y&gt; &lt;z&gt; [world]
+     * <p>
+     * Breaks the custom block stored in the block x y z (the block a model was placed in: 10 64 20 for a model placed
+     * at 10.5 64 20.5), from a player or from the console, without dropping its item. The chunk is loaded first and
+     * the block is broken a second later, once its interactions are back in the world.
+     */
+    private void breakAt(CommandSender sender, String[] args) {
+        if (!sender.hasPermission(DefaultPermissions.BDC.Command.BREAK_CB)) {
+            ChatUtil.sendMessage(sender, "&cYou do not have permission to use this command");
+            return;
+        }
+        double x = parseCoordinate(args.length > 2 ? args[2] : null);
+        double y = parseCoordinate(args.length > 3 ? args[3] : null);
+        double z = parseCoordinate(args.length > 4 ? args[4] : null);
+        if (Double.isNaN(x) || Double.isNaN(y) || Double.isNaN(z)) {
+            ChatUtil.sendMessage(sender, "&cYou must specify valid coordinates in the format <x> <y> <z>");
+            ChatUtil.sendMessage(sender, BREAK_USAGE);
+            return;
+        }
+        World world = sender instanceof Entity entity ? entity.getWorld()
+                : sender instanceof BlockCommandSender commandBlock ? commandBlock.getBlock().getWorld()
+                : Bukkit.getWorlds().get(0);
+        if (args.length > 5) {
+            world = Bukkit.getWorld(args[5]);
+            if (world == null) {
+                ChatUtil.sendMessage(sender, "&cNo world named '" + args[5] + "'.");
+                return;
+            }
+        }
+        Location location = new Location(world, Math.floor(x), Math.floor(y), Math.floor(z));
+        world.getChunkAt(location).load();
+        Bukkit.getScheduler().runTaskLater(this.plugin, () -> {
+            CustomBlock customBlock = this.plugin.getCustomBlockService().getCustomBlock(location);
+            String where = location.getBlockX() + " " + location.getBlockY() + " " + location.getBlockZ() + " (" + location.getWorld().getName() + ")";
+            if (customBlock == null) {
+                ChatUtil.sendMessage(sender, "&cNo custom block in " + where);
+                return;
+            }
+            try {
+                this.plugin.getCustomBlockService().breakBlock(customBlock, null, me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockBreakOption.SILENT_BREAK);
+                ChatUtil.sendMessage(sender, "&aBroke " + customBlock.getName() + " in " + where);
+            } catch (IllegalArgumentException e) {
+                ChatUtil.sendMessage(sender, "&cCould not break the custom block in " + where + ": " + e.getMessage());
+            }
+        }, 20L);
+    }
+
     @Nullable
     private static BlockFace parseFace(String text) {
         try {
@@ -846,7 +898,8 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
             } else if (arg1.equals("custom-block")) {
                 StringUtil.copyPartialMatches(arg2, List.of(
                         "give",
-                        "place"
+                        "place",
+                        "break"
                         /*"create",
                         "set"*/
                 ), result);
