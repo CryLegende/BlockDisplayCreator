@@ -47,6 +47,7 @@ interactions:
       z: 0
 
     #Command or commands that are called when the player interacts (right-clicks) with the Interaction Entity of this block.   By def absent
+    #%player% is the player who clicked (PlaceholderAPI placeholders work too). {x} {y} {z} and {world} are the block coordinates and the world the custom block was placed in (not where a gizmo moved the model).
     command:
       - /minecraft:playsound minecraft:ambient.cave player @s
     #Command source (PLAYER who clicked on the interaction entity or CONSOLE).   By def CONSOLE

@@ -16,10 +16,19 @@ public record CustomBlockPlaceholder(CustomBlock context) implements UniversalPl
 
         Location location = context.getLocation();
 
-        return template
+        // {x} {y} {z} {world}: the block the custom block was placed in (whole numbers), not where a gizmo moved its model
+        String result = template
+                .replace("{x}", String.valueOf(location.getBlockX()))
+                .replace("{y}", String.valueOf(location.getBlockY()))
+                .replace("{z}", String.valueOf(location.getBlockZ()));
+        if (location.getWorld() != null) {
+            result = result.replace("{world}", location.getWorld().getName());
+        }
+
+        return result
                 .replace("%customblock_x%", String.valueOf(location.getX()))
                 .replace("%customblock_y%", String.valueOf(location.getY()))
-                .replace("%customblock_y%", String.valueOf(location.getY()))
+                .replace("%customblock_z%", String.valueOf(location.getZ()))
                 .replace("%customblock_name%", context.getName());
     }
 }

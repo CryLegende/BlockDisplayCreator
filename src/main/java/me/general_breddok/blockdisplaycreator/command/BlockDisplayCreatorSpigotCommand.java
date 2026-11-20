@@ -14,8 +14,10 @@ import me.general_breddok.blockdisplaycreator.util.ItemUtil;
 import me.general_breddok.blockdisplaycreator.world.WorldSelection;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.command.BlockCommandSender;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
@@ -187,108 +189,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
 
                     }*/
 
-                    case "place" -> {
-
-                        if (player == null) {
-                            ChatUtil.sendMessage(sender, "&cThe sender of the command must be a player!");
-                            return true;
-                        }
-
-                        if (!sender.hasPermission(DefaultPermissions.BDC.Command.PLACE_CB)) {
-                            ChatUtil.sendMessage(sender, "&cYou do not have permission to use this command");
-                            return true;
-                        }
-
-                        if (arg3 == null) {
-                            ChatUtil.sendMessage(sender, "&cYou didn't specify a block!");
-                            return true;
-                        }
-
-                        if (!storage.containsAbstractCustomBlock(arg3)) {
-                            ChatUtil.sendMessage(sender, StringMessagesValue.COMMAND_BLOCK_NOT_EXISTS.replace("%customblock_name%", arg3));
-                            return true;
-                        }
-
-
-                        Location location = getLocation(arg4, arg5, arg6, player);
-
-                        if (location == null) {
-                            return true;
-                        }
-
-                        LocationPlaceholder locationPlaceholder = new LocationPlaceholder(location);
-
-
-                        String attachedFaceStr = arg7 == null ? "up" : arg7;
-                        BlockFace attachedFace;
-
-                        try {
-                            attachedFace = BlockFace.valueOf(attachedFaceStr.toUpperCase());
-                        } catch (IllegalArgumentException e) {
-                            ChatUtil.sendMessage(sender, StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_INVALID_ATTACHED_FACE.replace("%face%", attachedFaceStr));
-                            return true;
-                        }
-
-
-                        int direction = 0;
-
-                        if (arg8 != null) {
-                            try {
-                                direction = Integer.parseInt(arg8);
-                            } catch (NumberFormatException e) {
-                                ChatUtil.sendMessage(sender, "&cThe direction must be a number from 0 to 360!");
-                                return true;
-                            }
-                        }
-
-
-                        List<CustomBlockPlaceOption> options = new ArrayList<>();
-
-                        if (arg9 != null) {
-
-                            for (int i = 8; i < args.length; i++) {
-                                try {
-                                    CustomBlockPlaceOption option = CustomBlockPlaceOption.valueOf(args[i].toUpperCase());
-                                    options.add(option);
-                                } catch (IllegalArgumentException e) {
-                                    ChatUtil.sendMessage(sender, "&cThe option " + args[i] + " is not a valid place option!");
-                                    return true;
-                                }
-                            }
-                        }
-
-
-                        AbstractCustomBlock abstractCustomBlock = storage.getAbstractCustomBlock(arg3);
-
-                        CustomBlockRotation rotation = new BDCCustomBlockRotation(attachedFace, direction);
-
-                        Bukkit.getScheduler().runTask(this.plugin, () -> {
-                            CustomBlock customBlock;
-
-                            try {
-                                customBlock = this.plugin.getCustomBlockService().placeBlock(abstractCustomBlock, location, rotation, null, options.toArray(CustomBlockPlaceOption[]::new));
-                            } catch (IllegalArgumentException e) {
-                                ChatUtil.sendMessage(sender,
-                                        locationPlaceholder.apply(StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_FAILED)
-                                                .replace("%customblock_name%", finalArg3)
-                                                .replace("%reason%", e.getMessage())
-                                );
-                                return;
-                            }
-
-                            if (customBlock == null) {
-                                ChatUtil.sendMessage(sender, locationPlaceholder.apply(StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_FAILED_WITHOUT_REASON)
-                                        .replace("%customblock_name%", finalArg3)
-                                );
-                                return;
-                            }
-
-                            ChatUtil.sendMessage(sender,
-                                    locationPlaceholder.apply(StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_PLACED)
-                                            .replace("%customblock_name%", finalArg3)
-                            );
-                        });
-                    }
+                    case "place" -> place(sender, args, storage);
 
                     case "give" -> {
 
@@ -716,18 +617,158 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
         return true;
     }
 
-    private @Nullable Location getLocation(String arg4, String arg5, String arg6, Player player) {
-        double x = parseCoordinate(arg4);
-        double y = parseCoordinate(arg5);
-        double z = parseCoordinate(arg6);
+    private static final String PLACE_USAGE = "&6/bdc custom-block place <block> <x> <y> <z> [world] [face] [yaw] [options]";
+    private static final java.util.regex.Pattern NUMBER = java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?");
 
-        if (Double.isNaN(x) || Double.isNaN(y) || Double.isNaN(z)) {
-            ChatUtil.sendMessage(player, "&cYou must specify valid coordinates in the format <x> <y> <z>");
-            return null;
+    /**
+     * /bdc custom-block place &lt;block&gt; &lt;x&gt; &lt;y&gt; &lt;z&gt; [world] [face] [yaw] [options]
+     * <p>
+     * Places a custom block at coordinates, from a player or from the console (a command block works too). The
+     * centre of the model goes on the coordinates given, as it always did: write 10.5 64 20.5 for the middle of the
+     * block 10 64 20. The world is the sender's (the main world for the console) unless one is named; the yaw
+     * (degrees, 0 by default) turns the model, snapped to the sides-count of its file, as the direction of a player
+     * placing it does; the face (up by default) is the face of the block it is attached to. World, face and yaw come
+     * in that order and each may be left out. The block is placed on the next tick.
+     */
+    private void place(CommandSender sender, String[] args, CustomBlockStorage storage) {
+        if (!sender.hasPermission(DefaultPermissions.BDC.Command.PLACE_CB)) {
+            ChatUtil.sendMessage(sender, "&cYou do not have permission to use this command");
+            return;
         }
 
-        Location location = new Location(player.getWorld(), x, y, z);
-        return location;
+        if (args.length < 3) {
+            ChatUtil.sendMessage(sender, "&cYou didn't specify a block!");
+            ChatUtil.sendMessage(sender, PLACE_USAGE);
+            return;
+        }
+
+        String blockName = args[2];
+
+        if (!storage.containsAbstractCustomBlock(blockName)) {
+            ChatUtil.sendMessage(sender, StringMessagesValue.COMMAND_BLOCK_NOT_EXISTS.replace("%customblock_name%", blockName));
+            return;
+        }
+
+        double x = parseCoordinate(args.length > 3 ? args[3] : null);
+        double y = parseCoordinate(args.length > 4 ? args[4] : null);
+        double z = parseCoordinate(args.length > 5 ? args[5] : null);
+
+        if (Double.isNaN(x) || Double.isNaN(y) || Double.isNaN(z)) {
+            ChatUtil.sendMessage(sender, "&cYou must specify valid coordinates in the format <x> <y> <z>");
+            ChatUtil.sendMessage(sender, PLACE_USAGE);
+            return;
+        }
+
+        int next = 6;
+
+        // the world, when one is named
+        World world = sender instanceof Entity entity ? entity.getWorld()
+                : sender instanceof BlockCommandSender commandBlock ? commandBlock.getBlock().getWorld()
+                : Bukkit.getWorlds().get(0);
+        if (next < args.length) {
+            World named = Bukkit.getWorld(args[next]);
+            if (named != null) {
+                world = named;
+                next++;
+            }
+        }
+
+        // the face the block is attached to
+        BlockFace attachedFace = BlockFace.UP;
+        boolean faceGiven = false;
+        if (next < args.length && !NUMBER.matcher(args[next]).matches()) {
+            BlockFace face = parseFace(args[next]);
+            if (face != null) {
+                attachedFace = face;
+                faceGiven = true;
+                next++;
+            } else if (next == 6 && !isPlaceOption(args[next])) {
+                // right after the coordinates: neither a world nor a face
+                if (sender instanceof Player) {
+                    ChatUtil.sendMessage(sender, StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_INVALID_ATTACHED_FACE.replace("%face%", args[next]));
+                } else {
+                    ChatUtil.sendMessage(sender, "&cNo world named '" + args[next] + "'.");
+                }
+                return;
+            }
+        }
+
+        // the yaw
+        float direction = 0;
+        if (next < args.length) {
+            if (NUMBER.matcher(args[next]).matches()) {
+                direction = ((Float.parseFloat(args[next]) % 360f) + 360f) % 360f;
+                next++;
+            } else if (!isPlaceOption(args[next])) {
+                ChatUtil.sendMessage(sender, faceGiven ? "&cThe direction must be a number from 0 to 360!"
+                        : StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_INVALID_ATTACHED_FACE.replace("%face%", args[next]));
+                return;
+            }
+        }
+
+        List<CustomBlockPlaceOption> options = new ArrayList<>();
+        for (int i = next; i < args.length; i++) {
+            try {
+                options.add(CustomBlockPlaceOption.valueOf(args[i].toUpperCase(java.util.Locale.ROOT)));
+            } catch (IllegalArgumentException e) {
+                ChatUtil.sendMessage(sender, "&cThe option " + args[i] + " is not a valid place option!");
+                return;
+            }
+        }
+
+        AbstractCustomBlock abstractCustomBlock = storage.getAbstractCustomBlock(blockName);
+        CustomBlockRotation rotation = new BDCCustomBlockRotation(attachedFace, direction);
+        Location location = new Location(world, x, y, z);
+        LocationPlaceholder locationPlaceholder = new LocationPlaceholder(location);
+
+        Runnable placing = () -> {
+            CustomBlock customBlock;
+
+            try {
+                customBlock = this.plugin.getCustomBlockService().placeBlock(abstractCustomBlock, location, rotation, null, options.toArray(CustomBlockPlaceOption[]::new));
+            } catch (IllegalArgumentException e) {
+                ChatUtil.sendMessage(sender,
+                        locationPlaceholder.apply(StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_FAILED)
+                                .replace("%customblock_name%", blockName)
+                                .replace("%reason%", e.getMessage())
+                );
+                return;
+            }
+
+            if (customBlock == null) {
+                ChatUtil.sendMessage(sender, locationPlaceholder.apply(StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_FAILED_WITHOUT_REASON)
+                        .replace("%customblock_name%", blockName)
+                );
+                return;
+            }
+
+            ChatUtil.sendMessage(sender,
+                    locationPlaceholder.apply(StringMessagesValue.COMMAND_CUSTOM_BLOCK_PLACE_PLACED)
+                            .replace("%customblock_name%", blockName)
+            );
+        };
+
+        // one tick later, outside this command: the model of a block is read the first time by summoning it, and a
+        // command run from a command waits for the end of the first one
+        Bukkit.getScheduler().runTask(this.plugin, placing);
+    }
+
+    @Nullable
+    private static BlockFace parseFace(String text) {
+        try {
+            return BlockFace.valueOf(text.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static boolean isPlaceOption(String text) {
+        try {
+            CustomBlockPlaceOption.valueOf(text.toUpperCase(java.util.Locale.ROOT));
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
     @Override
@@ -929,11 +970,20 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                     StringUtil.copyPartialMatches(arg7, Collections.singletonList(lookingLocation.getBlockX() + " " + lookingLocation.getBlockY() + " " + lookingLocation.getBlockZ()), result);
                 }
             } else if (arg2.equals("place")) {
-                StringUtil.copyPartialMatches(arg7, List.of("up", "down", "north", "south", "west", "east"), result);
+                List<String> next = new ArrayList<>(List.of("up", "down", "north", "south", "west", "east"));
+                Bukkit.getWorlds().forEach(world -> next.add(world.getName()));
+                StringUtil.copyPartialMatches(arg7, next, result);
             }
                 /*else if (arg6.equals("sound-type")) {
                 StringUtil.copyPartialMatches(arg7, Arrays.stream(sounds).map(Enum::name).toList(), result);
             }*/
+        } else if (args.length == 8 && arg1.equals("custom-block") && arg2.equals("place")) {
+            // after a world: a face or a yaw; after a face: a yaw
+            List<String> next = new ArrayList<>(List.of("0", "90", "180", "270"));
+            if (Bukkit.getWorld(arg7) != null) {
+                next.addAll(List.of("up", "down", "north", "south", "west", "east"));
+            }
+            StringUtil.copyPartialMatches(args[7], next, result);
         }
 
 
