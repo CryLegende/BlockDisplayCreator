@@ -67,8 +67,11 @@ public class PlayerInteractEntityListener implements Listener {
             interaction = clickBox;
         } else if (event.getRightClicked() instanceof Shulker collision && CustomBlockKey.holder(collision).getName() != null) {
             // the collision of a custom block (an invisible shulker) often stands in front of its click box, on a big
-            // model above all: a right click on it is the click of the block, on its nearest click box
+            // model above all: a right click on it is the click of the block, on its nearest click box. The client sends
+            // a click on a shulker for each hand: only the main hand one counts, or the block would be clicked twice
             event.setCancelled(true);
+            if (hand != EquipmentSlot.HAND)
+                return;
             interaction = clickBoxOf(collision);
             if (interaction == null)
                 return;

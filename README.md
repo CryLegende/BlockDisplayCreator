@@ -60,7 +60,7 @@ The commands of an interaction (`interactions.<name>.command`, run by the player
 
 For example `bdc animation play %player% open {x} {y} {z} {world}`. The same placeholders work in the place and break commands of a block.
 
-A collision of a custom block is an invisible shulker that often stands in front of its click box (on a big model above all): a right click on it counts as a click on the nearest click box of that block.
+A collision of a custom block is an invisible shulker that often stands in front of its click box (on a big model above all): a right click on it counts as a click on the nearest click box of that block (main hand only: the client sends one click per hand on a shulker).
 
 ## Blocks nobody breaks by hitting them
 
