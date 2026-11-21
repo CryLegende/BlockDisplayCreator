@@ -159,6 +159,12 @@ public final class DisplayRenderer implements Listener {
          * Among them, those not sent because their conditions are false for this player.
          */
         final Set<PlacedDisplay> withheld = new HashSet<>();
+        /**
+         * Per world and block, the entity ids this client was last sent for it and not told to remove. Kept across
+         * world changes: should a client still draw an older showing of a block, it is removed before the block is
+         * sent again with other ids, instead of staying on screen as a frozen copy without click box.
+         */
+        final Map<UUID, Map<Long, int[]>> sent = new HashMap<>();
         UUID world;
         int chunkX;
         int chunkZ;
@@ -1372,7 +1378,33 @@ public final class DisplayRenderer implements Listener {
         }
         viewer.withheld.add(placed);
         this.nms.send(viewer.player, placed.removePacket(this.nms));
+        unsent(viewer, placed);
         hitbox(viewer.player, placed, false);
+    }
+
+    private static long blockKey(PlacedDisplay placed) {
+        return ((long) placed.x & 0x3FFFFFFL) << 38 | ((long) placed.z & 0x3FFFFFFL) << 12 | ((long) placed.y & 0xFFFL);
+    }
+
+    /**
+     * Notes the ids a block is sent to a client with; ids sent earlier for the same block, under another binding
+     * (a reload, a chunk read again), are removed first: the client may still draw them.
+     */
+    private void sending(Viewer viewer, PlacedDisplay placed) {
+        int[] before = viewer.sent.computeIfAbsent(placed.world.getUID(), k -> new HashMap<>()).put(blockKey(placed), placed.entityIds);
+        if (before != null && before != placed.entityIds) {
+            this.nms.send(viewer.player, this.nms.removePacket(before));
+        }
+    }
+
+    /**
+     * The client was told to remove these ids.
+     */
+    private static void unsent(Viewer viewer, PlacedDisplay placed) {
+        Map<Long, int[]> blocks = viewer.sent.get(placed.world.getUID());
+        if (blocks != null) {
+            blocks.remove(blockKey(placed), placed.entityIds);
+        }
     }
 
     /**
@@ -1559,6 +1591,7 @@ public final class DisplayRenderer implements Listener {
         if (placed.hitbox != null) {
             hitbox(viewer.player, placed, true);
         }
+        sending(viewer, placed);
         this.nms.send(viewer.player, placed.spawnPacket(this.nms));
         if (placed.gliding) {
             this.nms.send(viewer.player, glidePacket(placed));
@@ -1761,6 +1794,7 @@ public final class DisplayRenderer implements Listener {
             viewer.shown.remove(placed);
             if (viewer.player.isOnline()) {
                 this.nms.send(viewer.player, packet);
+                unsent(viewer, placed);
                 hitbox(viewer.player, placed, false);
             }
         }
@@ -1824,6 +1858,7 @@ public final class DisplayRenderer implements Listener {
             if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius(placed))) {
                 iterator.remove();
                 placed.viewers.remove(viewer);
+                unsent(viewer, placed);
                 if (placed.viewers.isEmpty()) {
                     this.looping.remove(placed);
                 }
