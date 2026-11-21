@@ -862,6 +862,7 @@ public final class DisplayRenderer implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
+        me.general_breddok.blockdisplaycreator.custom.InteractionHandlerDta.forget(event.getPlayer().getUniqueId());
         synchronized (this) {
             UUID id = event.getPlayer().getUniqueId();
             Viewer viewer = this.viewers.remove(id);

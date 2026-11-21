@@ -197,10 +197,10 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
             InteractionSummoner interactionSummoner = new InteractionSummoner(width, height);
             InteractionHandlerDta interactionHandlerDta = null;
             CommandBundle commandBundle = getCommandBundle(interactionPath);
-            int cooldown = getCooldown(interactionPath);
+            long cooldown = getCooldown(interactionPath);
 
             if (commandBundle != null) {
-                interactionHandlerDta = new InteractionHandlerDta(commandBundle, cooldown);
+                interactionHandlerDta = new InteractionHandlerDta(commandBundle, cooldown, getName() + "/" + interactionIdentifier);
             }
 
             configuredInteractions.add(
@@ -307,16 +307,61 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
         return commandBundle;
     }
 
-    private int getCooldown(String path) {
-        YamlData<Integer> intYD = new YamlData<>(file, TypeTokens.INTEGER);
+    /**
+     * Cooldown of a click box in milliseconds: a plain number is milliseconds (as before), a text is a
+     * duration such as {@code 24h}, {@code 1d}, {@code 2h30m}, {@code 90s} or {@code 500ms} (d/j, h, m/min, s, ms).
+     */
+    private long getCooldown(String path) {
+        Object raw = file.get(path + ".cooldown");
 
-        int cooldown;
+        if (raw == null) {
+            return 0;
+        }
+        if (raw instanceof Number number) {
+            return Math.max(0, number.longValue());
+        }
 
-        String cooldownPath = path + ".cooldown";
+        long millis = parseDuration(raw.toString());
+        if (millis < 0) {
+            BlockDisplayCreator.getInstance().getLogger().warning("Block " + getName() + ": cooldown '" + raw + "' at " + path
+                    + " is not a duration (examples: 24h, 30m, 90s, 500ms), no cooldown applied");
+            return 0;
+        }
+        return millis;
+    }
 
-        cooldown = intYD.get(cooldownPath, 0);
+    private static final java.util.regex.Pattern DURATION_PART =
+            java.util.regex.Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*(ms|min|d|j|h|m|s)?", java.util.regex.Pattern.CASE_INSENSITIVE);
 
-        return cooldown;
+    /** Milliseconds of a duration text, or -1 when it is not one. */
+    static long parseDuration(String text) {
+        String s = text.trim();
+        if (s.isEmpty()) {
+            return -1;
+        }
+        java.util.regex.Matcher matcher = DURATION_PART.matcher(s);
+        int at = 0;
+        double total = 0;
+        while (at < s.length()) {
+            if (Character.isWhitespace(s.charAt(at))) {
+                at++;
+                continue;
+            }
+            if (!matcher.find(at) || matcher.start() != at) {
+                return -1;
+            }
+            double value = Double.parseDouble(matcher.group(1).replace(',', '.'));
+            String unit = matcher.group(2) == null ? "ms" : matcher.group(2).toLowerCase(Locale.ROOT);
+            total += value * switch (unit) {
+                case "d", "j" -> 86_400_000L;
+                case "h" -> 3_600_000L;
+                case "m", "min" -> 60_000L;
+                case "s" -> 1_000L;
+                default -> 1L;
+            };
+            at = matcher.end();
+        }
+        return Math.round(total);
     }
 
 

@@ -55,6 +55,10 @@ interactions:
     #Temporary permissions that are granted before executing commands and are removed after executing (those that were missing)
     granted-command-permission:
     - minecraft.command.playsound
+    #Time before the same player can run these commands again: 24h, 1d, 2h30m, 90s, 500ms (a plain number is milliseconds).   By def 0
+    #From 1 minute on, the time is kept on the player (it outlives restarts and /bdc reload) and a click during the wait tells them how long is left.
+    #The _2, _3 copies of a long click box (interaction_2...) share the cooldown of their box.
+    #cooldown: 24h
 
 
 #Collision Entities of this block.
