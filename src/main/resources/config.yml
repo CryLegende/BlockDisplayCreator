@@ -14,3 +14,9 @@ max-entities-per-chunk: -1
 #Blocks already placed are converted when their chunk loads, and converted back if this is set to false again.
 #Needs a Paper server; on other servers custom blocks keep their display entities.   By def true
 packet-display: true
+
+#If set to true, the frames of the animations of custom blocks that players do not need are left out: a player's game
+#moves a part between two poses by itself, so a frame its motion already passes by (within 1/64 of a block) is not sent.
+#Worked out once per file, off the main thread, and kept in animation-cache.txt. An animation keeps all its frames
+#with optimise: false in its section.   By def true
+animation-optimisation: true

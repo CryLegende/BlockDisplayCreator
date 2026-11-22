@@ -30,6 +30,7 @@ import java.util.TreeSet;
  *         scale: 1.2          # or [x, y, z]
  *         pivot: [0, 1, 0]    # point the rotation and the scale are made around. By def the middle of the parts
  *         sound: minecraft:block.chest.open
+ *     optimise: false         # keeps every frame; by def the frames a client does not need are left out
  *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
  *       - at: 12
  *         sound: minecraft:block.note_block.harp
@@ -76,6 +77,11 @@ final class DisplayAnimation {
      * The display entities some frame of the animation moves, in increasing order.
      */
     final int[] touched;
+    /**
+     * Whether the plugin may leave out the frames a client does not need ({@code optimise: false} in the file keeps
+     * them all).
+     */
+    final boolean optimisable;
 
     /**
      * @param at      the tick it starts at
@@ -100,8 +106,9 @@ final class DisplayAnimation {
     record Note(int at, String sound, float volume, float pitch) {
     }
 
-    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes) {
+    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable) {
         this.name = name;
+        this.optimisable = optimisable;
         this.trigger = trigger;
         this.interaction = interaction;
         this.duration = duration;
@@ -205,7 +212,35 @@ final class DisplayAnimation {
         for (Note note : notes) {
             duration = Math.max(duration, note.at() + 1);
         }
-        return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new));
+        return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
+                section.getBoolean("optimise", true));
+    }
+
+    /**
+     * The same animation with only some of its frames, at new times (see {@link AnimationOptimizer}): the parts keep
+     * their poses, a frame that now takes another time is sent that time.
+     */
+    DisplayAnimation with(List<AnimationOptimizer.Kept> kept, NmsBridge nms) {
+        Frame[] out = new Frame[kept.size()];
+        for (int i = 0; i < out.length; i++) {
+            AnimationOptimizer.Kept k = kept.get(i);
+            Frame frame = this.frames[k.frame()];
+            int[] parts = k.parts() == null ? frame.parts() : k.parts();
+            List<?>[] moving = new List<?>[parts.length];
+            List<?>[] jumping = new List<?>[parts.length];
+            Transformation[] targets = new Transformation[parts.length];
+            for (int p = 0; p < parts.length; p++) {
+                int j = java.util.Arrays.binarySearch(frame.parts(), parts[p]);
+                Transformation target = frame.targets()[j];
+                moving[p] = k.over() == frame.over() ? frame.moving()[j]
+                        : nms.poseValues(target.getTranslation(), target.getLeftRotation(), target.getScale(), target.getRightRotation(), k.over());
+                jumping[p] = frame.jumping()[j];
+                targets[p] = target;
+            }
+            out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch());
+        }
+        java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
+        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable);
     }
 
     /**

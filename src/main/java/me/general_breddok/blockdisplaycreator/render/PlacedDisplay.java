@@ -128,6 +128,28 @@ final class PlacedDisplay {
     }
 
     /**
+     * Gives the block the same model with other frames for its animations (its entities stay): the packets of the
+     * old frames are dropped, and an animation that ended keeps its end pose for players arriving.
+     */
+    void rebindAnimations(DisplayModel model) {
+        for (int i = 0; i < this.lastFrame.length && i < model.animations.size(); i++) {
+            if (this.lastFrame[i] >= 0) {
+                DisplayAnimation.Frame[] before = this.model.animations.get(i).frames;
+                DisplayAnimation.Frame[] after = model.animations.get(i).frames;
+                int at = before[Math.min(this.lastFrame[i], before.length - 1)].at();
+                int last = -1;
+                while (last + 1 < after.length && after[last + 1].at() <= at) {
+                    last++;
+                }
+                this.lastFrame[i] = this.lastFrame[i] == before.length - 1 ? after.length - 1 : last;
+            }
+        }
+        this.model = model;
+        this.framePackets = new Object[model.animations.size()][];
+        this.restPackets = new Object[model.animations.size()];
+    }
+
+    /**
      * The packet that puts the parts an animation moves back at rest at once.
      */
     Object restPacket(NmsBridge nms, int animation) {

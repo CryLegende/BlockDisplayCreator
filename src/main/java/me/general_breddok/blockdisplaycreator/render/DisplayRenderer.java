@@ -41,6 +41,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -86,6 +87,7 @@ public final class DisplayRenderer implements Listener {
     private static final int VISIBILITY_PERIOD = 20;
     private static final String VISIBLE_IF = "display.visible-if";
     private static final String REGISTRY_FILE = "packet-display-chunks.txt";
+    private static final String OPTIMISED_FILE = "animation-cache.txt";
     private static final String RESET_MARK = ";reset";
 
     private final BlockDisplayCreator plugin;
@@ -98,6 +100,25 @@ public final class DisplayRenderer implements Listener {
     private final Map<UUID, Map<Long, List<PlacedDisplay>>> index = new ConcurrentHashMap<>();
     private final Map<UUID, Viewer> viewers = new HashMap<>();
     private final Map<String, DisplayModel> models = new HashMap<>();
+    /**
+     * What {@link AnimationOptimizer} keeps of each animation, by block and animation: the fingerprint of the
+     * animation it was worked out for, a tab, then the frames kept. Saved in {@link #OPTIMISED_FILE}.
+     */
+    private final Map<String, String> optimised = new ConcurrentHashMap<>();
+    private volatile boolean optimisedDirty;
+    /**
+     * Models whose animations are being worked out, off the main thread, one at a time.
+     */
+    private final Set<String> optimising = ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.ExecutorService optimiser = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "BlockDisplayCreator animation optimiser");
+        thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY);
+        return thread;
+    });
+    private int lightened;
+    private long updatesBefore;
+    private long updatesAfter;
     /**
      * The blocks whose model could not be read, with the tick from which it is tried again: a file may be missing
      * for a while, or the summon refused where it was first tried.
@@ -220,6 +241,7 @@ public final class DisplayRenderer implements Listener {
         this.plugin = plugin;
         this.nms = nms;
         loadRegistry();
+        loadOptimised();
     }
 
     /**
@@ -810,6 +832,11 @@ public final class DisplayRenderer implements Listener {
             this.registryDirty = false;
             saveRegistry();
         }
+        this.optimiser.shutdownNow();
+        if (this.optimisedDirty) {
+            this.optimisedDirty = false;
+            saveOptimised(new LinkedHashMap<>(this.optimised));
+        }
     }
 
     // ---------- Events ----------
@@ -1249,6 +1276,7 @@ public final class DisplayRenderer implements Listener {
             this.plugin.getLogger().warning("Custom block " + name + ", " + problem);
         }
         this.unavailableModels.remove(name);
+        model = lightened(name, model);
         this.models.put(name, model);
         // players moving look that much further for blocks; the blocks of this model are shown as they are added
         this.farthest = Math.max(this.farthest, model.viewDistance);
@@ -1329,6 +1357,163 @@ public final class DisplayRenderer implements Listener {
             }
         }
         return null;
+    }
+
+    // ---------- Lighter animations ----------
+
+    /**
+     * The model with the frames of its animations a client does not need left out, as far as they are already worked
+     * out. The others are worked out off the main thread; the blocks of the model then get them.
+     */
+    private DisplayModel lightened(String name, DisplayModel model) {
+        if (!BooleanConfigValue.ANIMATION_OPTIMISATION || model.animations.isEmpty()) {
+            return model;
+        }
+        Set<Integer> mixed = AnimationOptimizer.mixed(model.animations);
+        List<DisplayAnimation> animations = new ArrayList<>(model.animations);
+        Map<String, String> missing = new LinkedHashMap<>();
+        boolean changed = false;
+        for (int i = 0; i < animations.size(); i++) {
+            DisplayAnimation animation = animations.get(i);
+            if (!animation.optimisable) {
+                continue;
+            }
+            String print = AnimationOptimizer.fingerprint(animation, model.elements, mixed);
+            String cached = this.optimised.get(name + '\t' + animation.name);
+            if (cached == null || !cached.startsWith(print + '\t')) {
+                missing.put(animation.name, print);
+                continue;
+            }
+            List<AnimationOptimizer.Kept> kept = AnimationOptimizer.decode(cached.substring(print.length() + 1));
+            if (kept != null && !kept.isEmpty()) {
+                animations.set(i, animation.with(kept, this.nms));
+                changed = true;
+            }
+        }
+        if (!missing.isEmpty() && this.optimising.add(name)) {
+            DisplayModel original = model;
+            this.optimiser.execute(() -> {
+                Map<String, String> results = new LinkedHashMap<>();
+                for (DisplayAnimation animation : original.animations) {
+                    String print = missing.get(animation.name);
+                    if (print == null) {
+                        continue;
+                    }
+                    String kept;
+                    try {
+                        kept = AnimationOptimizer.encode(AnimationOptimizer.optimise(animation, original.elements, mixed));
+                    } catch (RuntimeException e) {
+                        this.plugin.getLogger().log(Level.WARNING, "Could not lighten the animation " + animation.name + " of the custom block " + name, e);
+                        kept = "=";
+                    }
+                    results.put(name + '\t' + animation.name, print + '\t' + kept);
+                }
+                if (this.plugin.isEnabled()) {
+                    Bukkit.getScheduler().runTask(this.plugin, () -> {
+                        this.optimised.putAll(results);
+                        this.optimisedDirty = true;
+                        this.optimising.remove(name);
+                        swapLightened(name, original, 0);
+                    });
+                }
+            });
+        }
+        return changed ? model.withAnimations(animations) : model;
+    }
+
+    /**
+     * Gives the blocks of a model the lightened animations just worked out. A block playing an animation started by
+     * a click, its placement or a command waits for its end: its frames are counted by their place.
+     */
+    private synchronized void swapLightened(String name, DisplayModel original, int attempt) {
+        DisplayModel current = this.models.get(name);
+        if (current == null || current.elements != original.elements) {
+            // read again since (reload): the next reading takes the cache
+            return;
+        }
+        DisplayModel lighter = lightened(name, original);
+        if (lighter == original || lighter == current) {
+            return;
+        }
+        List<PlacedDisplay> blocks = new ArrayList<>();
+        Set<PlacedDisplay> privately = new HashSet<>();
+        this.privatePlays.values().forEach(plays -> plays.forEach(play -> privately.add(play.placed)));
+        for (Map<Long, List<PlacedDisplay>> chunks : this.index.values()) {
+            for (List<PlacedDisplay> list : chunks.values()) {
+                for (PlacedDisplay placed : list) {
+                    if (placed.model != current) {
+                        continue;
+                    }
+                    boolean busy = privately.contains(placed) || !placed.privateFor.isEmpty();
+                    for (int i = 0; i < current.animations.size() && !busy; i++) {
+                        busy = current.animations.get(i).trigger != DisplayAnimation.Trigger.LOOP && placed.startedAt[i] >= 0;
+                    }
+                    if (busy) {
+                        if (attempt < 300) {
+                            Bukkit.getScheduler().runTaskLater(this.plugin, () -> swapLightened(name, original, attempt + 1), 20L);
+                        }
+                        return;
+                    }
+                    blocks.add(placed);
+                }
+            }
+        }
+        for (PlacedDisplay placed : blocks) {
+            placed.rebindAnimations(lighter);
+        }
+        this.models.put(name, lighter);
+        countLightened(original, lighter);
+    }
+
+    private void countLightened(DisplayModel original, DisplayModel lighter) {
+        long before = 0;
+        long after = 0;
+        for (int i = 0; i < original.animations.size(); i++) {
+            before += AnimationOptimizer.updates(original.animations.get(i));
+            after += AnimationOptimizer.updates(lighter.animations.get(i));
+        }
+        if (after < before) {
+            this.lightened++;
+            this.updatesBefore += before;
+            this.updatesAfter += after;
+            scheduleSummary();
+        }
+    }
+
+    private Path optimisedPath() {
+        return this.plugin.getDataFolder().toPath().resolve(OPTIMISED_FILE);
+    }
+
+    private void loadOptimised() {
+        Path path = optimisedPath();
+        if (!Files.isRegularFile(path)) {
+            return;
+        }
+        try {
+            for (String line : Files.readAllLines(path)) {
+                String[] fields = line.split("\t", 4);
+                if (fields.length == 4) {
+                    this.optimised.put(fields[0] + '\t' + fields[1], fields[2] + '\t' + fields[3]);
+                }
+            }
+        } catch (IOException e) {
+            this.plugin.getLogger().log(Level.WARNING, "Could not read " + OPTIMISED_FILE, e);
+        }
+    }
+
+    private void saveOptimised(Map<String, String> entries) {
+        Path path = optimisedPath();
+        List<String> lines = new ArrayList<>(entries.size() + 1);
+        lines.add("# Animations lightened by BlockDisplayCreator: block, animation, fingerprint, frames kept (frame:at:over[:parts]). Worked out again when a file changes; safe to delete.");
+        entries.forEach((key, value) -> lines.add(key + '\t' + value));
+        try {
+            Files.createDirectories(path.getParent());
+            Path temporary = path.resolveSibling(OPTIMISED_FILE + ".tmp");
+            Files.write(temporary, lines);
+            Files.move(temporary, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            this.plugin.getLogger().log(Level.WARNING, "Could not write " + OPTIMISED_FILE, e);
+        }
     }
 
     // ---------- Who sees what ----------
@@ -2105,6 +2290,18 @@ public final class DisplayRenderer implements Listener {
                 if (this.hitboxes > 0) {
                     this.plugin.getLogger().info("Refreshed the hitbox of " + this.hitboxes + " placed custom block(s) from their files");
                 }
+                if (this.lightened > 0) {
+                    this.plugin.getLogger().info("Lightened the animations of " + this.lightened + " custom block(s): " + this.updatesBefore
+                            + " pose updates a turn down to " + this.updatesAfter + ", same motion");
+                }
+                if (this.optimisedDirty) {
+                    this.optimisedDirty = false;
+                    Map<String, String> copy = new LinkedHashMap<>(this.optimised);
+                    Bukkit.getScheduler().runTaskAsynchronously(this.plugin, () -> saveOptimised(copy));
+                }
+                this.lightened = 0;
+                this.updatesBefore = 0;
+                this.updatesAfter = 0;
                 this.converted = 0;
                 this.moved = 0;
                 this.restored = 0;

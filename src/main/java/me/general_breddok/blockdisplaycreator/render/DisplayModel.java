@@ -80,6 +80,29 @@ final class DisplayModel {
     }
 
     /**
+     * The same model with other animations (as many, in the same order): its entities do not change.
+     */
+    DisplayModel withAnimations(List<DisplayAnimation> animations) {
+        return new DisplayModel(this, animations);
+    }
+
+    private DisplayModel(DisplayModel model, List<DisplayAnimation> animations) {
+        this.name = model.name;
+        this.sidesCount = model.sidesCount;
+        this.translationYaw = model.translationYaw;
+        this.translationPitch = model.translationPitch;
+        this.hitboxSignature = model.hitboxSignature;
+        this.clickable = model.clickable;
+        this.elements = model.elements;
+        this.animations = List.copyOf(animations);
+        this.loops = model.loops;
+        this.sinks = model.sinks;
+        this.viewDistance = model.viewDistance;
+        this.visibleIf = model.visibleIf;
+        this.bounds = model.bounds;
+    }
+
+    /**
      * One display entity of the model.
      *
      * @param type           its server-side entity type
