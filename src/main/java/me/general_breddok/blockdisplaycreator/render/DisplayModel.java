@@ -35,6 +35,10 @@ final class DisplayModel {
     final float translationYaw;
     final float translationPitch;
     final String hitboxSignature;
+    /**
+     * Whether its file gives it a click box. One without is picked by what it draws when an operator moves it.
+     */
+    final boolean clickable;
     final List<Element> elements;
     final List<DisplayAnimation> animations;
     /**
@@ -63,6 +67,7 @@ final class DisplayModel {
         this.visibleIf = visibleIf;
         this.sidesCount = definition.getSidesCount();
         this.hitboxSignature = BDCCustomBlockService.hitboxSignature(definition);
+        this.clickable = definition.getConfiguredInteractions().stream().anyMatch(interaction -> !BDCCustomBlockService.isUseless(interaction));
         this.elements = elements;
         this.animations = animations;
         this.loops = animations.stream().anyMatch(animation -> animation.trigger == DisplayAnimation.Trigger.LOOP);

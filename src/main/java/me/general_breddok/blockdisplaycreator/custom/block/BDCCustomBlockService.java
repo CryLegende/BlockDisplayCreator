@@ -776,11 +776,16 @@ public class BDCCustomBlockService implements CustomBlockService {
     /**
      * The most square click boxes one click box of a file is cut into, when a tipped model lies along it.
      */
-    private static final int MAX_CLICK_PIECES = 6;
+    private static final int MAX_CLICK_PIECES = 3;
+    /**
+     * How many times longer than wide a tipped box has to be before it is cut: below that, one box a little wider
+     * than the model takes the clicks, rather than two boxes for a few pixels that stick out.
+     */
+    public static final double CUT_RATIO = 1.75;
     /**
      * Stored with a moved block once its click boxes follow the shape of its tipped model.
      */
-    public static final String HITBOX_LAYOUT_VERSION = "2";
+    public static final String HITBOX_LAYOUT_VERSION = "3";
     private static final double[] NO_SHIFT = {0, 0, 0, 0, 0, 1};
 
     /**
@@ -879,8 +884,8 @@ public class BDCCustomBlockService implements CustomBlockService {
         double shortHalf = Math.min(reach[0], reach[2]);
         int pieces = 1;
         int cut = -1;
-        if (shortHalf > 1.0E-3 && longHalf > shortHalf * 1.25) {
-            pieces = (int) Math.min(MAX_CLICK_PIECES, Math.ceil(longHalf / shortHalf - 0.15));
+        if (shortHalf > 1.0E-3 && longHalf >= shortHalf * CUT_RATIO) {
+            pieces = (int) Math.min(MAX_CLICK_PIECES, Math.round(longHalf / shortHalf));
             // the side of the box that reaches the furthest along that axis is the one cut
             double most = -1;
             for (int j = 0; j < 3; j++) {

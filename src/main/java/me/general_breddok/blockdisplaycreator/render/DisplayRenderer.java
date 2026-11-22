@@ -588,6 +588,14 @@ public final class DisplayRenderer implements Listener {
     // ---------- Moving blocks (operators) ----------
 
     /**
+     * The blocks a player is sent at the moment.
+     */
+    synchronized List<PlacedDisplay> shownTo(Player player) {
+        Viewer viewer = this.viewers.get(player.getUniqueId());
+        return viewer == null ? List.of() : new ArrayList<>(viewer.shown);
+    }
+
+    /**
      * The placed block of a block position, if it is shown through packets.
      */
     @Nullable

@@ -248,6 +248,43 @@ final class PlacedDisplay {
     }
 
     /**
+     * How far along a line of sight the box around what the block draws is entered, in blocks, or -1 when the line
+     * misses it (what lies behind the starting point does not count).
+     *
+     * @param from      where the line starts, in the world
+     * @param direction its direction, of length 1
+     */
+    double reach(org.joml.Vector3d from, org.joml.Vector3d direction) {
+        double[] pose = pose(this.model.elements.get(0).pitch());
+        org.joml.Quaterniond back = orientation(pose[3], pose[4]).invert();
+        double size = scale();
+        // in the model's own axes, at size 1: a point of the line is start + t × step, t in blocks of the world
+        org.joml.Vector3d start = back.transform(new org.joml.Vector3d(from).sub(pose[0], pose[1], pose[2])).div(size);
+        org.joml.Vector3d step = back.transform(new org.joml.Vector3d(direction)).div(size);
+        float[] box = this.model.bounds();
+        double near = 0;
+        double far = Double.MAX_VALUE;
+        for (int axis = 0; axis < 3; axis++) {
+            double s = start.get(axis);
+            double d = step.get(axis);
+            if (Math.abs(d) < 1.0E-12) {
+                if (s < box[axis] || s > box[axis + 3]) {
+                    return -1;
+                }
+                continue;
+            }
+            double first = (box[axis] - s) / d;
+            double second = (box[axis + 3] - s) / d;
+            near = Math.max(near, Math.min(first, second));
+            far = Math.min(far, Math.max(first, second));
+            if (near > far) {
+                return -1;
+            }
+        }
+        return near;
+    }
+
+    /**
      * Whether an operator moved the block.
      */
     boolean isShifted() {

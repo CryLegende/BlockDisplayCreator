@@ -913,7 +913,8 @@ public final class SiteModelImporter {
         out.append("interactions:\n");
         float longSide = Math.max(dx, dz);
         float shortSide = Math.min(dx, dz);
-        int count = turning || longSide / shortSide < 1.45f ? 1 : Math.min(3, Math.round(longSide / shortSide));
+        // one box until the model is 1.75 times longer than wide, as when the gizmo lays a tipped box out
+        int count = turning || longSide / shortSide < (float) me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockService.CUT_RATIO ? 1 : Math.min(3, Math.round(longSide / shortSide));
         if (turning) {
             // a model that turns on itself is clicked around its axis: this box is not to be recomputed
             out.append("  # zone cliquable réglée à la main\n");

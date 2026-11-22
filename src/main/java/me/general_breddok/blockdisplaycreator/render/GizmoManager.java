@@ -253,7 +253,8 @@ public final class GizmoManager implements Listener {
     public void onInteract(PlayerInteractEvent event) {
         Player player = event.getPlayer();
         boolean editing = isEditing(player);
-        if (!editing && !justToggled(player) && !(event.getAction() == Action.RIGHT_CLICK_BLOCK && mayEdit(player))) {
+        boolean rightClick = event.getAction() == Action.RIGHT_CLICK_BLOCK || event.getAction() == Action.RIGHT_CLICK_AIR;
+        if (!editing && !justToggled(player) && !(rightClick && mayEdit(player))) {
             return;
         }
         Block block = event.getClickedBlock();
@@ -265,15 +266,22 @@ public final class GizmoManager implements Listener {
             }
             return;
         }
-        if (event.getAction() == Action.RIGHT_CLICK_BLOCK && event.getHand() == EquipmentSlot.HAND && block != null && mayEdit(player)) {
+        if (rightClick && event.getHand() == EquipmentSlot.HAND && mayEdit(player)) {
             ItemStack held = event.getItem();
-            if (held == null || held.getType().isAir()) {
-                PlacedDisplay placed = placedAt(block);
-                if (placed != null && opens(player, placed)) {
-                    event.setCancelled(true);
-                    toggle(player, placed);
-                    return;
-                }
+            boolean emptyHand = held == null || held.getType().isAir();
+            PlacedDisplay placed = null;
+            if (event.getAction() == Action.RIGHT_CLICK_BLOCK && block != null && emptyHand) {
+                placed = placedAt(block);
+            }
+            // a decoration without a click box: the one whose drawing the line of sight goes through before the block
+            // clicked (a click in the air only reaches the server with something in hand)
+            if (placed == null && (emptyHand || event.getAction() == Action.RIGHT_CLICK_AIR)) {
+                placed = aimedDrawn(player, block == null ? Double.MAX_VALUE : distanceToBlock(player));
+            }
+            if (placed != null && opens(player, placed)) {
+                event.setCancelled(true);
+                toggle(player, placed);
+                return;
             }
         }
         if (justToggled(player)) {
@@ -304,6 +312,9 @@ public final class GizmoManager implements Listener {
         }
         if (player.isSneaking() || this.sneaking.contains(player.getUniqueId())) {
             PlacedDisplay other = clicked != null ? clicked : aimed(player);
+            if (other == null) {
+                other = aimedDrawn(player, distanceToBlock(player));
+            }
             toggle(player, other != null && other != gizmo.target() && player.hasPermission(PERMISSION) && opens(player, other) ? other : gizmo.target());
             return;
         }
@@ -318,6 +329,43 @@ public final class GizmoManager implements Listener {
         org.bukkit.util.RayTraceResult hit = player.getWorld().rayTraceEntities(eye, eye.getDirection(), 6, 0,
                 entity -> entity instanceof Interaction && placedOf(entity) != null);
         return hit == null || hit.getHitEntity() == null ? null : placedOf(hit.getHitEntity());
+    }
+
+    /**
+     * How far a decoration without a click box can be picked by what it draws.
+     */
+    private static final double DRAWN_REACH = 8;
+
+    /**
+     * The decoration without a click box whose drawing the player aims at: the nearest one his line of sight enters,
+     * closer than a distance (the block he clicked) and within {@link #DRAWN_REACH}.
+     */
+    private PlacedDisplay aimedDrawn(Player player, double before) {
+        Location eye = player.getEyeLocation();
+        org.bukkit.util.Vector look = eye.getDirection();
+        org.joml.Vector3d from = new org.joml.Vector3d(eye.getX(), eye.getY(), eye.getZ());
+        org.joml.Vector3d direction = new org.joml.Vector3d(look.getX(), look.getY(), look.getZ()).normalize();
+        PlacedDisplay best = null;
+        double nearest = Math.min(before, DRAWN_REACH);
+        for (PlacedDisplay placed : this.renderer.shownTo(player)) {
+            if (placed.model == null || placed.model.clickable || placed.world != player.getWorld()) {
+                continue;
+            }
+            double at = placed.reach(from, direction);
+            if (at >= 0 && at < nearest) {
+                nearest = at;
+                best = placed;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * How far the player's line of sight goes before it meets a block, within {@link #DRAWN_REACH}.
+     */
+    private static double distanceToBlock(Player player) {
+        org.bukkit.util.RayTraceResult hit = player.rayTraceBlocks(DRAWN_REACH);
+        return hit == null ? Double.MAX_VALUE : hit.getHitPosition().distance(player.getEyeLocation().toVector());
     }
 
     /**
