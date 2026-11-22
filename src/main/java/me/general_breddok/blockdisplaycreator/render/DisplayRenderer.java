@@ -1499,6 +1499,33 @@ public final class DisplayRenderer implements Listener {
     }
 
     /**
+     * Whether an animation played by a command for this player alone still runs on the custom block placed at a
+     * location (a scene: a flight, a reveal, a click animation): his clicks on it wait for its end, or they would cut
+     * it short (a new animation of the block replaces it) and run their commands over it.
+     *
+     * @param location the location the block was placed at, as stored on its interactions
+     */
+    public synchronized boolean playsFor(Player player, @Nullable Location location) {
+        if (location == null || location.getWorld() == null) {
+            return false;
+        }
+        List<PrivatePlay> plays = this.privatePlays.get(player.getUniqueId());
+        if (plays == null || plays.isEmpty()) {
+            return false;
+        }
+        PlacedDisplay placed = find(location.getWorld(), location.getBlockX(), location.getBlockY(), location.getBlockZ());
+        if (placed == null) {
+            return false;
+        }
+        for (PrivatePlay play : plays) {
+            if (play.placed == placed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Hides the interactions and collisions of a block whose model has a {@code display.visible-if} from every player
      * but those it is sent to, or gives those of a block whose model no longer has one back to everyone. Called
      * whenever they may be new entities: when the block is placed or read, and when they are laid out again.

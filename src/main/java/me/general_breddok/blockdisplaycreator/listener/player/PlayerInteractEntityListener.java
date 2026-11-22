@@ -91,6 +91,13 @@ public class PlayerInteractEntityListener implements Listener {
             return;
         }
 
+        // an animation a command plays for this player alone still runs on this block (a flight, a reveal, the click
+        // animation itself): his clicks on it wait for its end instead of cutting it short and running their commands
+        if (renderer != null && renderer.playsFor(player, CustomBlockKey.holder(interaction).getLocation())) {
+            event.setCancelled(true);
+            return;
+        }
+
         if (!BooleanConfigValue.BLOCKS_INTERACTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_INTERACTION)) {
                 event.setCancelled(true);
