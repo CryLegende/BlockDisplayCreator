@@ -211,6 +211,54 @@ final class PlacedDisplay {
     }
 
     /**
+     * The packet that hands the parts of a loop back to it for a player an animation was played for alone: each part
+     * glides from where that animation left it to the pose the loop gives it now, and gets there with the parts the
+     * other players see when theirs are still on the way, or in {@code minimum} ticks. Each part takes the last frame
+     * of the loop that moved it, in this round or at the end of the one before, so no part waits for its next frame.
+     *
+     * @param phase  the tick of the loop it is at
+     * @param turned whether the loop has played a whole round already
+     * @return null when the loop moves nothing
+     */
+    Object rejoinPacket(NmsBridge nms, int animation, int phase, boolean turned, int minimum) {
+        DisplayAnimation loop = this.model.animations.get(animation);
+        DisplayAnimation.Frame[] frames = loop.frames;
+        boolean[] posed = new boolean[this.entityIds.length];
+        List<Object> parts = new ArrayList<>();
+        int last = -1;
+        while (last + 1 < frames.length && frames[last + 1].at() <= phase) {
+            last++;
+        }
+        // the frames of this round, latest first, then those of the end of the round before
+        for (int k = 0; k < frames.length; k++) {
+            int frame = last - k;
+            int start;
+            if (frame >= 0) {
+                start = frames[frame].at();
+            } else if (turned) {
+                frame += frames.length;
+                start = frames[frame].at() - loop.duration;
+            } else {
+                break;
+            }
+            DisplayAnimation.Frame played = frames[frame];
+            int ticks = Math.max(minimum, start + played.over() - phase);
+            for (int i = played.parts().length - 1; i >= 0; i--) {
+                int part = played.parts()[i];
+                if (posed[part]) {
+                    continue;
+                }
+                posed[part] = true;
+                org.bukkit.util.Transformation target = played.targets()[i];
+                List<?> values = target == null ? played.jumping()[i]
+                        : nms.poseValues(target.getTranslation(), target.getLeftRotation(), target.getScale(), target.getRightRotation(), ticks);
+                parts.add(nms.dataPacket(this.entityIds[part], sent(nms, part, values)));
+            }
+        }
+        return parts.isEmpty() ? null : nms.bundle(parts);
+    }
+
+    /**
      * Whether an entity of the block is shown with its culling box: the block stands on its block, as placed.
      */
     boolean upright(DisplayModel.Element element) {

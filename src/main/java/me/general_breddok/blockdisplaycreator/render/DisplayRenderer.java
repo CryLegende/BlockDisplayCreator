@@ -82,6 +82,10 @@ public final class DisplayRenderer implements Listener {
      */
     private static final int GLIDE_TICKS = 2;
     /**
+     * Ticks at least a part takes to glide back into a loop after an animation played for one player.
+     */
+    private static final int REJOIN_TICKS = 8;
+    /**
      * Ticks between two checks of the {@code display.visible-if} of the blocks around each player.
      */
     private static final int VISIBILITY_PERIOD = 20;
@@ -505,7 +509,7 @@ public final class DisplayRenderer implements Listener {
                 return;
             }
             this.nms.send(viewer.player, placed.restPacket(this.nms, play.animation));
-            catchUp(viewer, placed);
+            catchUp(viewer, placed, true);
         }
     }
 
@@ -1847,10 +1851,27 @@ public final class DisplayRenderer implements Listener {
      * Sends a player who sees a block where the animations everyone sees have taken it.
      */
     private void catchUp(Viewer viewer, PlacedDisplay placed) {
+        catchUp(viewer, placed, false);
+    }
+
+    /**
+     * Sends a player who sees a block where the animations everyone sees have taken it.
+     *
+     * @param rejoin whether the player was watching an animation played for them alone: the loops take the parts back
+     *               gliding (see {@link PlacedDisplay#rejoinPacket}) rather than in one jump
+     */
+    private void catchUp(Viewer viewer, PlacedDisplay placed, boolean rejoin) {
         List<DisplayAnimation> animations = placed.model.animations;
         for (int i = 0; i < animations.size(); i++) {
             DisplayAnimation animation = animations.get(i);
             int last = placed.lastFrame[i];
+            if (animation.trigger == DisplayAnimation.Trigger.LOOP && rejoin) {
+                Object packet = placed.rejoinPacket(this.nms, i, this.tick % animation.duration, this.tick >= animation.duration, REJOIN_TICKS);
+                if (packet != null) {
+                    this.nms.send(viewer.player, packet);
+                }
+                continue;
+            }
             if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
                 // the frames already started in this turn of the loop, or all of them when it has turned before
                 int phase = this.tick % animation.duration;
