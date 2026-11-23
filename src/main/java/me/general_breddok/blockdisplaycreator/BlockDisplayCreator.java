@@ -29,6 +29,7 @@ import me.general_breddok.blockdisplaycreator.listener.block.piston.BlockPistonE
 import me.general_breddok.blockdisplaycreator.listener.block.piston.BlockPistonRetractListener;
 import me.general_breddok.blockdisplaycreator.listener.entity.EntityDamageByEntityListener;
 import me.general_breddok.blockdisplaycreator.listener.entity.EntityExplodeListener;
+import me.general_breddok.blockdisplaycreator.listener.player.ItemRefreshListener;
 import me.general_breddok.blockdisplaycreator.listener.player.PlayerInteractEntityListener;
 import me.general_breddok.blockdisplaycreator.listener.player.PlayerInteractListener;
 import me.general_breddok.blockdisplaycreator.listener.skyblock.superior.SuperiorSkyblockChunkResetListener;
@@ -237,6 +238,7 @@ public final class BlockDisplayCreator extends JavaPlugin {
         pluginManager.registerEvents(new EntityExplodeListener(), this);
         pluginManager.registerEvents(new BlockPistonExtendListener(), this);
         pluginManager.registerEvents(new BlockPistonRetractListener(), this);
+        pluginManager.registerEvents(new ItemRefreshListener(), this);
         if (this.dependentPluginsManager.isSuperiorSkyblockAvailable()) {
             pluginManager.registerEvents(new SuperiorSkyblockPluginInitializeListener(), this);
             if (this.displayRenderer != null) {

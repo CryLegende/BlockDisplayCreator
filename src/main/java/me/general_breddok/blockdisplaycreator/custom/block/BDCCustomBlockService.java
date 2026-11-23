@@ -94,6 +94,22 @@ public class BDCCustomBlockService implements CustomBlockService {
      * {@inheritDoc}
      */
     @Override
+    @NotNull
+    public List<String> getCustomBlockNames(@NotNull org.bukkit.Chunk chunk) {
+        List<String> names = new ArrayList<>();
+        for (Block block : CustomBlockData.getBlocksWithCustomData(BlockDisplayCreator.getInstance(), chunk)) {
+            String name = new CustomBlockData(block, BlockDisplayCreator.getInstance()).get(CustomBlockKey.NAME, PersistentDataType.STRING);
+            if (name != null) {
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     @Nullable
     public CustomBlock getCustomBlock(@NotNull Location location, Object... data) {
         if (!isCustomBlockOnLocation(location)) {

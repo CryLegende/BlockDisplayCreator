@@ -9,6 +9,7 @@ public final class BooleanConfigValue implements ConstantConfigValue<Boolean> {
     public static boolean BLOCKS_INTERACTION;
     public static boolean PACKET_DISPLAY = true;
     public static boolean ANIMATION_OPTIMISATION = true;
+    public static boolean ITEMS_FOLLOW_FILES = true;
 
 
     @Override
@@ -18,5 +19,6 @@ public final class BooleanConfigValue implements ConstantConfigValue<Boolean> {
         BLOCKS_INTERACTION = configuration.get("blocks-interaction", true);
         PACKET_DISPLAY = configuration.get("packet-display", true);
         ANIMATION_OPTIMISATION = configuration.get("animation-optimisation", true);
+        ITEMS_FOLLOW_FILES = configuration.get("items-follow-files", true);
     }
 }

@@ -4,6 +4,7 @@ import me.general_breddok.blockdisplaycreator.common.DeprecatedFeatureAdapter;
 import me.general_breddok.blockdisplaycreator.custom.block.option.CustomBlockOption;
 import me.general_breddok.blockdisplaycreator.service.ServiceManager;
 import me.general_breddok.blockdisplaycreator.service.exception.UnregisteredServiceException;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
@@ -12,6 +13,8 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataHolder;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+
+import java.util.List;
 
 /**
  * Service interface for managing custom blocks in Minecraft.
@@ -88,6 +91,15 @@ public interface CustomBlockService {
      * @return the corresponding CustomBlockService.
      * @throws UnregisteredServiceException if the service is not registered.
      */
+    /**
+     * Names of the custom blocks stored in a loaded chunk, one entry per placed block. To be called on the main thread.
+     *
+     * @param chunk the chunk to read
+     * @return the custom block names, empty when the chunk holds none
+     */
+    @NotNull
+    List<String> getCustomBlockNames(@NotNull Chunk chunk);
+
     @NotNull
     static CustomBlockService getService(ServiceManager<String, CustomBlockService> serviceManager, PersistentDataHolder holder) throws UnregisteredServiceException {
         String serviceClassName = CustomBlockKey.holder(holder).getServiceClass();

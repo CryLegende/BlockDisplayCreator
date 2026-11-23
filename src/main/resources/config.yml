@@ -20,3 +20,8 @@ packet-display: true
 #Worked out once per file, off the main thread, and kept in animation-cache.txt. An animation keeps all its frames
 #with optimise: false in its section.   By def true
 animation-optimisation: true
+
+#If set to true, a custom block item given before its file changed gets the name and lore of the file back when its
+#owner joins and when a player opens a container block holding it (not in the menus of other plugins). A file whose
+#name or lore holds a placeholder is left out.   By def true
+items-follow-files: true
