@@ -230,6 +230,8 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                         }
 
                         customBlockItem.setAmount(amount);
+                        // "silent" after the amount: the recipient gets no message (the command that gives tells him itself)
+                        boolean silent = "silent".equalsIgnoreCase(arg6);
 
                         if (arg4 == null) {
                             if (player == null) {
@@ -255,6 +257,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                                         CommandUtil.applyPlaceholdersForCommand(abstractCustomBlock, customBlockItem, recipient);
 
                                         ItemUtil.distributeItem(recipient, customBlockItem);
+                                        notifyRecipient(recipient, arg3, amount, silent);
                                     }
                                     ChatUtil.sendMessage(sender, "&bYou have given the &l%s&ox%s&r&b block to all players", arg3, amount);
                                     return true;
@@ -285,6 +288,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                                     CommandUtil.applyPlaceholdersForCommand(abstractCustomBlock, customBlockItem, randomPlayer);
 
                                     ItemUtil.distributeItem(randomPlayer, customBlockItem);
+                                    notifyRecipient(randomPlayer, arg3, amount, silent);
 
                                     ChatUtil.sendMessage(sender, "&bYou have given the &l%s&ox%s&r&b block to random player %s", arg3, amount, randomPlayer.getName());
                                     return true;
@@ -301,6 +305,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                                     CommandUtil.applyPlaceholdersForCommand(abstractCustomBlock, customBlockItem, nearestPlayer);
 
                                     ItemUtil.distributeItem(nearestPlayer, customBlockItem);
+                                    notifyRecipient(nearestPlayer, arg3, amount, silent);
 
                                     ChatUtil.sendMessage(sender, "&bYou have given the &l%s&ox%s&r&b block to nearest player %s", arg3, amount, nearestPlayer.getName());
                                     return true;
@@ -317,6 +322,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                                     CommandUtil.applyPlaceholdersForCommand(abstractCustomBlock, customBlockItem, recipient);
 
                                     ItemUtil.distributeItem(recipient, customBlockItem);
+                                    notifyRecipient(recipient, arg3, amount, silent);
 
                                     ChatUtil.sendMessage(sender, "&bYou have given the &l%s&ox%s&r&b block to player %s", arg3, amount, recipient.getName());
                                     return true;
@@ -1352,6 +1358,20 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
         } catch (NumberFormatException e) {
             return Double.NaN;
         }
+    }
+
+    /**
+     * Tells a player who was given a custom block by someone else (console, another player) that he received it,
+     * with the same message as the one he gets when the command is his own. Nothing when silent or the message is empty.
+     */
+    private static void notifyRecipient(Player recipient, String block, byte amount, boolean silent) {
+        if (silent || StringMessagesValue.COMMAND_CUSTOM_BLOCK_GIVE_PLAYER_RECEIVE == null
+                || StringMessagesValue.COMMAND_CUSTOM_BLOCK_GIVE_PLAYER_RECEIVE.isBlank()) {
+            return;
+        }
+        ChatUtil.sendMessage(recipient, StringMessagesValue.COMMAND_CUSTOM_BLOCK_GIVE_PLAYER_RECEIVE
+                .replace("%customblock_name%", block)
+                .replace("%amount%", String.valueOf(amount)));
     }
 }
 
