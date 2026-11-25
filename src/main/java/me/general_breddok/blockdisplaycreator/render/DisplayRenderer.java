@@ -1821,17 +1821,21 @@ public final class DisplayRenderer implements Listener {
     }
 
     /**
-     * Plays a sound at a block: heard by everyone around it, or by the players it is sent to only when its model has
-     * a {@code display.visible-if}.
+     * Plays a sound of an animation at a block: heard by everyone around it, or by the players it is sent to only when
+     * its model has a {@code display.visible-if}, or when the animation has a {@code sound-range}: then by those of them
+     * who stand within it.
      */
-    private void playSound(PlacedDisplay placed, String sound, float volume, float pitch) {
+    private void playSound(PlacedDisplay placed, DisplayAnimation animation, String sound, float volume, float pitch) {
         Location where = placed.base();
-        if (!placed.model.conditional()) {
+        double range = animation.soundRange;
+        if (range <= 0 && !placed.model.conditional()) {
             placed.world.playSound(where, sound, volume, pitch);
             return;
         }
         for (Viewer viewer : placed.viewers) {
-            viewer.player.playSound(where, sound, volume, pitch);
+            if (range <= 0 || placed.heardBy(viewer.player, range)) {
+                viewer.player.playSound(where, sound, volume, pitch);
+            }
         }
     }
 
@@ -1977,7 +1981,8 @@ public final class DisplayRenderer implements Listener {
                     boolean sees = viewer != null && viewer.shown.contains(play.placed);
                     // sounds come from the block: heard in its world only, and by those it is sent to when it has a
                     // visible-if
-                    boolean hears = player != null && player.getWorld() == play.placed.world && (sees || !play.placed.model.conditional());
+                    boolean hears = player != null && player.getWorld() == play.placed.world && (sees || !play.placed.model.conditional())
+                            && (animation.soundRange <= 0 || play.placed.heardBy(player, animation.soundRange));
                     int[] starting = animation.startingAt[elapsed];
                     if (starting != null) {
                         for (int frame : starting) {
@@ -2017,7 +2022,7 @@ public final class DisplayRenderer implements Listener {
         }
         for (int note : due) {
             DisplayAnimation.Note played = animation.notes[note];
-            playSound(placed, played.sound(), played.volume(), played.pitch());
+            playSound(placed, animation, played.sound(), played.volume(), played.pitch());
         }
     }
 
@@ -2037,7 +2042,7 @@ public final class DisplayRenderer implements Listener {
             }
             DisplayAnimation.Frame played = animation.frames[frame];
             if (played.sound() != null) {
-                playSound(placed, played.sound(), played.volume(), played.pitch());
+                playSound(placed, animation, played.sound(), played.volume(), played.pitch());
             }
             placed.lastFrame[index] = frame;
         }

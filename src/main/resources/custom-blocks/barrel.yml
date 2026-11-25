@@ -141,6 +141,8 @@ sound:
 #  #        sound: minecraft:block.note_block.harp
 #  #        pitch: 1.2
 #  #        volume: 1
+#  #The sounds of an animation carry as far as those of the game (16 blocks). A shorter distance, in blocks, keeps them for the players standing in front of the block.   By def 0, that of the game
+#  #    sound-range: 3
 
 #Whether a hit breaks the placed blocks of this file.   By def true
 #With false, nobody breaks them by hitting them, not even an operator (who is told how to remove one): /bdc custom-block break <x> <y> <z> [world] does.

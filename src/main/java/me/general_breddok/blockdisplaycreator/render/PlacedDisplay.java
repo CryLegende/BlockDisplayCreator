@@ -5,6 +5,7 @@ import me.general_breddok.blockdisplaycreator.rotation.snapper.YawSnapper;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.BlockFace;
+import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -100,6 +101,21 @@ final class PlacedDisplay {
 
     Location base() {
         return new Location(this.world, this.baseX, this.baseY, this.baseZ);
+    }
+
+    /**
+     * Whether a player stands close enough to hear the sounds of an animation of the block: within its
+     * {@code sound-range} of where the block is seen, an operator's moves included.
+     */
+    boolean heardBy(Player player, double range) {
+        Location at = player.getLocation();
+        if (at.getWorld() != this.world) {
+            return false;
+        }
+        double dx = at.getX() - this.baseX - this.shift[0];
+        double dy = at.getY() - this.baseY - this.shift[1];
+        double dz = at.getZ() - this.baseZ - this.shift[2];
+        return dx * dx + dy * dy + dz * dz <= range * range;
     }
 
     boolean isOffCentre() {

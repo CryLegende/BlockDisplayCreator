@@ -31,6 +31,7 @@ import java.util.TreeSet;
  *         pivot: [0, 1, 0]    # point the rotation and the scale are made around. By def the middle of the parts
  *         sound: minecraft:block.chest.open
  *     optimise: false         # keeps every frame; by def the frames a client does not need are left out
+ *     sound-range: 3          # blocks from which its sounds are heard; by def those of the game
  *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
  *       - at: 12
  *         sound: minecraft:block.note_block.harp
@@ -82,6 +83,10 @@ final class DisplayAnimation {
      * them all).
      */
     final boolean optimisable;
+    /**
+     * How far, in blocks, players hear its sounds, 0 for the distance of the game.
+     */
+    final double soundRange;
 
     /**
      * @param at      the tick it starts at
@@ -106,9 +111,11 @@ final class DisplayAnimation {
     record Note(int at, String sound, float volume, float pitch) {
     }
 
-    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable) {
+    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable,
+                             double soundRange) {
         this.name = name;
         this.optimisable = optimisable;
+        this.soundRange = soundRange;
         this.trigger = trigger;
         this.interaction = interaction;
         this.duration = duration;
@@ -213,7 +220,15 @@ final class DisplayAnimation {
             duration = Math.max(duration, note.at() + 1);
         }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
-                section.getBoolean("optimise", true));
+                section.getBoolean("optimise", true), soundRange(section.get("sound-range")));
+    }
+
+    private static double soundRange(Object value) {
+        double range = number(value, 0).doubleValue();
+        if (range < 0) {
+            throw new IllegalArgumentException("sound-range must be a number of blocks, not " + value);
+        }
+        return range;
     }
 
     /**
@@ -240,7 +255,7 @@ final class DisplayAnimation {
             out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch());
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
-        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable);
+        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable, this.soundRange);
     }
 
     /**
