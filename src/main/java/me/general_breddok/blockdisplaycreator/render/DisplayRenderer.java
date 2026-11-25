@@ -1270,7 +1270,7 @@ public final class DisplayRenderer implements Listener {
         List<String> problems = new ArrayList<>();
         try {
             model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), viewDistance(name),
-                    visibleIf(name, problems), problems);
+                    viewHeight(name, "display.view-above"), viewHeight(name, "display.view-below"), visibleIf(name, problems), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
                 this.plugin.getLogger().log(Level.WARNING, "Could not read the display entities of the custom block " + name, e);
@@ -1354,6 +1354,26 @@ public final class DisplayRenderer implements Listener {
             }
         }
         return 0;
+    }
+
+    /**
+     * The {@code display.view-above} or {@code display.view-below} of the file of a custom block, in blocks, or -1 when
+     * it has none.
+     */
+    private int viewHeight(String name, String path) {
+        if (this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
+                && storage.getCustomBlockRepository() != null) {
+            CustomBlockConfigurationFile file = storage.getCustomBlockRepository().getFile(name);
+            if (file != null) {
+                try {
+                    return me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockYamlFile.viewHeight(file.get(path));
+                } catch (IllegalArgumentException e) {
+                    // the block itself does not load with it
+                    return -1;
+                }
+            }
+        }
+        return -1;
     }
 
     /**
@@ -2215,9 +2235,9 @@ public final class DisplayRenderer implements Listener {
 
     /**
      * Whether a player is close enough to a custom block to be sent it: by the chunks between them and, when its
-     * file sets a {@code display.view-distance}, by their difference in height too. Clients draw such a model only
-     * within that many blocks in every direction: without this, a block in a cave was sent, with every frame of its
-     * animations, to the players standing above it.
+     * file sets a {@code display.view-distance}, {@code view-above} or {@code view-below}, by their difference in
+     * height too. Clients draw a model with a view distance only within that many blocks in every direction: without
+     * this, a block in a cave was sent, with every frame of its animations, to the players standing above it.
      *
      * @param margin how many more blocks of height a block already shown is kept for, so that a player moving around
      *               the limit does not get it again and again
@@ -2226,8 +2246,12 @@ public final class DisplayRenderer implements Listener {
         if (!inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed))) {
             return false;
         }
-        int blocks = placed.model == null ? 0 : placed.model.viewDistance;
-        return blocks <= 0 || Math.abs(placed.y - viewer.y) <= blocks + margin;
+        if (placed.model == null) {
+            return true;
+        }
+        int height = viewer.y - placed.y;
+        int limit = height >= 0 ? placed.model.viewAbove : placed.model.viewBelow;
+        return limit < 0 || Math.abs(height) <= limit + margin;
     }
 
     /**

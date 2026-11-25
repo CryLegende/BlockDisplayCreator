@@ -134,6 +134,23 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
         return number.floatValue();
     }
 
+    /**
+     * How many blocks above, or below, a custom block players are still sent its model.
+     *
+     * @param value the {@code display.view-above} or {@code display.view-below} of the file, null when it has none
+     * @return -1 when it has none: its {@code display.view-distance} then counts in height as well
+     * @throws IllegalArgumentException when it is not a number of blocks, 0 or more
+     */
+    public static int viewHeight(Object value) {
+        if (value == null) {
+            return -1;
+        }
+        if (!(value instanceof Number number) || !(number.floatValue() >= 0) || Float.isInfinite(number.floatValue())) {
+            throw new IllegalArgumentException("must be a number of blocks, 0 or more, not " + value);
+        }
+        return Math.round(number.floatValue());
+    }
+
     private float modelScale() {
         try {
             return modelScale(file.get(ParameterLocators.SCALE_PATH));
@@ -504,6 +521,13 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
         } catch (IllegalArgumentException e) {
             throw new CustomBlockLoadException(e, "&cUnable to load block &6%s&r&c, parameter %s: %s", getName(), ParameterLocators.Display.VIEW_DISTANCE_PATH, e.getMessage());
         }
+        for (String path : List.of(ParameterLocators.Display.VIEW_ABOVE_PATH, ParameterLocators.Display.VIEW_BELOW_PATH)) {
+            try {
+                viewHeight(file.get(path));
+            } catch (IllegalArgumentException e) {
+                throw new CustomBlockLoadException(e, "&cUnable to load block &6%s&r&c, parameter %s: %s", getName(), path, e.getMessage());
+            }
+        }
         // a client draws a display entity up to 64 blocks times its view range
         Float viewRange = configuredViewRange == null && viewDistance > 0 ? Float.valueOf(viewDistance / 64f) : configuredViewRange;
         Float shadowRadius = file.get(ParameterLocators.Display.SHADOW_RADIUS);
@@ -869,6 +893,8 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
             ConfigLocator<Boolean> GLOWING = new ConfigLocator<>(DISPLAY_PATH + ".glowing", TypeTokens.BOOLEAN);
             ConfigLocator<Float> VIEW_RANGE = new ConfigLocator<>(DISPLAY_PATH + ".view-range", TypeTokens.FLOAT);
             String VIEW_DISTANCE_PATH = DISPLAY_PATH + ".view-distance";
+            String VIEW_ABOVE_PATH = DISPLAY_PATH + ".view-above";
+            String VIEW_BELOW_PATH = DISPLAY_PATH + ".view-below";
             ConfigLocator<DirectedVector> TRANSLATION = new ConfigLocator<>(DISPLAY_PATH + ".translation", TypeTokens.DIRECTED_VECTOR);
             ConfigLocator<org.bukkit.entity.Display.Billboard> BILLBOARD = new ConfigLocator<>(DISPLAY_PATH + ".billboard", TypeTokens.BILLBOARD);
             ConfigLocator<org.bukkit.entity.Display.Brightness> BRIGHTNESS = new ConfigLocator<>(DISPLAY_PATH + ".brightness", TypeTokens.BRIGHTNESS);

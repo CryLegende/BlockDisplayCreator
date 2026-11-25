@@ -55,15 +55,24 @@ final class DisplayModel {
      */
     final int viewDistance;
     /**
+     * How many blocks above, and below, the block players are sent the model: its file's {@code display.view-above}
+     * and {@code display.view-below}, else its view distance, -1 without either (no limit).
+     */
+    final int viewAbove;
+    final int viewBelow;
+    /**
      * Its file's {@code display.visible-if}: the conditions a player must meet to be sent the model, empty for a model
      * everyone is sent.
      */
     final List<Condition> visibleIf;
 
     private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
-                         List<Condition> visibleIf) {
+                         int viewAbove, int viewBelow, List<Condition> visibleIf) {
         this.name = definition.getName();
         this.viewDistance = viewDistance;
+        int everyWay = viewDistance > 0 ? viewDistance : -1;
+        this.viewAbove = viewAbove < 0 ? everyWay : viewAbove;
+        this.viewBelow = viewBelow < 0 ? everyWay : viewBelow;
         this.visibleIf = visibleIf;
         this.sidesCount = definition.getSidesCount();
         this.hitboxSignature = BDCCustomBlockService.hitboxSignature(definition);
@@ -98,6 +107,8 @@ final class DisplayModel {
         this.loops = model.loops;
         this.sinks = model.sinks;
         this.viewDistance = model.viewDistance;
+        this.viewAbove = model.viewAbove;
+        this.viewBelow = model.viewBelow;
         this.visibleIf = model.visibleIf;
         this.bounds = model.bounds;
     }
@@ -131,12 +142,15 @@ final class DisplayModel {
      *
      * @param animations   the {@code animations} section of its file, or null
      * @param viewDistance how far players are sent it, in blocks, 0 for the world's distance
+     * @param viewAbove    how many blocks above it players are sent it, -1 for the view distance
+     * @param viewBelow    how many blocks below it players are sent it, -1 for the view distance
      * @param visibleIf    the conditions a player must meet to be sent it, empty for none
      * @param problems     receives what could not be read of its animations
      * @return the model, without any element when the summon commands of the block create nothing
      */
     static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
-                             ConfigurationSection animations, int viewDistance, List<Condition> visibleIf, List<String> problems) {
+                             ConfigurationSection animations, int viewDistance, int viewAbove, int viewBelow, List<Condition> visibleIf,
+                             List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -161,7 +175,7 @@ final class DisplayModel {
             }
         }
         List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
-        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance, visibleIf);
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance, viewAbove, viewBelow, visibleIf);
     }
 
     /**

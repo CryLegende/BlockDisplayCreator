@@ -150,6 +150,11 @@ sound:
 #display:
 #  #How far players are sent the block, in blocks, height included.   By def the distance the world tracks display entities at
 #  view-distance: 24
+#  #How many blocks above it, and below it, players are still sent the block.   By def view-distance, both ways
+#  #A block in a cave needs a small view-above only: the players walking on the ground over it are not sent it, nor its animations.
+#  #A block on the ground needs a small view-below only: the players in the caves under it are not.
+#  view-above: 12
+#  view-below: 6
 #  #Players who see the block: only those for whom this condition, or every condition of a list, is true.   By def everyone
 #  #A condition is "<A> <op> <B>", op among ==, !=, >=, <=, >, < and contient, !contient (written between spaces).
 #  #Both sides go through {x} {y} {z} and {world} (the block coordinates and the world the custom block was placed in), %player% (the player) then PlaceholderAPI.
