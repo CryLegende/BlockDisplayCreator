@@ -148,7 +148,7 @@ sound:
 
 #Settings of the display section above for blocks shown through packets (packet-display in config.yml).   The fields may be missing
 #display:
-#  #How far players are sent the block, in blocks.   By def the distance the world tracks display entities at
+#  #How far players are sent the block, in blocks, height included.   By def the distance the world tracks display entities at
 #  view-distance: 24
 #  #Players who see the block: only those for whom this condition, or every condition of a list, is true.   By def everyone
 #  #A condition is "<A> <op> <B>", op among ==, !=, >=, <=, >, < and contient, !contient (written between spaces).

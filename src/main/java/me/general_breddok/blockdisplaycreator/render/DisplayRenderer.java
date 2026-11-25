@@ -70,6 +70,11 @@ public final class DisplayRenderer implements Listener {
      */
     private static final int VIEWER_PERIOD = 5;
     /**
+     * How many blocks up or down a player goes before what they are shown is worked out again.
+     */
+    private static final int HEIGHT_STEP = 4;
+    private static final int HEIGHT_MARGIN = 2;
+    /**
      * Time the chunks waiting to be read may take in one tick.
      */
     private static final long SCAN_BUDGET_NANOS = 8_000_000L;
@@ -193,6 +198,10 @@ public final class DisplayRenderer implements Listener {
         UUID world;
         int chunkX;
         int chunkZ;
+        /**
+         * The height, in blocks, the player was at the last time what they are shown was worked out.
+         */
+        int y;
         boolean stale = true;
 
         Viewer(Player player) {
@@ -1539,8 +1548,7 @@ public final class DisplayRenderer implements Listener {
         UUID world = placed.world.getUID();
         for (Viewer viewer : this.viewers.values()) {
             if (!viewer.stale && world.equals(viewer.world)
-                    && inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed))
-                    && !viewer.shown.contains(placed) && !viewer.withheld.contains(placed)) {
+                    && inRange(viewer, placed, 0) && !viewer.shown.contains(placed) && !viewer.withheld.contains(placed)) {
                 reach(viewer, placed);
             }
         }
@@ -2081,14 +2089,16 @@ public final class DisplayRenderer implements Listener {
         }
         int chunkX = location.getBlockX() >> 4;
         int chunkZ = location.getBlockZ() >> 4;
+        int y = location.getBlockY();
         if (!world.getUID().equals(viewer.world)) {
             forget(viewer);
-        } else if (!viewer.stale && chunkX == viewer.chunkX && chunkZ == viewer.chunkZ) {
+        } else if (!viewer.stale && chunkX == viewer.chunkX && chunkZ == viewer.chunkZ && Math.abs(y - viewer.y) < HEIGHT_STEP) {
             return;
         }
         viewer.world = world.getUID();
         viewer.chunkX = chunkX;
         viewer.chunkZ = chunkZ;
+        viewer.y = y;
         viewer.stale = false;
         // the chunks to look in: those of the model seen from the furthest away
         int radius = Math.max(radius(world), radius(world, this.farthest));
@@ -2096,7 +2106,7 @@ public final class DisplayRenderer implements Listener {
         List<PlacedDisplay> leaving = null;
         for (Iterator<PlacedDisplay> iterator = viewer.shown.iterator(); iterator.hasNext(); ) {
             PlacedDisplay placed = iterator.next();
-            if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius(placed))) {
+            if (!inRange(viewer, placed, HEIGHT_MARGIN)) {
                 iterator.remove();
                 placed.viewers.remove(viewer);
                 unsent(viewer, placed);
@@ -2117,7 +2127,7 @@ public final class DisplayRenderer implements Listener {
             // the blocks held back from him that are now out of his range are no longer checked
             for (Iterator<PlacedDisplay> iterator = viewer.withheld.iterator(); iterator.hasNext(); ) {
                 PlacedDisplay placed = iterator.next();
-                if (!inRange(placed.chunkX() - chunkX, placed.chunkZ() - chunkZ, radius(placed))) {
+                if (!inRange(viewer, placed, HEIGHT_MARGIN)) {
                     iterator.remove();
                     viewer.guarded.remove(placed);
                 }
@@ -2165,8 +2175,7 @@ public final class DisplayRenderer implements Listener {
 
     private void showAll(Viewer viewer, List<PlacedDisplay> list) {
         for (PlacedDisplay placed : list) {
-            if (!inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed)) || viewer.shown.contains(placed)
-                    || viewer.withheld.contains(placed)) {
+            if (!inRange(viewer, placed, 0) || viewer.shown.contains(placed) || viewer.withheld.contains(placed)) {
                 continue;
             }
             if (!chunkSent(viewer.player, placed.chunkX(), placed.chunkZ())) {
@@ -2202,6 +2211,23 @@ public final class DisplayRenderer implements Listener {
 
     private static boolean inRange(int dx, int dz, int radius) {
         return dx * dx + dz * dz <= radius * radius + radius;
+    }
+
+    /**
+     * Whether a player is close enough to a custom block to be sent it: by the chunks between them and, when its
+     * file sets a {@code display.view-distance}, by their difference in height too. Clients draw such a model only
+     * within that many blocks in every direction: without this, a block in a cave was sent, with every frame of its
+     * animations, to the players standing above it.
+     *
+     * @param margin how many more blocks of height a block already shown is kept for, so that a player moving around
+     *               the limit does not get it again and again
+     */
+    private boolean inRange(Viewer viewer, PlacedDisplay placed, int margin) {
+        if (!inRange(placed.chunkX() - viewer.chunkX, placed.chunkZ() - viewer.chunkZ, radius(placed))) {
+            return false;
+        }
+        int blocks = placed.model == null ? 0 : placed.model.viewDistance;
+        return blocks <= 0 || Math.abs(placed.y - viewer.y) <= blocks + margin;
     }
 
     /**
