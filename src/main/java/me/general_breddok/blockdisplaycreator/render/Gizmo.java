@@ -25,7 +25,8 @@ import java.util.UUID;
 /**
  * The tool a player moves one custom block shown through packets with: three arrows to move it along an axis,
  * three squares to move it on a plane, two arcs to turn it (around the vertical axis, and tipping it forward), a bar
- * whose knob sets its size, and a button that puts it back where it was placed.
+ * whose knob sets its size, a button that puts it back where it was placed, and for administrators a button that
+ * opens the panel of what is set on this block alone (see {@link AdminMenu}).
  * <p>
  * The tool is made of display entities that exist on the player's client only. He aims at a part, which lights up,
  * and clicks to take hold of it: the block then follows where he looks, until he clicks again. A right click on a
@@ -41,6 +42,10 @@ final class Gizmo {
      */
     private static final int READING_HEIGHT = 1000;
     private static final double REACH = 16;
+    /**
+     * The largest the tool gets, around the largest models.
+     */
+    private static final double MAX_TOOL_SCALE = 6;
     private static final double MAX_SHIFT = 8;
     /**
      * How far, in blocks, the player may walk from the block before the tool closes by itself.
@@ -49,16 +54,12 @@ final class Gizmo {
     private static final double[] MOVE_STEPS = {0.0625, 0.125, 0.25, 0.5, 1};
     private static final double[] TURN_STEPS = {1, 2.5, 5, 15, 22.5, 45, 90};
     private static final Material[] COLORS = {Material.RED_CONCRETE, Material.LIME_CONCRETE, Material.LIGHT_BLUE_CONCRETE,
-            Material.WHITE_CONCRETE, Material.LIGHT_GRAY_CONCRETE, Material.BLACK_CONCRETE};
+            Material.WHITE_CONCRETE, Material.LIGHT_GRAY_CONCRETE, Material.BLACK_CONCRETE, Material.COMMAND_BLOCK};
     private static final int RED = 0;
     private static final int WHITE = 3;
     private static final int GREY = 4;
     private static final int BLACK = 5;
-    /**
-     * How far a block may be shrunk or grown from the size it was placed with: a quarter either way.
-     */
-    private static final double SCALE_MIN = 0.75;
-    private static final double SCALE_MAX = 1.25;
+    private static final int COMMAND = 6;
     private static final double[] SCALE_STEPS = {0.01, 0.025, 0.05, 0.1};
     /**
      * The strip above the tool, turned to face the player wherever he stands: a bar whose knob sets the size of the
@@ -71,6 +72,10 @@ final class Gizmo {
     private static final double SLIDER_RADIUS = 0.1;
     private static final float KNOB = 0.15f;
     private static final float BUTTON_X = 0.85f;
+    /**
+     * Where the button of the admin panel stands, at the left end of the strip.
+     */
+    private static final float ADMIN_X = -0.85f;
     /**
      * How far, in degrees, the player may walk around the tool before the strip turns to face him again.
      */
@@ -91,7 +96,7 @@ final class Gizmo {
     private static final double RING_THICKNESS = 0.13;
     private static final int RING_SEGMENTS = 10;
 
-    private enum Kind {MOVE_AXIS, MOVE_PLANE, TURN, SCALE, RESET}
+    private enum Kind {MOVE_AXIS, MOVE_PLANE, TURN, SCALE, RESET, ADMIN}
 
     private static final class Piece {
         final int id;
@@ -142,7 +147,18 @@ final class Gizmo {
     private final List<Handle> handles = new ArrayList<>();
     private final List<Piece> pieces = new ArrayList<>();
     private List<Object> lit;
-    private final double scale;
+    private double scale;
+    /**
+     * Whether its player is an administrator: the admin button, and a size bar from {@code gizmo.admin-size-min} to
+     * {@code gizmo.admin-size-max}, logarithmic (each step of the knob multiplies the size by the same factor).
+     */
+    private final boolean admin;
+    /**
+     * The sizes at the ends of the bar: what its player may give the block, and the size it has if it is beyond.
+     */
+    private final double sizeMin;
+    private final double sizeMax;
+    private final boolean logBar;
     private final float summonedPitch;
     private Object catcherType;
     private List<Object> catcherValues;
@@ -181,6 +197,12 @@ final class Gizmo {
     private double basePitch;
     private String readout = "";
     private final Vector3d pivotStart = new Vector3d();
+    /**
+     * The point of the model a change of size keeps where it stands, in its own axes, and where it stood in the world
+     * when the knob was taken.
+     */
+    private final Vector3d anchorLocal = new Vector3d();
+    private final Vector3d anchorStart = new Vector3d();
     private final Vector3d centre;
     private final Vector3d lastEye = new Vector3d(Double.NaN, 0, 0);
     private final Vector3d lastLook = new Vector3d();
@@ -196,10 +218,15 @@ final class Gizmo {
         this.target = target;
         this.summonedPitch = target.model.elements.get(0).pitch();
 
-        float[] box = target.model.bounds();
         this.centre = target.model.centre();
-        double size = Math.max(box[3] - box[0], Math.max(box[4] - box[1], box[5] - box[2]));
-        this.scale = Math.max(1.0, Math.min(3.0, size * 0.7));
+        this.scale = toolScale();
+        this.admin = player.hasPermission(GizmoManager.ADMIN_PERMISSION);
+        double current = target.scale();
+        double min = manager.setting(this.admin ? "gizmo.admin-size-min" : "gizmo.size-min", this.admin ? 0.1 : 0.75);
+        double max = manager.setting(this.admin ? "gizmo.admin-size-max" : "gizmo.size-max", this.admin ? 10 : 1.25);
+        this.sizeMin = Math.max(0.01, Math.min(min, current));
+        this.sizeMax = Math.max(Math.max(max, current), this.sizeMin * 1.01);
+        this.logBar = this.admin;
 
         read(target.world, target.chunkX(), target.chunkZ());
 
@@ -228,6 +255,63 @@ final class Gizmo {
 
     PlacedDisplay target() {
         return this.target;
+    }
+
+    /**
+     * How big the tool is drawn: after the largest side of what the block draws, at the size it has now, so that the
+     * tool stands around it whatever the model (a flat item stretched along its thickness counts as thin).
+     */
+    private double toolScale() {
+        float[] box = this.target.model.bounds();
+        double size = Math.max(box[3] - box[0], Math.max(box[4] - box[1], box[5] - box[2])) * this.target.scale();
+        return Math.max(1.0, Math.min(MAX_TOOL_SCALE, size * 0.7));
+    }
+
+    /**
+     * Where along the size bar (0 at its left end, 1 at its right end) a size stands.
+     */
+    private double toBar(double size) {
+        double s = Math.max(this.sizeMin, Math.min(this.sizeMax, size));
+        return this.logBar ? Math.log(s / this.sizeMin) / Math.log(this.sizeMax / this.sizeMin) : (s - this.sizeMin) / (this.sizeMax - this.sizeMin);
+    }
+
+    private double fromBar(double at) {
+        double u = Math.max(0, Math.min(1, at));
+        return this.logBar ? this.sizeMin * Math.pow(this.sizeMax / this.sizeMin, u) : this.sizeMin + u * (this.sizeMax - this.sizeMin);
+    }
+
+    /**
+     * How far the player may stand from the tool and still aim at it.
+     */
+    private double reach() {
+        return Math.max(REACH, this.scale * 8);
+    }
+
+    /**
+     * Brings the tool to its block after something else changed it (the admin panel): where it stands, its turn and
+     * its size, and the tool's own size.
+     */
+    void follow() {
+        if (this.active != null) {
+            return;
+        }
+        refreshTool();
+        rescale();
+        unhover();
+        status();
+    }
+
+    /**
+     * Draws the tool at the size the block now has, once it has grown or shrunk enough for it to matter.
+     */
+    private void rescale() {
+        double next = toolScale();
+        if (Math.abs(next - this.scale) / this.scale < 0.2) {
+            return;
+        }
+        this.scale = next;
+        sendPoses();
+        this.lastEye.set(Double.NaN, 0, 0);
     }
 
     boolean isDragging() {
@@ -306,7 +390,7 @@ final class Gizmo {
 
     private void build() {
         for (int axis = 0; axis < 3; axis++) {
-            Handle arrow = new Handle(Kind.MOVE_AXIS, axis, "Déplacer " + AXES[axis], axis);
+            Handle arrow = new Handle(Kind.MOVE_AXIS, axis, Texts.get("gizmo.label.move", "%axis%", AXES[axis]), axis);
             float middle = (ARROW_FROM + 0.84f) / 2;
             piece(arrow, along(axis, middle, 0.84f - ARROW_FROM, 0.045f), new Quaternionf());
             piece(arrow, along(axis, 0.92f, 0.16f, 0.13f), new Quaternionf());
@@ -315,7 +399,7 @@ final class Gizmo {
         for (int normal = 0; normal < 3; normal++) {
             int a = (normal + 1) % 3;
             int b = (normal + 2) % 3;
-            Handle square = new Handle(Kind.MOVE_PLANE, normal, "Déplacer " + AXES[a] + "/" + AXES[b], normal);
+            Handle square = new Handle(Kind.MOVE_PLANE, normal, Texts.get("gizmo.label.move", "%axis%", AXES[a] + "/" + AXES[b]), normal);
             Vector3f center = new Vector3f();
             Vector3f size = new Vector3f();
             set(center, a, (PLANE_FROM + PLANE_TO) / 2);
@@ -328,25 +412,34 @@ final class Gizmo {
         }
         if (this.nms.canAnimate()) {
             // a grey bar, a stop at each end, a mark at the size the block was placed with, and the white knob
-            Handle slider = new Handle(Kind.SCALE, 0, "Taille", WHITE);
+            Handle slider = new Handle(Kind.SCALE, 0, Texts.get("gizmo.label.size"), WHITE);
             float middle = (SLIDER_FROM + SLIDER_TO) / 2;
             piece(slider, new Vector3f[]{new Vector3f(middle, PANEL_Y, 0), new Vector3f(SLIDER_TO - SLIDER_FROM, 0.035f, 0.035f)}, new Quaternionf(), GREY, false);
             for (float at : new float[]{SLIDER_FROM, SLIDER_TO}) {
                 piece(slider, new Vector3f[]{new Vector3f(at, PANEL_Y, 0), new Vector3f(0.025f, 0.11f, 0.11f)}, new Quaternionf(), GREY, false);
             }
-            float placed = (float) (SLIDER_FROM + (1 - SCALE_MIN) / (SCALE_MAX - SCALE_MIN) * (SLIDER_TO - SLIDER_FROM));
-            piece(slider, new Vector3f[]{new Vector3f(placed, PANEL_Y, 0), new Vector3f(0.02f, 0.07f, 0.07f)}, new Quaternionf(), GREY, false);
+            if (1 >= this.sizeMin && 1 <= this.sizeMax) {
+                float placed = (float) (SLIDER_FROM + toBar(1) * (SLIDER_TO - SLIDER_FROM));
+                piece(slider, new Vector3f[]{new Vector3f(placed, PANEL_Y, 0), new Vector3f(0.02f, 0.07f, 0.07f)}, new Quaternionf(), GREY, false);
+            }
             piece(slider, new Vector3f[]{new Vector3f(), new Vector3f(KNOB, KNOB, KNOB)}, new Quaternionf(), WHITE, true);
             this.handles.add(slider);
         }
         // a red button on a black plate, turned to the player
-        Handle button = new Handle(Kind.RESET, 0, "Remettre à l'origine", RED);
+        Handle button = new Handle(Kind.RESET, 0, Texts.get("gizmo.label.reset"), RED);
         piece(button, new Vector3f[]{new Vector3f(BUTTON_X, PANEL_Y, 0), new Vector3f(0.30f, 0.30f, 0.12f)}, new Quaternionf(), BLACK, false);
         piece(button, new Vector3f[]{new Vector3f(BUTTON_X, PANEL_Y, 0.09f), new Vector3f(0.19f, 0.19f, 0.08f)}, new Quaternionf(), RED, false);
         this.handles.add(button);
+        if (this.admin) {
+            // a command block on a black plate, at the other end of the strip
+            Handle panel = new Handle(Kind.ADMIN, 0, Texts.get("gizmo.label.admin"), COMMAND);
+            piece(panel, new Vector3f[]{new Vector3f(ADMIN_X, PANEL_Y, 0), new Vector3f(0.30f, 0.30f, 0.12f)}, new Quaternionf(), BLACK, false);
+            piece(panel, new Vector3f[]{new Vector3f(ADMIN_X, PANEL_Y, 0.09f), new Vector3f(0.19f, 0.19f, 0.08f)}, new Quaternionf(), COMMAND, false);
+            this.handles.add(panel);
+        }
         // pitch (around X, tipping the block forward) and yaw (around Y)
         for (int axis = 0; axis < 2; axis++) {
-            Handle ring = new Handle(Kind.TURN, axis, axis == 1 ? "Tourner" : "Pencher", axis);
+            Handle ring = new Handle(Kind.TURN, axis, Texts.get(axis == 1 ? "gizmo.label.turn" : "gizmo.label.tilt"), axis);
             int p = (axis + 1) % 3;
             int q = (axis + 2) % 3;
             double step = Math.PI / 2 / RING_SEGMENTS;
@@ -406,8 +499,7 @@ final class Gizmo {
      * Where the knob of the size bar stands, in the tool, for the size the block has.
      */
     private Vector3f knobAt() {
-        double part = (this.target.scale() - SCALE_MIN) / (SCALE_MAX - SCALE_MIN);
-        float u = (float) (SLIDER_FROM + Math.max(0, Math.min(1, part)) * (SLIDER_TO - SLIDER_FROM));
+        float u = (float) (SLIDER_FROM + toBar(this.target.scale()) * (SLIDER_TO - SLIDER_FROM));
         return new Vector3f(u, PANEL_Y, 0);
     }
 
@@ -463,7 +555,7 @@ final class Gizmo {
         List<Object> packets = new ArrayList<>();
         for (Handle handle : this.handles) {
             for (Piece piece : handle.pieces) {
-                if (strip ? handle.kind == Kind.SCALE || handle.kind == Kind.RESET : piece.knob) {
+                if (strip ? handle.kind == Kind.SCALE || handle.kind == Kind.RESET || handle.kind == Kind.ADMIN : piece.knob) {
                     packets.add(this.nms.dataPacket(piece.id, withPose(piece, handle.lit)));
                 }
             }
@@ -526,7 +618,7 @@ final class Gizmo {
     private Quaterniond frameOf(Handle handle) {
         return switch (handle.kind) {
             case TURN -> this.turnFrame;
-            case SCALE, RESET -> this.viewFrame;
+            case SCALE, RESET, ADMIN -> this.viewFrame;
             default -> this.moveFrame;
         };
     }
@@ -544,6 +636,7 @@ final class Gizmo {
             case MOVE_PLANE -> t = hitSquare(handle.axis, o, d);
             case SCALE -> t = hitSegment(o, d, new Vector3d(SLIDER_FROM - 0.05, PANEL_Y, 0), new Vector3d(SLIDER_TO + 0.05, PANEL_Y, 0), SLIDER_RADIUS);
             case RESET -> t = hitBox(o, d, new double[]{BUTTON_X - 0.17, PANEL_Y - 0.17, -0.08}, new double[]{BUTTON_X + 0.17, PANEL_Y + 0.17, 0.15});
+            case ADMIN -> t = hitBox(o, d, new double[]{ADMIN_X - 0.17, PANEL_Y - 0.17, -0.08}, new double[]{ADMIN_X + 0.17, PANEL_Y + 0.17, 0.15});
             default -> t = hitArc(handle.axis, o, d);
         }
         return t < 0 ? -1 : t * this.scale;
@@ -664,11 +757,11 @@ final class Gizmo {
 
     private Handle pick(Vector3d eye, Vector3d look) {
         Handle best = null;
-        double nearest = REACH;
+        double nearest = reach();
         for (Handle handle : this.handles) {
             double t = hit(handle, eye, look);
-            if (handle.kind == Kind.RESET && t >= 0 && t < REACH) {
-                // the button stays within reach when a part of the tool stands in front of it
+            if ((handle.kind == Kind.RESET || handle.kind == Kind.ADMIN) && t >= 0 && t < reach()) {
+                // a button stays within reach when a part of the tool stands in front of it
                 return handle;
             }
             if (t >= 0 && t < nearest) {
@@ -741,7 +834,10 @@ final class Gizmo {
         if (this.active != null) {
             drop();
         } else if (this.hovered != null) {
-            if (this.hovered.kind == Kind.RESET) {
+            if (this.hovered.kind == Kind.ADMIN) {
+                unhover();
+                this.manager.openAdmin(this.player, this.target);
+            } else if (this.hovered.kind == Kind.RESET) {
                 reset(this.hovered);
             } else {
                 grab(this.hovered);
@@ -758,7 +854,7 @@ final class Gizmo {
         }
         this.lastRightClick = tick;
         Handle handle = this.active != null ? this.active : this.hovered;
-        if (handle == null) {
+        if (handle == null || handle.kind == Kind.ADMIN) {
             return;
         }
         if (this.active != null) {
@@ -795,7 +891,9 @@ final class Gizmo {
                 }
             }
             case SCALE -> {
-                // the knob slides along the bar, above the middle of the tool
+                // the block grows from where it stands (see PlacedDisplay#sizeAnchor), the knob slides along the bar
+                this.anchorLocal.set(this.target.sizeAnchor());
+                this.anchorStart.set(this.target.worldPoint(this.anchorLocal));
                 this.dragOrigin.y += PANEL_Y * this.scale;
                 frame.transform(this.dragAxis.set(1, 0, 0));
                 Double t = axisParam(eye, look);
@@ -835,6 +933,11 @@ final class Gizmo {
             return;
         }
         this.renderer.commitShift(this.target);
+        if (held.kind == Kind.SCALE) {
+            // the tool goes to the middle of the block at its new size
+            refreshTool();
+            rescale();
+        }
         this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, 1.0f);
         status();
     }
@@ -848,7 +951,7 @@ final class Gizmo {
     }
 
     private void refused() {
-        this.manager.say(this.player, 'c', "Tu ne peux pas &cdéplacer&7 ce modèle &chors de ton île&7.");
+        this.manager.say(this.player, "gizmo.refused");
         this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
         status();
     }
@@ -908,7 +1011,7 @@ final class Gizmo {
         }
         if (same) {
             this.renderer.commitShift(this.target);
-            this.manager.say(this.player, '6', handle.kind == Kind.RESET ? "Ce modèle est &6déjà à sa place d'origine&7." : "Rien à &6remettre à zéro&7 ici.");
+            this.manager.say(this.player, handle.kind == Kind.RESET ? "gizmo.already-at-origin" : "gizmo.nothing-to-reset");
             this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
             status();
             return;
@@ -922,7 +1025,7 @@ final class Gizmo {
             return;
         }
         this.renderer.commitShift(this.target);
-        this.readout = handle.kind == Kind.RESET ? "Remis à l'origine" : handle.label + " remis à zéro";
+        this.readout = handle.kind == Kind.RESET ? Texts.get("gizmo.readout.reset-all") : Texts.get("gizmo.readout.reset", "%part%", handle.label);
         this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BELL, 0.6f, 0.8f);
         status();
     }
@@ -949,7 +1052,10 @@ final class Gizmo {
      */
     private void refreshTool() {
         double[] pose = this.target.pose(this.summonedPitch);
-        this.origin.set(this.target.pivot(this.summonedPitch));
+        if (this.active == null || this.active.kind != Kind.SCALE) {
+            // while the knob is held the tool stays where it is, under the line of sight that slides it
+            this.origin.set(this.target.pivot(this.summonedPitch));
+        }
         boolean turned = Math.abs(pose[3] - this.yaw) > 1e-6;
         this.yaw = pose[3];
         if (turned) {
@@ -1047,9 +1153,9 @@ final class Gizmo {
                 }
                 // the knob follows the line of sight along the bar, whose length goes from the smallest size to the largest
                 double span = this.scale * (SLIDER_TO - SLIDER_FROM);
-                size = Math.max(SCALE_MIN, Math.min(SCALE_MAX, this.shiftStart[5] + (t - this.paramStart) / span * (SCALE_MAX - SCALE_MIN)));
+                size = fromBar(toBar(this.shiftStart[5]) + (t - this.paramStart) / span);
                 if (this.snapping) {
-                    size = Math.max(SCALE_MIN, Math.min(SCALE_MAX, Math.round(size / SCALE_STEPS[this.scaleStep]) * SCALE_STEPS[this.scaleStep]));
+                    size = Math.max(this.sizeMin, Math.min(this.sizeMax, Math.round(size / SCALE_STEPS[this.scaleStep]) * SCALE_STEPS[this.scaleStep]));
                 }
                 this.readout = String.format(Locale.ROOT, "%s %d %%", handle.label, Math.round(size * 100));
             }
@@ -1077,13 +1183,20 @@ final class Gizmo {
                 this.readout = String.format(Locale.ROOT, "%s %+.1f°", handle.label, degrees);
             }
         }
-        if (handle.kind == Kind.TURN || handle.kind == Kind.SCALE) {
-            // the model turns and grows around the middle of what it draws: its position follows so that this point stays put
+        if (handle.kind == Kind.TURN) {
+            // the model turns around the middle of what it draws: its position follows so that this point stays put
             double[] base = this.target.placedPose(this.summonedPitch);
             Vector3d moved = PlacedDisplay.orientation(base[3] + turn, base[4] + tilt).transform(new Vector3d(this.centre).mul(size));
             x = this.pivotStart.x - moved.x - base[0];
             y = this.pivotStart.y - moved.y - base[1];
             z = this.pivotStart.z - moved.z - base[2];
+        } else if (handle.kind == Kind.SCALE) {
+            // the model grows from where it stands: its position follows so that its anchor stays put
+            double[] base = this.target.placedPose(this.summonedPitch);
+            Vector3d moved = PlacedDisplay.orientation(base[3] + turn, base[4] + tilt).transform(new Vector3d(this.anchorLocal).mul(size));
+            x = this.anchorStart.x - moved.x - base[0];
+            y = this.anchorStart.y - moved.y - base[1];
+            z = this.anchorStart.z - moved.z - base[2];
         } else {
             double length = Math.sqrt(x * x + y * y + z * z);
             if (length > MAX_SHIFT) {
@@ -1141,14 +1254,13 @@ final class Gizmo {
     void status() {
         boolean sizing = this.active != null && this.active.kind == Kind.SCALE;
         double step = this.active != null && this.active.kind == Kind.TURN ? TURN_STEPS[this.turnStep] : sizing ? SCALE_STEPS[this.scaleStep] * 100 : MOVE_STEPS[this.moveStep];
-        actionBar("&6&lGizmo &8» &f" + (this.readout.isEmpty() ? "vise une pièce" : this.readout)
-                + " &8| &7pas &e" + (this.snapping ? trimmed(step) : "libre")
-                + " &8| &7axes &e" + (this.local ? "du modèle" : "du monde")
-                + " &8| &7clic droit &eremise à zéro");
+        actionBar(Texts.get("gizmo.status", "%readout%", this.readout.isEmpty() ? Texts.get("gizmo.readout.aim") : this.readout,
+                "%step%", this.snapping ? trimmed(step) : Texts.get("gizmo.readout.free-step"),
+                "%axes%", Texts.get(this.local ? "gizmo.readout.model-axes" : "gizmo.readout.world-axes")));
     }
 
     private void actionBar(String text) {
-        this.player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(ChatColor.translateAlternateColorCodes('&', text)));
+        this.player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(text));
     }
 
     private static String trimmed(double value) {

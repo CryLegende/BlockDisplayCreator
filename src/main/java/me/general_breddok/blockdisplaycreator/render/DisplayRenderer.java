@@ -971,6 +971,144 @@ public final class DisplayRenderer implements Listener {
         return new Location(placed.world, pivot.x, placed.pose(pitch)[1] + 0.25, pivot.z);
     }
 
+    // ---------- What an administrator sets on one block ----------
+
+    /**
+     * What an administrator set on the custom block of a block, null for one that follows its file (or that is not
+     * shown through packets).
+     */
+    @Nullable
+    public synchronized BlockSettings settingsAt(@Nullable Location location) {
+        if (location == null || location.getWorld() == null) {
+            return null;
+        }
+        PlacedDisplay placed = find(location.getWorld(), location.getBlockX(), location.getBlockY(), location.getBlockZ());
+        return placed == null ? null : placed.settings;
+    }
+
+    /**
+     * Whether an administrator made the custom block of a block unbreakable by hits.
+     */
+    public synchronized boolean protects(@Nullable Location location) {
+        BlockSettings settings = settingsAt(location);
+        return settings != null && !settings.breakable;
+    }
+
+    /**
+     * The blocks shown through packets in a world, within a distance of a point, that an administrator set something on.
+     */
+    synchronized List<PlacedDisplay> withSettings(World world, Location around, double distance) {
+        List<PlacedDisplay> found = new ArrayList<>();
+        Map<Long, List<PlacedDisplay>> chunks = this.index.get(world.getUID());
+        if (chunks == null) {
+            return found;
+        }
+        for (List<PlacedDisplay> list : chunks.values()) {
+            for (PlacedDisplay placed : list) {
+                if (placed.settings != null && around.distanceSquared(placed.base()) <= distance * distance) {
+                    found.add(placed);
+                }
+            }
+        }
+        found.sort(java.util.Comparator.comparingDouble(placed -> around.distanceSquared(placed.base())));
+        return found;
+    }
+
+    /**
+     * Gives a block what an administrator set on it: stored with the block, and shown at once to those who see it.
+     *
+     * @param settings null (or nothing set) for a block that follows its file again
+     */
+    synchronized void applySettings(PlacedDisplay placed, @Nullable BlockSettings settings) {
+        if (settings != null && settings.isDefault()) {
+            settings = null;
+        }
+        boolean loopedBefore = placed.loops();
+        int distanceBefore = placed.viewDistance();
+        int aboveBefore = placed.viewAbove();
+        int belowBefore = placed.viewBelow();
+        double[] boxBefore = placed.settings == null ? null : placed.settings.clickBox;
+        placed.settings = settings;
+
+        CustomBlockData data = new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin);
+        String text = settings == null ? null : settings.write();
+        if (text == null) {
+            data.remove(CustomBlockKey.SETTINGS);
+        } else {
+            data.set(CustomBlockKey.SETTINGS, PersistentDataType.STRING, text);
+        }
+
+        if (loopedBefore != placed.loops()) {
+            if (placed.loops()) {
+                if (!placed.viewers.isEmpty()) {
+                    this.looping.add(placed);
+                    for (Viewer viewer : placed.viewers) {
+                        // a player watching an animation played for him alone gets the loops once it ends
+                        if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                            catchUp(viewer, placed);
+                        }
+                    }
+                }
+            } else {
+                this.looping.remove(placed);
+                List<DisplayAnimation> animations = placed.model.animations;
+                for (int i = 0; i < animations.size(); i++) {
+                    if (animations.get(i).trigger != DisplayAnimation.Trigger.LOOP) {
+                        continue;
+                    }
+                    Object packet = placed.restPacket(this.nms, i);
+                    for (Viewer viewer : placed.viewers) {
+                        if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                            this.nms.send(viewer.player, packet);
+                            Nearby near = viewer.near(placed);
+                            if (near != null) {
+                                // the parts turned towards him were put back at rest too: turned to him again
+                                near.looking = false;
+                            }
+                        }
+                    }
+                }
+            }
+            if (placed.model.hasCarrier() && !placed.viewers.isEmpty()) {
+                // the whole model at once where the frames now playing have it, as its parts
+                Object packet = placed.carrierMove(this.nms, placed.rootTarget(this.tick), 0, placed.carrierGlide, placed.carrierGlide);
+                for (Viewer viewer : placed.viewers) {
+                    if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        this.nms.send(viewer.player, packet);
+                    }
+                }
+            }
+        }
+
+        if (distanceBefore != placed.viewDistance() || aboveBefore != placed.viewAbove() || belowBefore != placed.viewBelow()) {
+            // players moving look that much further for blocks; everyone in the world works out again what they see
+            this.farthest = Math.max(this.farthest, placed.viewDistance());
+            for (Viewer viewer : this.viewers.values()) {
+                if (placed.world.getUID().equals(viewer.world)) {
+                    viewer.stale = true;
+                }
+            }
+        }
+
+        double[] boxAfter = settings == null ? null : settings.clickBox;
+        if (!java.util.Arrays.equals(boxBefore, boxAfter)) {
+            // the click boxes are summoned again, with the added one or without it
+            layHitbox(placed, data);
+            guardHitbox(placed, data);
+        }
+    }
+
+    /**
+     * Gives a block another size, keeping where it stands (see {@link PlacedDisplay#sizeAnchor()}), for everyone who
+     * sees it, and stores it.
+     */
+    synchronized void resize(PlacedDisplay placed, double size) {
+        double[] next = placed.shiftForSize(size);
+        beginShift(placed);
+        shift(placed, next[0], next[1], next[2], next[3], next[4], next[5]);
+        commitShift(placed);
+    }
+
     // ---------- Reload, reset, shutdown ----------
 
     /**
@@ -1336,6 +1474,10 @@ public final class DisplayRenderer implements Listener {
         }
 
         placed.shiftText(data.get(CustomBlockKey.SHIFT, PersistentDataType.STRING));
+        placed.settings = BlockSettings.read(data.get(CustomBlockKey.SETTINGS, PersistentDataType.STRING));
+        if (placed.settings != null) {
+            this.farthest = Math.max(this.farthest, placed.settings.viewDistance);
+        }
         refreshHitbox(placed, model, data);
 
         placed.bind(model, this.nms);
@@ -2109,7 +2251,7 @@ public final class DisplayRenderer implements Listener {
         } else {
             catchUp(viewer, placed);
         }
-        if (placed.model.loops) {
+        if (placed.loops()) {
             this.looping.add(placed);
         }
         if (!placed.attentive && placed.model.attentive()) {
@@ -2151,6 +2293,10 @@ public final class DisplayRenderer implements Listener {
         for (int i = 0; i < animations.size(); i++) {
             DisplayAnimation animation = animations.get(i);
             int last = placed.lastFrame[i];
+            if (animation.trigger == DisplayAnimation.Trigger.LOOP && !placed.loops()) {
+                // an administrator stopped the loops of this block: it stays at rest
+                continue;
+            }
             if (animation.trigger == DisplayAnimation.Trigger.LOOP && rejoin) {
                 Object packet = placed.rejoinPacket(this.nms, i, this.tick % animation.duration, this.tick >= animation.duration, REJOIN_TICKS, unturned);
                 if (packet != null) {
@@ -2775,7 +2921,7 @@ public final class DisplayRenderer implements Listener {
             return true;
         }
         int height = viewer.y - placed.y;
-        int limit = height >= 0 ? placed.model.viewAbove : placed.model.viewBelow;
+        int limit = height >= 0 ? placed.viewAbove() : placed.viewBelow();
         return limit < 0 || Math.abs(height) <= limit + margin;
     }
 
@@ -2784,7 +2930,7 @@ public final class DisplayRenderer implements Listener {
      * entities, within the chunks the server sends.
      */
     private int radius(PlacedDisplay placed) {
-        return placed.model == null || placed.model.viewDistance <= 0 ? radius(placed.world) : radius(placed.world, placed.model.viewDistance);
+        return placed.model == null || placed.viewDistance() <= 0 ? radius(placed.world) : radius(placed.world, placed.viewDistance());
     }
 
     private static int radius(World world, int blocks) {
@@ -2805,6 +2951,13 @@ public final class DisplayRenderer implements Listener {
             this.ranges.put(world.getName(), range);
         }
         return range;
+    }
+
+    /**
+     * How far, in blocks, a block without a distance of its own is sent in a world.
+     */
+    int defaultViewBlocks(World world) {
+        return radius(world) * 16;
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {

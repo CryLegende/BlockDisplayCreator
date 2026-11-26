@@ -47,6 +47,20 @@ public class BlockBreakListener implements Listener {
         if (blockName == null)
             return;
 
+        // the central block of a block its file says "breakable: false" of, or that an administrator made unbreakable
+        // from its gizmo: not broken by hand either (/bdc custom-block break removes it)
+        me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+        if (!me.general_breddok.blockdisplaycreator.listener.entity.EntityDamageByEntityListener.breakable(blockName)
+                || (renderer != null && renderer.protects(blockLocation))) {
+            event.setCancelled(true);
+            if (BooleanConfigValue.BLOCKS_DESTRUCTION || player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
+                ChatUtil.sendMessage(player, StringMessagesValue.PROTECTED_BREAK
+                        .replace("%x%", String.valueOf(block.getX())).replace("%y%", String.valueOf(block.getY()))
+                        .replace("%z%", String.valueOf(block.getZ())).replace("%world%", block.getWorld().getName()));
+            }
+            return;
+        }
+
         if (!BooleanConfigValue.BLOCKS_DESTRUCTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
                 ChatUtil.sendMessage(player, StringMessagesValue.PERMISSION_DENIED_BREAK);

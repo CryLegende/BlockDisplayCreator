@@ -25,3 +25,28 @@ animation-optimisation: true
 #owner joins and when a player opens a container block holding it (not in the menus of other plugins). A file whose
 #name or lore holds a placeholder is left out.   By def true
 items-follow-files: true
+
+#The gizmo: shift + right click on a custom block shown through packets, where the player may build.
+gizmo:
+  #How far a player may shrink and grow a block with the size bar of the gizmo, in times the size its file gives.   By def 0.75 and 1.25
+  size-min: 0.75
+  size-max: 1.25
+  #The same for those with the bdc.gizmo.admin permission. Their bar is logarithmic (1 stands in its middle when
+  #admin-size-min times admin-size-max is 1), and the admin panel gives the same limits.   By def 0.1 and 10
+  admin-size-min: 0.1
+  admin-size-max: 10
+  #The cooldowns the cooldown icon of the admin panel goes through (left click: the next one, right click: the one before).
+  admin-cooldowns:
+  - 0
+  - 1s
+  - 5s
+  - 30s
+  - 1m
+  - 5m
+  - 1h
+  - 24h
+  #Sounds of the admin panel (names from https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Sound.html).
+  admin-sounds:
+    open: UI_TOAST_IN
+    click: UI_BUTTON_CLICK
+    refused: BLOCK_NOTE_BLOCK_BASS

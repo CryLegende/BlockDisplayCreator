@@ -498,6 +498,81 @@ final class PlacedDisplay {
         return this.shift[5];
     }
 
+    // ---------- What an administrator set on this block alone ----------
+
+    /**
+     * What an administrator set on this block, on top of its file: null for a block that follows its file.
+     */
+    @org.jetbrains.annotations.Nullable
+    BlockSettings settings;
+
+    /**
+     * How far, in blocks, players are sent the block: what an administrator set on it, else what its file says (0 for
+     * the distance the world tracks display entities at).
+     */
+    int viewDistance() {
+        return this.settings != null && this.settings.viewDistance >= 0 ? this.settings.viewDistance : this.model.viewDistance;
+    }
+
+    /**
+     * How many blocks above it players are still sent it, -1 for no limit. A distance set on the block counts upwards
+     * and downwards too.
+     */
+    int viewAbove() {
+        return this.settings != null && this.settings.viewDistance > 0 ? this.settings.viewDistance : this.model.viewAbove;
+    }
+
+    int viewBelow() {
+        return this.settings != null && this.settings.viewDistance > 0 ? this.settings.viewDistance : this.model.viewBelow;
+    }
+
+    /**
+     * Whether the loops of its file play on this block.
+     */
+    boolean loops() {
+        return this.model.loops && (this.settings == null || this.settings.loops);
+    }
+
+    /**
+     * Whether the model stands upright as it was summoned, neither tipped by an operator nor hung on a wall.
+     */
+    boolean standsUpright() {
+        return Math.abs(pose(this.model.elements.get(0).pitch())[4] - this.model.elements.get(0).pitch()) < 1.0E-6;
+    }
+
+    /**
+     * The point of the model a change of size keeps in place, in the model's own axes at its file's size: the middle
+     * of its floor for a model standing upright (it grows from where it stands, neither sinking into the ground nor
+     * floating), else the middle of what it draws.
+     */
+    org.joml.Vector3d sizeAnchor() {
+        org.joml.Vector3d centre = this.model.centre();
+        return standsUpright() ? new org.joml.Vector3d(centre.x, 0, centre.z) : centre;
+    }
+
+    /**
+     * Where, in the world, a point of the model (in its own axes at its file's size) stands now.
+     */
+    org.joml.Vector3d worldPoint(org.joml.Vector3d local) {
+        double[] pose = pose(this.model.elements.get(0).pitch());
+        org.joml.Vector3d point = new org.joml.Vector3d(local).mul(scale());
+        orientation(pose[3], pose[4]).transform(point);
+        return point.add(pose[0], pose[1], pose[2]);
+    }
+
+    /**
+     * The shift that gives the block another size, keeping its {@link #sizeAnchor()} where it stands.
+     */
+    double[] shiftForSize(double size) {
+        float pitch = this.model.elements.get(0).pitch();
+        org.joml.Vector3d anchor = sizeAnchor();
+        org.joml.Vector3d fixed = worldPoint(anchor);
+        double[] base = placedPose(pitch);
+        double[] pose = pose(pitch);
+        org.joml.Vector3d moved = orientation(pose[3], pose[4]).transform(new org.joml.Vector3d(anchor).mul(size));
+        return new double[]{fixed.x - moved.x - base[0], fixed.y - moved.y - base[1], fixed.z - moved.z - base[2], this.shift[3], this.shift[4], size};
+    }
+
     /**
      * Puts the shift of the hitbox entities back to none.
      */
@@ -599,7 +674,8 @@ final class PlacedDisplay {
         List<DisplayAnimation> animations = this.model.animations;
         for (int a = 0; a < animations.size(); a++) {
             DisplayAnimation animation = animations.get(a);
-            if (!animation.rooted) {
+            if (!animation.rooted || animation.trigger == DisplayAnimation.Trigger.LOOP && !loops()) {
+                // an administrator may have stopped the loops of this block
                 continue;
             }
             org.joml.Vector3f after = animation.trigger == DisplayAnimation.Trigger.LOOP ? animation.rootAfter(tick, -1)
@@ -715,6 +791,10 @@ final class PlacedDisplay {
             DisplayAnimation animation = animations.get(a);
             DisplayAnimation.Frame[] frames = animation.frames;
             boolean loop = animation.trigger == DisplayAnimation.Trigger.LOOP;
+            if (loop && !loops()) {
+                // an administrator stopped the loops of this block: its parts are at rest
+                continue;
+            }
             int phase = loop ? tick % animation.duration : 0;
             boolean turned = loop && tick >= animation.duration;
             int last;

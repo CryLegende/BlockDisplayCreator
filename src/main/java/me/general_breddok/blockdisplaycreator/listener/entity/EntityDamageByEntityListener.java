@@ -71,7 +71,8 @@ public class EntityDamageByEntityListener implements Listener {
 
         // a file with "breakable: false" (a quest character, a decor players rely on) is never broken by a hit, not
         // even by an operator: /bdc custom-block break <x> <y> <z> removes it. Those allowed to break are told so.
-        if (!breakable(blockName)) {
+        // the same for one placed block an administrator made unbreakable from its gizmo
+        if (!breakable(blockName) || (renderer != null && renderer.protects(CustomBlockKey.holder(entity).getLocation()))) {
             if (BooleanConfigValue.BLOCKS_DESTRUCTION || player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
                 Location at = CustomBlockKey.holder(entity).getLocation();
                 if (at != null && at.getWorld() != null) {
@@ -118,7 +119,7 @@ public class EntityDamageByEntityListener implements Listener {
     /**
      * Whether a hit may break the placed blocks of this file: false only when it says {@code breakable: false}.
      */
-    private static boolean breakable(String name) {
+    public static boolean breakable(String name) {
         if (BlockDisplayCreator.getInstance().getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
                 && storage.getCustomBlockRepository() != null) {
             CustomBlockConfigurationFile file = storage.getCustomBlockRepository().getFile(name);

@@ -263,9 +263,12 @@ final class DisplayModel {
      * @param sink           how much lower than the model its entity stands when the model stands on its block, in
      *                       blocks of the model, its translation raised as much (0 for none): a client draws a culling box
      *                       from the entity up
+     * @param body           what it really draws before its transformation, as a box (smallest x, y, z then largest):
+     *                       a flat item (a sunflower, a stick) one pixel thick, a head half a block, where {@code shape}
+     *                       takes a whole block for any item so that no culling box ever cuts one
      */
     record Element(Object type, List<?> data, float yaw, float pitch, Transformation transformation, boolean block, boolean drawn,
-                   float[] shape, byte billboard, List<?> upright, float sink) {
+                   float[] shape, byte billboard, List<?> upright, float sink, float[] body) {
     }
 
     /**
@@ -456,6 +459,10 @@ final class DisplayModel {
     /**
      * The box that holds what the model draws at rest: its smallest corner, then its largest (x, y, z each), in
      * blocks around the entity. All zero for a model that draws nothing.
+     * <p>
+     * Each part counts for what it really draws (see {@link Element#body()}): a flat item stretched along its
+     * thickness (a stem made of a sunflower stretched twelve times) still reaches only a pixel's width, where a whole
+     * block would reach six blocks away.
      */
     float[] bounds() {
         if (this.bounds == null) {
@@ -469,10 +476,9 @@ final class DisplayModel {
                 Transformation rest = element.transformation();
                 org.joml.Matrix4f matrix = new org.joml.Matrix4f().translate(rest.getTranslation()).rotate(rest.getLeftRotation())
                         .scale(rest.getScale()).rotate(rest.getRightRotation());
-                float low = element.block() ? 0f : -0.5f;
-                float high = element.block() ? 1f : 0.5f;
+                float[] body = element.body();
                 for (int i = 0; i < 8; i++) {
-                    matrix.transformPosition(corner.set((i & 1) == 0 ? low : high, (i & 2) == 0 ? low : high, (i & 4) == 0 ? low : high));
+                    matrix.transformPosition(corner.set((i & 1) == 0 ? body[0] : body[3], (i & 2) == 0 ? body[1] : body[4], (i & 4) == 0 ? body[2] : body[5]));
                     box[0] = Math.min(box[0], corner.x);
                     box[1] = Math.min(box[1], corner.y);
                     box[2] = Math.min(box[2], corner.z);
@@ -584,7 +590,7 @@ final class DisplayModel {
             float width = reach[0] * 2.2f + 1.5f;
             float height = top * 1.1f + 0.75f;
             boxed.add(new Element(element.type(), element.data(), element.yaw(), element.pitch(), element.transformation(), element.block(),
-                    element.drawn(), element.shape(), element.billboard(), nms.withCullingBox(element.data(), width, height), sink));
+                    element.drawn(), element.shape(), element.billboard(), nms.withCullingBox(element.data(), width, height), sink, element.body()));
         }
         return boxed;
     }
@@ -704,6 +710,44 @@ final class DisplayModel {
         return displays;
     }
 
+    /**
+     * Items whose model is not a flat sprite although they are neither a block nor a solid one.
+     */
+    private static final java.util.Set<org.bukkit.Material> SOLID_ITEMS = java.util.EnumSet.of(
+            org.bukkit.Material.SHIELD, org.bukkit.Material.TRIDENT, org.bukkit.Material.SPYGLASS, org.bukkit.Material.CONDUIT);
+
+    private static final float PIXEL = 1f / 16f;
+
+    /**
+     * What a display entity really draws before its transformation (see {@link Element#body()}): a block display its
+     * block; an item display a head half a block wide hanging from its origin, a flat item (an item that is no block,
+     * like a stick, or a block one walks through, like a flower, a torch, a rail) a sprite one pixel thick, another
+     * item a whole block (also one with a model from a resource pack, given by a custom model data); a text what
+     * {@link #shape(Display)} gives it.
+     */
+    private static float[] body(Display display) {
+        if (!(display instanceof ItemDisplay item)) {
+            return shape(display);
+        }
+        org.bukkit.inventory.ItemStack stack = item.getItemStack();
+        if (stack == null || stack.getType().isAir()) {
+            return shape(display);
+        }
+        org.bukkit.Material material = stack.getType();
+        String name = material.name();
+        org.bukkit.inventory.meta.ItemMeta meta = stack.getItemMeta();
+        if (meta != null && meta.hasCustomModelData()) {
+            return shape(display);
+        }
+        if (name.endsWith("_HEAD") || name.endsWith("_SKULL")) {
+            return new float[]{-0.25f, -0.5f, -0.25f, 0.25f, 0f, 0.25f};
+        }
+        if (material.isBlock() && material.isSolid() || SOLID_ITEMS.contains(material)) {
+            return shape(display);
+        }
+        return new float[]{-0.5f, -0.5f, -PIXEL / 2, 0.5f, 0.5f, PIXEL / 2};
+    }
+
     private static boolean isDrawn(Display display) {
         if (display instanceof BlockDisplay block) {
             return !block.getBlock().getMaterial().isAir();
@@ -723,7 +767,7 @@ final class DisplayModel {
             default -> BILLBOARD_ALL;
         };
         elements.add(new Element(nms.type(handle), nms.syncedValues(handle), location.getYaw(), location.getPitch(), display.getTransformation(),
-                display instanceof BlockDisplay, isDrawn(display), shape(display), billboard, null, 0f));
+                display instanceof BlockDisplay, isDrawn(display), shape(display), billboard, null, 0f, body(display)));
         for (Entity passenger : display.getPassengers()) {
             if (passenger instanceof Display child) {
                 collect(nms, child, elements);
