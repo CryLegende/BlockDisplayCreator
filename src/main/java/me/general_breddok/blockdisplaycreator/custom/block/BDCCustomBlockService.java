@@ -1150,6 +1150,8 @@ public class BDCCustomBlockService implements CustomBlockService {
         customBlockData.remove(CustomBlockKey.SHIFT);
         customBlockData.remove(CustomBlockKey.HIDDEN_HITBOX);
         customBlockData.remove(CustomBlockKey.SETTINGS);
+        // written when an operator moves the block: left behind, it kept an entry of the block in its chunk
+        customBlockData.remove(CustomBlockKey.HITBOX_LAYOUT);
 
         DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
         Block block = customBlockData.getBlock();
