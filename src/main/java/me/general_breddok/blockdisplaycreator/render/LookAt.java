@@ -24,10 +24,14 @@ import java.util.List;
  *   step: 1.5            # degrees the direction of a player has to change by before the parts turn again
  *   facing: 0            # which way the parts look at rest, in degrees around the vertical axis of the model from
  *                        # its front, the side that faces whoever placed the block. 180 for parts made looking back
+ *   loop: true           # the loops keep moving the parts while they look at a player, turned towards him. By def
+ *                        # false: he sees them at rest, turned to him
  * </pre>
  * At rest, before any turn, the parts are where the model puts them: a player looked at sees them at rest, turned
  * towards him, while the loops of the block keep moving its other parts. The poses the turns go through are worked
- * out from the rest pose of each part, as a frame turning them around the pivot would be.
+ * out from the rest pose of each part, as a frame turning them around the pivot would be. With {@code loop: true}
+ * they are worked out from the pose the loops give the parts instead, and each frame of a loop that moves them goes to
+ * him turned the same way.
  */
 final class LookAt {
 
@@ -57,8 +61,15 @@ final class LookAt {
      * Which way the parts look at rest: degrees around the vertical axis of the model from its front (+Z).
      */
     final float facing;
+    /**
+     * Whether the loops keep moving the parts for a player they look at ({@code loop: true}): each frame of a loop is
+     * sent to him turned towards him, and a turn starts from where the loops have the parts. Else he sees them at rest,
+     * turned to him.
+     */
+    final boolean keepsLoop;
 
-    private LookAt(int[] parts, Vector3f pivot, double radius, float maxYaw, float maxPitch, int over, float step, float facing) {
+    private LookAt(int[] parts, Vector3f pivot, double radius, float maxYaw, float maxPitch, int over, float step, float facing, boolean keepsLoop) {
+        this.keepsLoop = keepsLoop;
         this.parts = parts;
         this.pivot = pivot;
         this.radius = radius;
@@ -102,7 +113,11 @@ final class LookAt {
         if (!Float.isFinite(facing)) {
             throw new IllegalArgumentException("facing must be a number of degrees, not " + section.get("facing"));
         }
-        return new LookAt(parts, pivot, radius, yaw, pitch, over, step, facing);
+        Object loop = section.get("loop");
+        if (loop != null && !(loop instanceof Boolean)) {
+            throw new IllegalArgumentException("loop must be true or false, not " + loop);
+        }
+        return new LookAt(parts, pivot, radius, yaw, pitch, over, step, facing, Boolean.TRUE.equals(loop));
     }
 
     private static float angle(ConfigurationSection section, String key, float byDefault, float most) {

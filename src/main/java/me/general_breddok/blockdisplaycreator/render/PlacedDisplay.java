@@ -764,35 +764,82 @@ final class PlacedDisplay {
      * given ticks.
      */
     Object turnPacket(NmsBridge nms, float yaw, float pitch, int ticks) {
+        return turnPacket(nms, yaw, pitch, ticks, -1, 0L);
+    }
+
+    /**
+     * The packet that turns the parts of the model's {@code look-at} by a yaw and a pitch: from their rest, or, when
+     * the loops keep moving them ({@code loop: true}), from where the animations have them at a tick (see
+     * {@link #publicPoses}), reaching it with them when a frame of a loop is on its way.
+     *
+     * @param tick      the tick, -1 for the rest pose
+     * @param skipLoops the loops (bit i for the animation i) this player is not sent
+     */
+    Object turnPacket(NmsBridge nms, float yaw, float pitch, int ticks, int tick, long skipLoops) {
         LookAt lookAt = this.model.lookAt;
         org.joml.Quaternionf turn = lookAt.turn(yaw, pitch);
+        PublicPoses from = lookAt.keepsLoop && tick >= 0 ? publicPoses(lookAt.parts, tick, ticks, skipLoops) : null;
         List<Object> parts = new ArrayList<>(lookAt.parts.length);
-        for (int part : lookAt.parts) {
-            org.bukkit.util.Transformation pose = lookAt.turned(this.model.elements.get(part).transformation(), turn);
-            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), ticks);
+        for (int p = 0; p < lookAt.parts.length; p++) {
+            int part = lookAt.parts[p];
+            org.bukkit.util.Transformation base = from == null ? null : from.targets()[p];
+            if (base == null) {
+                // its rest, or a pose the server could not split: turned from its rest
+                base = this.model.elements.get(part).transformation();
+            }
+            org.bukkit.util.Transformation pose = lookAt.turned(base, turn);
+            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(),
+                    from == null ? ticks : from.ticks()[p]);
             parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, values), this.model.varying[part])));
         }
         return nms.bundle(parts);
     }
 
     /**
-     * The packet that takes some parts gliding to where the others see them: for each, the pose of the last frame that
-     * moved it, of a loop (in this round, or at the end of the one before) or of an animation played since the block
-     * was last at rest, later animations of the file first; the rest pose for a part none of them moved. A part a loop
-     * moves gets there with the others when their frame is still on the way, in {@code minimum} ticks at least.
+     * The packet that sends the parts of the model's {@code look-at} a frame moves, turned by a yaw and a pitch around
+     * the pivot, over the frame's time: what a player they look at gets of a frame of a loop when the loops keep
+     * moving them. Null when the frame moves none of them.
      */
-    Object publicPacket(NmsBridge nms, int[] parts, int tick, int minimum) {
+    Object turnedFramePacket(NmsBridge nms, int animation, int frame, float yaw, float pitch) {
+        LookAt lookAt = this.model.lookAt;
+        DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
+        org.joml.Quaternionf turn = null;
+        List<Object> parts = null;
+        for (int i = 0; i < played.parts().length; i++) {
+            int part = played.parts()[i];
+            org.bukkit.util.Transformation target = played.targets()[i];
+            if (!lookAt.turns(part) || target == null || this.model.varying[part] == 0) {
+                continue;
+            }
+            if (turn == null) {
+                turn = lookAt.turn(yaw, pitch);
+                parts = new ArrayList<>(lookAt.parts.length);
+            }
+            org.bukkit.util.Transformation pose = lookAt.turned(target, turn);
+            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), played.over());
+            parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, values), this.model.varying[part])));
+        }
+        return parts == null ? null : nms.bundle(parts);
+    }
+
+    /**
+     * Where some parts are for the players who get every frame: for each, the pose of the last frame that moved it, of
+     * a loop (in this round, or at the end of the one before) or of an animation played since the block was last at
+     * rest, later animations of the file first. A part a loop moves gets there with the others when their frame is
+     * still on the way, in {@code minimum} ticks at least.
+     *
+     * @param skipLoops the loops (bit i for the animation i) left out
+     */
+    PublicPoses publicPoses(int[] parts, int tick, int minimum, long skipLoops) {
         List<DisplayAnimation> animations = this.model.animations;
-        org.bukkit.util.Transformation[] targets = new org.bukkit.util.Transformation[parts.length];
-        List<?>[] jumps = new List<?>[parts.length];
-        int[] ticks = new int[parts.length];
-        java.util.Arrays.fill(ticks, minimum);
+        PublicPoses out = new PublicPoses(new org.bukkit.util.Transformation[parts.length], new List<?>[parts.length], new int[parts.length]);
+        java.util.Arrays.fill(out.ticks(), minimum);
         for (int a = 0; a < animations.size(); a++) {
             DisplayAnimation animation = animations.get(a);
             DisplayAnimation.Frame[] frames = animation.frames;
             boolean loop = animation.trigger == DisplayAnimation.Trigger.LOOP;
-            if (loop && !loops()) {
-                // an administrator stopped the loops of this block: its parts are at rest
+            if (loop && (!loops() || a < 64 && (skipLoops & 1L << a) != 0)) {
+                // an administrator stopped the loops of this block, or this one is not played for him: at rest
                 continue;
             }
             int phase = loop ? tick % animation.duration : 0;
@@ -823,19 +870,42 @@ final class PlacedDisplay {
                     }
                     int j = java.util.Arrays.binarySearch(frames[frame].parts(), parts[p]);
                     if (j >= 0) {
-                        targets[p] = frames[frame].targets()[j];
-                        jumps[p] = frames[frame].jumping()[j];
-                        ticks[p] = loop ? Math.max(minimum, start + frames[frame].over() - phase) : minimum;
+                        out.targets()[p] = frames[frame].targets()[j];
+                        out.jumps()[p] = frames[frame].jumping()[j];
+                        out.ticks()[p] = loop ? Math.max(minimum, start + frames[frame].over() - phase) : minimum;
                         break;
                     }
                 }
             }
         }
+        return out;
+    }
+
+    /**
+     * Where {@link #publicPoses} puts some parts: for each, its pose (null with {@code jumps} set when the server could
+     * not split it, both null for its rest) and the ticks it takes to get there.
+     */
+    record PublicPoses(org.bukkit.util.Transformation[] targets, List<?>[] jumps, int[] ticks) {
+    }
+
+    /**
+     * The packet that takes some parts gliding to where the others see them (see {@link #publicPoses}).
+     */
+    Object publicPacket(NmsBridge nms, int[] parts, int tick, int minimum) {
+        return publicPacket(nms, parts, tick, minimum, 0L);
+    }
+
+    /**
+     * @param skipLoops the loops (bit i for the animation i) this player is not sent: their parts go to rest
+     */
+    Object publicPacket(NmsBridge nms, int[] parts, int tick, int minimum, long skipLoops) {
+        PublicPoses poses = publicPoses(parts, tick, minimum, skipLoops);
         List<Object> packets = new ArrayList<>(parts.length);
         for (int p = 0; p < parts.length; p++) {
-            org.bukkit.util.Transformation target = targets[p] != null || jumps[p] != null ? targets[p] : this.model.elements.get(parts[p]).transformation();
-            List<?> values = target == null ? jumps[p]
-                    : nms.poseValues(target.getTranslation(), target.getLeftRotation(), target.getScale(), target.getRightRotation(), ticks[p]);
+            org.bukkit.util.Transformation target = poses.targets()[p] != null || poses.jumps()[p] != null ? poses.targets()[p]
+                    : this.model.elements.get(parts[p]).transformation();
+            List<?> values = target == null ? poses.jumps()[p]
+                    : nms.poseValues(target.getTranslation(), target.getLeftRotation(), target.getScale(), target.getRightRotation(), poses.ticks()[p]);
             packets.add(nms.dataPacket(this.entityIds[parts[p]], sent(nms, parts[p], values)));
         }
         return nms.bundle(packets);

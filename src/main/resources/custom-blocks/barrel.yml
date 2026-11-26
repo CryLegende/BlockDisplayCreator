@@ -189,6 +189,10 @@ sound:
 #  #Which way the parts look at rest, in degrees around the vertical axis of the model, from its front: the side that faces whoever placed the block,
 #  #the +Z of the summon command. 180 for parts made looking the other way, 90 or -90 for a side.   By def 0
 #  facing: 0
+#  #Whether the loops keep moving the parts while they look at a player: each frame of a loop that moves them reaches him turned towards him
+#  #(a hat tipping, hair moving, a head bobbing with its body), and a turn starts from where the loops have them. Their idle motion is added
+#  #to the look: a loop that turns the head to the side turns it as much to the side of the player.   By def false (at rest, turned to him)
+#  loop: true
 
 #Whether a hit breaks the placed blocks of this file.   By def true
 #With false, nobody breaks them by hitting them, not even an operator (who is told how to remove one): /bdc custom-block break <x> <y> <z> [world] does.

@@ -540,9 +540,27 @@ final class DisplayModel {
             reach(element, element.transformation(), reach);
             if (lookAt != null && lookAt.turns(part)) {
                 // the turns towards the players: as far as they go each way, and on the way
-                for (int yaw = -2; yaw <= 2; yaw++) {
-                    for (int pitch = -2; pitch <= 2; pitch++) {
-                        reach(element, lookAt.turned(element.transformation(), lookAt.turn(lookAt.maxYaw * yaw / 2f, lookAt.maxPitch * pitch / 2f)), reach);
+                List<Transformation> bases = new ArrayList<>();
+                bases.add(element.transformation());
+                if (lookAt.keepsLoop) {
+                    // turned from each pose the loops give it too
+                    for (DisplayAnimation animation : animations) {
+                        if (animation.trigger != DisplayAnimation.Trigger.LOOP) {
+                            continue;
+                        }
+                        for (DisplayAnimation.Frame frame : animation.frames) {
+                            int i = java.util.Arrays.binarySearch(frame.parts(), part);
+                            if (i >= 0 && frame.targets()[i] != null) {
+                                bases.add(frame.targets()[i]);
+                            }
+                        }
+                    }
+                }
+                for (Transformation base : bases) {
+                    for (int yaw = -2; yaw <= 2; yaw++) {
+                        for (int pitch = -2; pitch <= 2; pitch++) {
+                            reach(element, lookAt.turned(base, lookAt.turn(lookAt.maxYaw * yaw / 2f, lookAt.maxPitch * pitch / 2f)), reach);
+                        }
                     }
                 }
             }

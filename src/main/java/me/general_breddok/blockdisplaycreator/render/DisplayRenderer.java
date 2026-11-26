@@ -2493,7 +2493,8 @@ public final class DisplayRenderer implements Listener {
             // too soon after the last turn: looked at again at the next tick
             return;
         }
-        this.nms.send(viewer.player, placed.turnPacket(this.nms, yaw, pitch, lookAt.over));
+        // from where the loops have the parts when they keep moving them, else from their rest
+        this.nms.send(viewer.player, placed.turnPacket(this.nms, yaw, pitch, lookAt.over, this.tick, 0L));
         near.looking = true;
         near.yaw = yaw;
         near.pitch = pitch;
@@ -2673,6 +2674,14 @@ public final class DisplayRenderer implements Listener {
                         }
                         if (unturned != Boolean.FALSE) {
                             this.nms.send(viewer.player, unturned);
+                        }
+                        if (placed.model.lookAt.keepsLoop) {
+                            // the loops keep moving them for him: the frame, turned towards him
+                            Nearby near = viewer.near(placed);
+                            Object turned = placed.turnedFramePacket(this.nms, index, frame, near.yaw, near.pitch);
+                            if (turned != null) {
+                                this.nms.send(viewer.player, turned);
+                            }
                         }
                         continue;
                     }
