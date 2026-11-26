@@ -73,6 +73,19 @@ final class DisplayModel {
      * {@link #varying(List, List)}).
      */
     final byte[] varying;
+    /**
+     * Its file's {@code look-at}: parts turned towards each player close by, or null.
+     */
+    final LookAt lookAt;
+    /**
+     * The indexes of its {@code approach} animations.
+     */
+    final int[] approaches;
+    /**
+     * For each animation, whether it moves one of the parts of {@link #lookAt}: it then goes first, and the parts look
+     * at the player again once it ends. Null without a {@code look-at}.
+     */
+    final boolean[] movesLook;
 
     static final int TRANSLATION = 1;
     static final int SCALE = 2;
@@ -81,8 +94,11 @@ final class DisplayModel {
     static final int WHOLE_POSE = TRANSLATION | SCALE | LEFT_ROTATION | RIGHT_ROTATION;
 
     private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
-                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying) {
+                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt) {
         this.varying = varying;
+        this.lookAt = lookAt;
+        this.approaches = approaches(animations);
+        this.movesLook = movesLook(animations, lookAt);
         this.name = definition.getName();
         this.viewDistance = viewDistance;
         int everyWay = viewDistance > 0 ? viewDistance : -1;
@@ -128,6 +144,33 @@ final class DisplayModel {
         this.bounds = model.bounds;
         // worked out on the animations as written: lighter ones only leave out frames, never add a pose
         this.varying = model.varying;
+        this.lookAt = model.lookAt;
+        this.approaches = approaches(this.animations);
+        this.movesLook = movesLook(this.animations, this.lookAt);
+    }
+
+    private static int[] approaches(List<DisplayAnimation> animations) {
+        return java.util.stream.IntStream.range(0, animations.size())
+                .filter(i -> animations.get(i).trigger == DisplayAnimation.Trigger.APPROACH).toArray();
+    }
+
+    private static boolean[] movesLook(List<DisplayAnimation> animations, LookAt lookAt) {
+        if (lookAt == null) {
+            return null;
+        }
+        boolean[] moves = new boolean[animations.size()];
+        for (int i = 0; i < moves.length; i++) {
+            moves[i] = animations.get(i).moves(lookAt.parts);
+        }
+        return moves;
+    }
+
+    /**
+     * Whether players close by change what the model shows them: it has a {@code look-at} or an {@code approach}
+     * animation.
+     */
+    boolean attentive() {
+        return this.lookAt != null || this.approaches.length > 0;
     }
 
     /**
@@ -166,8 +209,8 @@ final class DisplayModel {
      * @return the model, without any element when the summon commands of the block create nothing
      */
     static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
-                             ConfigurationSection animations, int viewDistance, int viewAbove, int viewBelow, List<Condition> visibleIf,
-                             List<String> problems) {
+                             ConfigurationSection animations, ConfigurationSection lookAt, int viewDistance, int viewAbove, int viewBelow,
+                             List<Condition> visibleIf, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -192,8 +235,24 @@ final class DisplayModel {
             }
         }
         List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
-        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance, viewAbove, viewBelow, visibleIf,
-                varying(elements, read));
+        LookAt look = null;
+        if (lookAt != null && !elements.isEmpty()) {
+            try {
+                look = LookAt.read(lookAt, elements);
+            } catch (RuntimeException e) {
+                // the block is still shown, its parts do not turn
+                problems.add("look-at: " + (e instanceof IllegalArgumentException ? e.getMessage() : e.toString()));
+            }
+        }
+        byte[] varying = varying(elements, read);
+        if (look != null) {
+            // a turn moves a part around the pivot: its translation and its left rotation change
+            for (int part : look.parts) {
+                varying[part] |= TRANSLATION | LEFT_ROTATION;
+            }
+        }
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read, look)), read, viewDistance, viewAbove, viewBelow, visibleIf,
+                varying, look);
     }
 
     /**
@@ -352,7 +411,7 @@ final class DisplayModel {
      * (billboard {@code vertical}) by their cylinder, which they do not leave; parts facing the player on every axis
      * by the sphere they turn in. An entity whose pose cannot be followed keeps being drawn at all times.
      */
-    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations) {
+    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations, LookAt lookAt) {
         List<Element> boxed = new ArrayList<>(elements.size());
         for (int part = 0; part < elements.size(); part++) {
             Element element = elements.get(part);
@@ -364,6 +423,14 @@ final class DisplayModel {
             float[] reach = {0, -Float.MAX_VALUE, Float.MAX_VALUE};
             boolean followed = true;
             reach(element, element.transformation(), reach);
+            if (lookAt != null && lookAt.turns(part)) {
+                // the turns towards the players: as far as they go each way, and on the way
+                for (int yaw = -2; yaw <= 2; yaw++) {
+                    for (int pitch = -2; pitch <= 2; pitch++) {
+                        reach(element, lookAt.turned(element.transformation(), lookAt.turn(lookAt.maxYaw * yaw / 2f, lookAt.maxPitch * pitch / 2f)), reach);
+                    }
+                }
+            }
             for (DisplayAnimation animation : animations) {
                 // the poses the part goes through, in their order: rest, those of its frames, rest again
                 List<Transformation> path = new ArrayList<>();

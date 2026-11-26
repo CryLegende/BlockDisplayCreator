@@ -351,7 +351,7 @@ public class CustomBlockYamlFile implements CustomBlockConfigurationFile {
             java.util.regex.Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*(ms|min|d|j|h|m|s)?", java.util.regex.Pattern.CASE_INSENSITIVE);
 
     /** Milliseconds of a duration text, or -1 when it is not one. */
-    static long parseDuration(String text) {
+    public static long parseDuration(String text) {
         String s = text.trim();
         if (s.isEmpty()) {
             return -1;

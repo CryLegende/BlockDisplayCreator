@@ -137,7 +137,7 @@ public class PlayerInteractEntityListener implements Listener {
         customBlock.handleClick(configuredInteraction, interaction, player, new CustomBlockPlaceholder(customBlock), new InteractionPlaceholder(interaction));
 
         if (renderer != null) {
-            renderer.clicked(customBlock.getLocation().getBlock(), configuredInteraction.getIdentifier());
+            renderer.clicked(customBlock.getLocation().getBlock(), configuredInteraction.getIdentifier(), player);
         }
 
 

@@ -53,6 +53,11 @@ final class NmsBridge {
      * Why {@link #moves} is missing, when it is.
      */
     private final Throwable movesFailure;
+    /**
+     * Reads where an entity stands without creating anything, or null on a server that names it otherwise: the
+     * Bukkit locations are read instead.
+     */
+    private final Positions positions;
 
     private NmsBridge() throws ReflectiveOperationException {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -108,6 +113,74 @@ final class NmsBridge {
         }
         this.moves = moves;
         this.movesFailure = failure;
+
+        Positions positions;
+        try {
+            positions = new Positions(lookup, handle, entity, vec3);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            positions = null;
+        }
+        this.positions = positions;
+    }
+
+    /**
+     * Where a server-side entity stands: the object it keeps its position in, which stays the same while it does not
+     * move, and the three numbers of that object, read without boxing them.
+     */
+    private static final class Positions {
+        private final MethodHandle handle;
+        private final MethodHandle position;
+        private final MethodHandle x;
+        private final MethodHandle y;
+        private final MethodHandle z;
+
+        Positions(MethodHandles.Lookup lookup, Method getHandle, Class<?> entity, Class<?> vec3) throws ReflectiveOperationException {
+            MethodType toObject = MethodType.methodType(Object.class, Object.class);
+            MethodType toDouble = MethodType.methodType(double.class, Object.class);
+            this.handle = lookup.unreflect(getHandle).asType(toObject);
+            this.position = lookup.findVirtual(entity, "position", MethodType.methodType(vec3)).asType(toObject);
+            this.x = coordinate(lookup, vec3, "x").asType(toDouble);
+            this.y = coordinate(lookup, vec3, "y").asType(toDouble);
+            this.z = coordinate(lookup, vec3, "z").asType(toDouble);
+        }
+
+        private static MethodHandle coordinate(MethodHandles.Lookup lookup, Class<?> vec3, String name) throws ReflectiveOperationException {
+            try {
+                return lookup.findGetter(vec3, name, double.class);
+            } catch (NoSuchFieldException | IllegalAccessException e) {
+                return lookup.findVirtual(vec3, name, MethodType.methodType(double.class));
+            }
+        }
+    }
+
+    /**
+     * The object a player's position is kept in: the same object for as long as he does not move. Null on a server
+     * where it cannot be read.
+     */
+    Object position(Player player) {
+        if (this.positions == null) {
+            return null;
+        }
+        try {
+            return (Object) this.positions.position.invokeExact((Object) this.positions.handle.invokeExact((Object) player));
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    /**
+     * The x, y or z (0, 1, 2) of a position given by {@link #position(Player)}.
+     */
+    double coordinate(Object position, int axis) {
+        try {
+            return switch (axis) {
+                case 0 -> (double) this.positions.x.invokeExact(position);
+                case 1 -> (double) this.positions.y.invokeExact(position);
+                default -> (double) this.positions.z.invokeExact(position);
+            };
+        } catch (Throwable e) {
+            throw failure(e);
+        }
     }
 
     /**

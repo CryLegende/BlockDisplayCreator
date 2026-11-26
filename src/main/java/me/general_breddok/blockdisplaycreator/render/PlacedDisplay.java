@@ -77,7 +77,26 @@ final class PlacedDisplay {
     private Object spawnPacket;
     private Object removePacket;
     private Object[][] framePackets;
+    /**
+     * The frames without the parts of the model's {@code look-at}, for the players they look at.
+     */
+    private Object[][] unturnedFramePackets;
     private Object[] restPackets;
+    /**
+     * Whether the block is among those the renderer checks the players close to (its model has a {@code look-at} or
+     * an {@code approach} animation, and someone sees it).
+     */
+    boolean attentive;
+    /**
+     * Where the pivot of the model's {@code look-at} stands in the world, and the rotation that takes a direction of
+     * the world into the model: worked out again once the block is moved. Null until needed.
+     */
+    private double[] lookCentre;
+    private org.joml.Quaterniond lookBack;
+    /**
+     * By player, for each animation of the model, when its {@code approach} last played for him (milliseconds).
+     */
+    private java.util.Map<UUID, long[]> approached;
 
     PlacedDisplay(World world, int x, int y, int z, String modelName, CustomBlockRotation rotation) {
         this.world = world;
@@ -138,9 +157,14 @@ final class PlacedDisplay {
         this.startedAt = new int[animations];
         this.lastFrame = new int[animations];
         this.framePackets = new Object[animations][];
+        this.unturnedFramePackets = new Object[animations][];
         this.restPackets = new Object[animations];
         java.util.Arrays.fill(this.startedAt, -1);
         java.util.Arrays.fill(this.lastFrame, -1);
+        this.lookCentre = null;
+        this.lookBack = null;
+        // the animations may be others, in another order
+        this.approached = null;
     }
 
     /**
@@ -162,6 +186,7 @@ final class PlacedDisplay {
         }
         this.model = model;
         this.framePackets = new Object[model.animations.size()][];
+        this.unturnedFramePackets = new Object[model.animations.size()][];
         this.restPackets = new Object[model.animations.size()];
     }
 
@@ -196,9 +221,18 @@ final class PlacedDisplay {
      * @return null when the frame moves nothing
      */
     Object framePacket(NmsBridge nms, int animation, int frame) {
-        Object[] packets = this.framePackets[animation];
+        return framePacket(nms, animation, frame, false);
+    }
+
+    /**
+     * @param unturned without the parts of the model's {@code look-at}: for a player they look at
+     */
+    Object framePacket(NmsBridge nms, int animation, int frame, boolean unturned) {
+        LookAt lookAt = unturned ? this.model.lookAt : null;
+        Object[][] all = lookAt != null ? this.unturnedFramePackets : this.framePackets;
+        Object[] packets = all[animation];
         if (packets == null) {
-            packets = this.framePackets[animation] = new Object[this.model.animations.get(animation).frames.length];
+            packets = all[animation] = new Object[this.model.animations.get(animation).frames.length];
         }
         if (packets[frame] == null) {
             DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
@@ -206,7 +240,7 @@ final class PlacedDisplay {
             for (int i = 0; i < played.parts().length; i++) {
                 int part = played.parts()[i];
                 int varying = this.model.varying[part];
-                if (varying != 0) {
+                if (varying != 0 && (lookAt == null || !lookAt.turns(part))) {
                     // the fields are left out once the values are sized and raised: those add a missing scale or translation
                     parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, played.moving()[i]), varying)));
                 }
@@ -225,8 +259,21 @@ final class PlacedDisplay {
      * in 60 frames, past what a client takes in a bundle).
      */
     Object catchUpPacket(NmsBridge nms, int animation, int lastFrame) {
+        return catchUpPacket(nms, animation, lastFrame, false);
+    }
+
+    /**
+     * @param unturned without the parts of the model's {@code look-at}, for a player they look at
+     * @return null when nothing is left to send
+     */
+    Object catchUpPacket(NmsBridge nms, int animation, int lastFrame, boolean unturned) {
         DisplayAnimation.Frame[] frames = this.model.animations.get(animation).frames;
         boolean[] posed = new boolean[this.entityIds.length];
+        if (unturned && this.model.lookAt != null) {
+            for (int part : this.model.lookAt.parts) {
+                posed[part] = true;
+            }
+        }
         List<Object> parts = new ArrayList<>();
         for (int frame = lastFrame; frame >= 0; frame--) {
             DisplayAnimation.Frame played = frames[frame];
@@ -238,7 +285,7 @@ final class PlacedDisplay {
                 }
             }
         }
-        return nms.bundle(parts);
+        return parts.isEmpty() && unturned ? null : nms.bundle(parts);
     }
 
     /**
@@ -252,9 +299,21 @@ final class PlacedDisplay {
      * @return null when the loop moves nothing
      */
     Object rejoinPacket(NmsBridge nms, int animation, int phase, boolean turned, int minimum) {
+        return rejoinPacket(nms, animation, phase, turned, minimum, false);
+    }
+
+    /**
+     * @param unturned without the parts of the model's {@code look-at}, for a player they look at
+     */
+    Object rejoinPacket(NmsBridge nms, int animation, int phase, boolean turned, int minimum, boolean unturned) {
         DisplayAnimation loop = this.model.animations.get(animation);
         DisplayAnimation.Frame[] frames = loop.frames;
         boolean[] posed = new boolean[this.entityIds.length];
+        if (unturned && this.model.lookAt != null) {
+            for (int part : this.model.lookAt.parts) {
+                posed[part] = true;
+            }
+        }
         List<Object> parts = new ArrayList<>();
         int last = -1;
         while (last + 1 < frames.length && frames[last + 1].at() <= phase) {
@@ -428,11 +487,158 @@ final class PlacedDisplay {
         this.shift[4] = pitch;
         this.shift[5] = scale;
         this.spawnPacket = null;
+        this.lookCentre = null;
+        this.lookBack = null;
         if ((resized || this.model != null && this.model.sinks) && this.framePackets != null) {
             // the poses of the frames were multiplied by the old size, or raised for a block standing upright
             java.util.Arrays.fill(this.framePackets, null);
+            java.util.Arrays.fill(this.unturnedFramePackets, null);
             java.util.Arrays.fill(this.restPackets, null);
         }
+    }
+
+    // ---------- Parts turned towards a player (look-at) ----------
+
+    /**
+     * Where the pivot of the model's {@code look-at} stands in the world: x, y, z.
+     */
+    double[] lookCentre() {
+        if (this.lookCentre == null) {
+            LookAt lookAt = this.model.lookAt;
+            double[] pose = pose(this.model.elements.get(lookAt.parts[0]).pitch());
+            org.joml.Quaterniond orientation = orientation(pose[3], pose[4]);
+            // the entity of a lowered part stands lower, its translation raised as much: they cancel out
+            org.joml.Vector3d pivot = orientation.transform(new org.joml.Vector3d(lookAt.pivot.x, lookAt.pivot.y, lookAt.pivot.z).mul(scale()));
+            this.lookCentre = new double[]{pose[0] + pivot.x, pose[1] + pivot.y, pose[2] + pivot.z};
+            this.lookBack = orientation.invert();
+        }
+        return this.lookCentre;
+    }
+
+    /**
+     * The rotation that takes a direction of the world into the model, as its entities are turned.
+     */
+    org.joml.Quaterniond lookBack() {
+        lookCentre();
+        return this.lookBack;
+    }
+
+    /**
+     * The packet that turns the parts of the model's {@code look-at} by a yaw and a pitch from their rest, over the
+     * given ticks.
+     */
+    Object turnPacket(NmsBridge nms, float yaw, float pitch, int ticks) {
+        LookAt lookAt = this.model.lookAt;
+        org.joml.Quaternionf turn = lookAt.turn(yaw, pitch);
+        List<Object> parts = new ArrayList<>(lookAt.parts.length);
+        for (int part : lookAt.parts) {
+            org.bukkit.util.Transformation pose = lookAt.turned(this.model.elements.get(part).transformation(), turn);
+            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), ticks);
+            parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, values), this.model.varying[part])));
+        }
+        return nms.bundle(parts);
+    }
+
+    /**
+     * The packet that takes some parts gliding to where the others see them: for each, the pose of the last frame that
+     * moved it, of a loop (in this round, or at the end of the one before) or of an animation played since the block
+     * was last at rest, later animations of the file first; the rest pose for a part none of them moved. A part a loop
+     * moves gets there with the others when their frame is still on the way, in {@code minimum} ticks at least.
+     */
+    Object publicPacket(NmsBridge nms, int[] parts, int tick, int minimum) {
+        List<DisplayAnimation> animations = this.model.animations;
+        org.bukkit.util.Transformation[] targets = new org.bukkit.util.Transformation[parts.length];
+        List<?>[] jumps = new List<?>[parts.length];
+        int[] ticks = new int[parts.length];
+        java.util.Arrays.fill(ticks, minimum);
+        for (int a = 0; a < animations.size(); a++) {
+            DisplayAnimation animation = animations.get(a);
+            DisplayAnimation.Frame[] frames = animation.frames;
+            boolean loop = animation.trigger == DisplayAnimation.Trigger.LOOP;
+            int phase = loop ? tick % animation.duration : 0;
+            boolean turned = loop && tick >= animation.duration;
+            int last;
+            if (loop) {
+                last = -1;
+                while (last + 1 < frames.length && frames[last + 1].at() <= phase) {
+                    last++;
+                }
+            } else {
+                last = Math.min(this.lastFrame[a], frames.length - 1);
+                if (last < 0) {
+                    continue;
+                }
+            }
+            for (int p = 0; p < parts.length; p++) {
+                for (int k = 0; k < frames.length; k++) {
+                    int frame = last - k;
+                    int start;
+                    if (frame >= 0) {
+                        start = frames[frame].at();
+                    } else if (turned) {
+                        frame += frames.length;
+                        start = frames[frame].at() - animation.duration;
+                    } else {
+                        break;
+                    }
+                    int j = java.util.Arrays.binarySearch(frames[frame].parts(), parts[p]);
+                    if (j >= 0) {
+                        targets[p] = frames[frame].targets()[j];
+                        jumps[p] = frames[frame].jumping()[j];
+                        ticks[p] = loop ? Math.max(minimum, start + frames[frame].over() - phase) : minimum;
+                        break;
+                    }
+                }
+            }
+        }
+        List<Object> packets = new ArrayList<>(parts.length);
+        for (int p = 0; p < parts.length; p++) {
+            org.bukkit.util.Transformation target = targets[p] != null || jumps[p] != null ? targets[p] : this.model.elements.get(parts[p]).transformation();
+            List<?> values = target == null ? jumps[p]
+                    : nms.poseValues(target.getTranslation(), target.getLeftRotation(), target.getScale(), target.getRightRotation(), ticks[p]);
+            packets.add(nms.dataPacket(this.entityIds[parts[p]], sent(nms, parts[p], values)));
+        }
+        return nms.bundle(packets);
+    }
+
+    // ---------- Animations played on approach ----------
+
+    /**
+     * Whether an {@code approach} animation may play for a player now, its cooldown over since it last played for
+     * him at this block; if so, it is noted as played now.
+     */
+    boolean approach(UUID player, int animation, long now) {
+        long cooldown = this.model.animations.get(animation).cooldown;
+        if (this.approached == null) {
+            this.approached = new java.util.HashMap<>();
+        }
+        long[] times = this.approached.get(player);
+        if (times != null && times.length > animation && times[animation] != 0 && now - times[animation] < cooldown) {
+            return false;
+        }
+        if (times == null || times.length <= animation) {
+            if (this.approached.size() >= 64) {
+                forgetApproaches(now);
+            }
+            times = times == null ? new long[this.model.animations.size()] : java.util.Arrays.copyOf(times, this.model.animations.size());
+            this.approached.put(player, times);
+        }
+        times[animation] = now;
+        return true;
+    }
+
+    /**
+     * Forgets the players whose cooldowns are all over: those who went away do not stay in memory.
+     */
+    private void forgetApproaches(long now) {
+        this.approached.values().removeIf(times -> {
+            for (int i = 0; i < times.length && i < this.model.animations.size(); i++) {
+                if (times[i] != 0 && now - times[i] < this.model.animations.get(i).cooldown) {
+                    return false;
+                }
+            }
+            return true;
+        });
     }
 
     /**

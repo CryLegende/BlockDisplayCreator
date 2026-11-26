@@ -18,7 +18,9 @@ import java.util.TreeSet;
  * <pre>
  * animations:
  *   lid:
- *     trigger: click          # loop, click, place or command (/bdc animation play, for some players or all)
+ *     trigger: click          # loop, click, place, command (/bdc animation play, for some players or all) or approach
+ *     radius: 4               # approach only: blocks from the block within which a player sets it off, for him alone
+ *     cooldown: 30s           # approach only: time before it plays again for the same player at the same block
  *     interaction: main       # click only: the interaction that starts it, any when absent
  *     duration: 40            # ticks; a loop starts over after them. By def the end of the last frame
  *     frames:
@@ -51,8 +53,18 @@ final class DisplayAnimation {
         /**
          * Only played by {@code /bdc animation play}: for chosen players, the others keep seeing the block at rest.
          */
-        COMMAND
+        COMMAND,
+        /**
+         * Played for a player alone when he comes within {@link #radius} of the block, at most once per
+         * {@link #cooldown} for each player and block.
+         */
+        APPROACH
     }
+
+    /**
+     * Blocks from the block within which a player sets off an {@code approach} animation, by default.
+     */
+    static final double APPROACH_RADIUS = 4;
 
     final String name;
     final Trigger trigger;
@@ -87,6 +99,14 @@ final class DisplayAnimation {
      * How far, in blocks, players hear its sounds, 0 for the distance of the game.
      */
     final double soundRange;
+    /**
+     * An {@code approach} animation: how close to the block, in blocks, a player comes to set it off.
+     */
+    final double radius;
+    /**
+     * An {@code approach} animation: milliseconds before it plays again for the same player at the same block.
+     */
+    final long cooldown;
 
     /**
      * @param at      the tick it starts at
@@ -112,10 +132,12 @@ final class DisplayAnimation {
     }
 
     private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable,
-                             double soundRange) {
+                             double soundRange, double radius, long cooldown) {
         this.name = name;
         this.optimisable = optimisable;
         this.soundRange = soundRange;
+        this.radius = radius;
+        this.cooldown = cooldown;
         this.trigger = trigger;
         this.interaction = interaction;
         this.duration = duration;
@@ -174,7 +196,16 @@ final class DisplayAnimation {
         try {
             trigger = Trigger.valueOf(section.getString("trigger", "loop").toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("trigger must be loop, click, place or command");
+            throw new IllegalArgumentException("trigger must be loop, click, place, command or approach");
+        }
+        double radius = 0;
+        long cooldown = 0;
+        if (trigger == Trigger.APPROACH) {
+            radius = number(section.get("radius"), APPROACH_RADIUS).doubleValue();
+            if (!(radius > 0) || Double.isInfinite(radius)) {
+                throw new IllegalArgumentException("radius must be a number of blocks above 0, not " + section.get("radius"));
+            }
+            cooldown = cooldown(section.get("cooldown"));
         }
         List<Map<?, ?>> entries = section.getMapList("frames");
         if (entries.isEmpty()) {
@@ -220,7 +251,28 @@ final class DisplayAnimation {
             duration = Math.max(duration, note.at() + 1);
         }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
-                section.getBoolean("optimise", true), soundRange(section.get("sound-range")));
+                section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown);
+    }
+
+    /**
+     * The {@code cooldown} of an {@code approach} animation in milliseconds, written as for a click box: 30s, 2m,
+     * 1h30m, 500ms, or a plain number of milliseconds. 0 when absent.
+     */
+    private static long cooldown(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        if (value instanceof Number number) {
+            if (number.longValue() < 0) {
+                throw new IllegalArgumentException("cooldown must not be below 0, not " + value);
+            }
+            return number.longValue();
+        }
+        long millis = me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockYamlFile.parseDuration(value.toString());
+        if (millis < 0) {
+            throw new IllegalArgumentException("cooldown '" + value + "' is not a duration (examples: 30s, 2m, 1h30m, 500ms)");
+        }
+        return millis;
     }
 
     private static double soundRange(Object value) {
@@ -255,7 +307,27 @@ final class DisplayAnimation {
             out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch());
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
-        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable, this.soundRange);
+        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable, this.soundRange,
+                this.radius, this.cooldown);
+    }
+
+    /**
+     * Whether a frame of the animation moves one of these parts (in increasing order).
+     */
+    boolean moves(int[] parts) {
+        int i = 0;
+        int j = 0;
+        while (i < this.touched.length && j < parts.length) {
+            if (this.touched[i] == parts[j]) {
+                return true;
+            }
+            if (this.touched[i] < parts[j]) {
+                i++;
+            } else {
+                j++;
+            }
+        }
+        return false;
     }
 
     /**
@@ -351,7 +423,10 @@ final class DisplayAnimation {
         return min.add(max).mul(0.5f);
     }
 
-    private static int[] parts(Object value, int count) {
+    /**
+     * The parts a {@code parts} key names, in increasing order: numbers and ranges like 3-7, all of them when absent.
+     */
+    static int[] parts(Object value, int count) {
         TreeSet<Integer> parts = new TreeSet<>();
         if (value == null) {
             for (int i = 0; i < count; i++) {
@@ -378,14 +453,14 @@ final class DisplayAnimation {
         return parts.stream().mapToInt(Integer::intValue).toArray();
     }
 
-    private static Vector3f vector(Object value, String name) {
+    static Vector3f vector(Object value, String name) {
         if (value instanceof List<?> list && list.size() == 3) {
             return new Vector3f(number(list.get(0), 0).floatValue(), number(list.get(1), 0).floatValue(), number(list.get(2), 0).floatValue());
         }
         throw new IllegalArgumentException(name + " is three numbers: [x, y, z]");
     }
 
-    private static Number number(Object value, Number byDefault) {
+    static Number number(Object value, Number byDefault) {
         if (value == null) {
             return byDefault;
         }

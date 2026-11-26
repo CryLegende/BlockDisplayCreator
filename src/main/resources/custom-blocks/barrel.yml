@@ -98,13 +98,21 @@ sound:
 #animations:
 #  #Animation name
 #  hop:
-#    #What starts it: loop (plays on and on), click (a right click on an interaction), place (when the block is placed)
-#    #or command (only /bdc animation play <player|selector|*> <animation> <x> <y> <z> [world], which can also start the others but loops).
+#    #What starts it: loop (plays on and on), click (a right click on an interaction), place (when the block is placed),
+#    #command (only /bdc animation play <player|selector|*> <animation> <x> <y> <z> [world], which can also start the others but loops)
+#    #or approach (a player who comes close, see radius and cooldown).
 #    #Played for chosen players, only they see it and hear its sounds, and once it ends they see the block as the others do; * plays it for everyone.
 #    #   By def loop
 #    trigger: click
 #    #Click only: the interaction that starts it.   By def any interaction
 #    interaction: interaction
+#    #Approach only: a player who comes within this many blocks of the block sets it off, for him alone (he alone sees it and hears its sounds).
+#    #He has to go further than radius + 0.5 before it can play again.   By def 4
+#    #radius: 4
+#    #Approach only: time before it can play again for the same player at the same block: 30s, 2m, 1h30m, 500ms (a plain number is milliseconds).
+#    #Kept in memory: a restart, /bdc reload or the unloading of the chunk start it afresh.   By def 0
+#    #A click of his on the block during it ends it (its parts glide back), so that he sees the click animation.
+#    #cooldown: 30s
 #    #Length in ticks. A loop starts over after them.   By def the end of the last frame
 #    duration: 10
 #    frames:
@@ -143,6 +151,29 @@ sound:
 #  #        volume: 1
 #  #The sounds of an animation carry as far as those of the game (16 blocks). A shorter distance, in blocks, keeps them for the players standing in front of the block.   By def 0, that of the game
 #  #    sound-range: 3
+
+#Parts that turn towards each player standing close by, as the head of a character does.   The field may be missing
+#Each player sees them turned towards himself (the others see them as they are), and back as they were once he goes further than radius + 0.5.
+#While they look at a player, the frames of the loops that move them are kept from him: he sees them at rest, turned to him, the other parts keep moving.
+#An animation that moves them goes first (a click one everyone sees, one played for him alone): they turn to him again once it ends.
+#A player who stands still is sent nothing. They need the display entities to be shown through packets (packet-display in config.yml).
+#look-at:
+#  #Display entities that turn together, numbered as in the frames of the animations.   Required
+#  parts: "3-5"
+#  #Point they turn around (the neck), in blocks from the block base, written for the model at size 1 as the pivots of the frames.   By def the middle of the bottom of the parts
+#  pivot: [0, 1.4, 0]
+#  #Players whose eyes are closer than this to the pivot, in blocks, are looked at.   By def 6
+#  radius: 6
+#  #Degrees the parts turn at most to the left and to the right, then up and down.   By def 70 and 30
+#  yaw: 70
+#  pitch: 30
+#  #Ticks a turn takes. Also the fewest ticks between two turns for one player.   By def 4
+#  over: 4
+#  #Degrees the direction of a player has to change by before the parts turn again.   By def 1.5
+#  step: 1.5
+#  #Which way the parts look at rest, in degrees around the vertical axis of the model, from its front: the side that faces whoever placed the block,
+#  #the +Z of the summon command. 180 for parts made looking the other way, 90 or -90 for a side.   By def 0
+#  facing: 0
 
 #Whether a hit breaks the placed blocks of this file.   By def true
 #With false, nobody breaks them by hitting them, not even an operator (who is told how to remove one): /bdc custom-block break <x> <y> <z> [world] does.
