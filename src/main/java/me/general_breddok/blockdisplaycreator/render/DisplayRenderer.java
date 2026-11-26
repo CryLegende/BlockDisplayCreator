@@ -1986,8 +1986,9 @@ public final class DisplayRenderer implements Listener {
                     int[] starting = animation.startingAt[elapsed];
                     if (starting != null) {
                         for (int frame : starting) {
-                            if (sees) {
-                                this.nms.send(viewer.player, play.placed.framePacket(this.nms, play.animation, frame));
+                            Object packet = sees ? play.placed.framePacket(this.nms, play.animation, frame) : null;
+                            if (packet != null) {
+                                this.nms.send(viewer.player, packet);
                             }
                             DisplayAnimation.Frame played = animation.frames[frame];
                             if (hears && played.sound() != null) {
@@ -2031,8 +2032,8 @@ public final class DisplayRenderer implements Listener {
             return;
         }
         for (int frame : starting) {
-            if (!placed.viewers.isEmpty()) {
-                Object packet = placed.framePacket(this.nms, index, frame);
+            Object packet = placed.viewers.isEmpty() ? null : placed.framePacket(this.nms, index, frame);
+            if (packet != null) {
                 for (Viewer viewer : placed.viewers) {
                     // a player watching an animation played for them alone gets the others' frames once it ends
                     if (placed.privateFor.isEmpty() || !placed.privateFor.contains(viewer.player.getUniqueId())) {

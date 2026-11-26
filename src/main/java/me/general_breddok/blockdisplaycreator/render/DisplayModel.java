@@ -65,9 +65,24 @@ final class DisplayModel {
      * everyone is sent.
      */
     final List<Condition> visibleIf;
+    /**
+     * For each entity, the fields of its transformation some pose of it changes ({@link #TRANSLATION},
+     * {@link #SCALE}, {@link #LEFT_ROTATION}, {@link #RIGHT_ROTATION}), 0 for an entity that never leaves its rest.
+     * <p>
+     * A field no pose changes keeps, on every client, the value the entity was sent with: the frames leave it out (see
+     * {@link #varying(List, List)}).
+     */
+    final byte[] varying;
+
+    static final int TRANSLATION = 1;
+    static final int SCALE = 2;
+    static final int LEFT_ROTATION = 4;
+    static final int RIGHT_ROTATION = 8;
+    static final int WHOLE_POSE = TRANSLATION | SCALE | LEFT_ROTATION | RIGHT_ROTATION;
 
     private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
-                         int viewAbove, int viewBelow, List<Condition> visibleIf) {
+                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying) {
+        this.varying = varying;
         this.name = definition.getName();
         this.viewDistance = viewDistance;
         int everyWay = viewDistance > 0 ? viewDistance : -1;
@@ -111,6 +126,8 @@ final class DisplayModel {
         this.viewBelow = model.viewBelow;
         this.visibleIf = model.visibleIf;
         this.bounds = model.bounds;
+        // worked out on the animations as written: lighter ones only leave out frames, never add a pose
+        this.varying = model.varying;
     }
 
     /**
@@ -175,7 +192,63 @@ final class DisplayModel {
             }
         }
         List<DisplayAnimation> read = elements.isEmpty() ? List.of() : List.copyOf(DisplayAnimation.read(animations, elements, nms, problems));
-        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance, viewAbove, viewBelow, visibleIf);
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read)), read, viewDistance, viewAbove, viewBelow, visibleIf,
+                varying(elements, read));
+    }
+
+    /**
+     * Below this, two numbers of a pose are taken to be the same: a millionth of a block, of a scale or of a
+     * component of a rotation, which no client can draw.
+     */
+    private static final float SAME = 1.0E-6f;
+
+    /**
+     * Which fields of its transformation each entity of a model changes, in any pose of any of its animations: a
+     * field that keeps its resting value in all of them is the same in every pose packet the plugin sends the entity
+     * (the size of a block and the raise of a lowered entity apply to every packet alike, and a change of size sends
+     * every entity its whole rest pose again).
+     * <p>
+     * A client keeps the fields of a display entity it is not sent, and starts its interpolation again whenever it is
+     * sent the start of one: the frames send the start, the duration and the changing fields only, and a part that
+     * never changes gets no frame at all. A pose the server could not split marks every field.
+     */
+    static byte[] varying(List<Element> elements, List<DisplayAnimation> animations) {
+        byte[] varying = new byte[elements.size()];
+        for (DisplayAnimation animation : animations) {
+            for (DisplayAnimation.Frame frame : animation.frames) {
+                for (int i = 0; i < frame.parts().length; i++) {
+                    int part = frame.parts()[i];
+                    Transformation rest = elements.get(part).transformation();
+                    Transformation target = frame.targets()[i];
+                    if (target == null) {
+                        varying[part] = WHOLE_POSE;
+                        continue;
+                    }
+                    if (!same(rest.getTranslation(), target.getTranslation())) {
+                        varying[part] |= TRANSLATION;
+                    }
+                    if (!same(rest.getScale(), target.getScale())) {
+                        varying[part] |= SCALE;
+                    }
+                    if (!same(rest.getLeftRotation(), target.getLeftRotation())) {
+                        varying[part] |= LEFT_ROTATION;
+                    }
+                    if (!same(rest.getRightRotation(), target.getRightRotation())) {
+                        varying[part] |= RIGHT_ROTATION;
+                    }
+                }
+            }
+        }
+        return varying;
+    }
+
+    private static boolean same(org.joml.Vector3fc a, org.joml.Vector3fc b) {
+        return Math.abs(a.x() - b.x()) <= SAME && Math.abs(a.y() - b.y()) <= SAME && Math.abs(a.z() - b.z()) <= SAME;
+    }
+
+    private static boolean same(org.joml.Quaternionfc a, org.joml.Quaternionfc b) {
+        return Math.abs(a.x() - b.x()) <= SAME && Math.abs(a.y() - b.y()) <= SAME && Math.abs(a.z() - b.z()) <= SAME
+                && Math.abs(a.w() - b.w()) <= SAME;
     }
 
     /**

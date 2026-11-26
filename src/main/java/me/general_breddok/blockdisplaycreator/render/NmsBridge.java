@@ -227,6 +227,13 @@ final class NmsBridge {
         private final Method accessorId;
         private final Method valueId;
         private final Method valueOf;
+        /**
+         * The ids of the four fields of a transformation, as the synced values give them.
+         */
+        private final int translationId;
+        private final int scaleId;
+        private final int leftRotationId;
+        private final int rightRotationId;
 
         Poses(ClassLoader server) throws ReflectiveOperationException {
             // the server splits a matrix into the translation, rotations and scale a display entity is made of
@@ -264,6 +271,29 @@ final class NmsBridge {
             this.accessorId = accessor.getMethod("id");
             this.valueId = value.getMethod("id");
             this.valueOf = value.getMethod("value");
+            this.translationId = (Integer) this.accessorId.invoke(this.translationAccessor);
+            this.scaleId = (Integer) this.accessorId.invoke(this.scaleAccessor);
+            this.leftRotationId = (Integer) this.accessorId.invoke(this.leftRotationAccessor);
+            this.rightRotationId = (Integer) this.accessorId.invoke(this.rightRotationAccessor);
+        }
+
+        /**
+         * The synced values of a pose without the fields of its transformation that are not in {@code varying}: the
+         * start and the duration of the interpolation, and anything else, stay.
+         */
+        List<?> varyingOnly(List<?> values, int varying) throws ReflectiveOperationException {
+            List<Object> out = new java.util.ArrayList<>(values.size());
+            for (Object value : values) {
+                int id = (Integer) this.valueId.invoke(value);
+                int field = id == this.translationId ? DisplayModel.TRANSLATION
+                        : id == this.scaleId ? DisplayModel.SCALE
+                        : id == this.leftRotationId ? DisplayModel.LEFT_ROTATION
+                        : id == this.rightRotationId ? DisplayModel.RIGHT_ROTATION : 0;
+                if (field == 0 || (varying & field) != 0) {
+                    out.add(value);
+                }
+            }
+            return List.copyOf(out);
         }
 
         /**
@@ -449,6 +479,22 @@ final class NmsBridge {
         try {
             return this.poses.scaled(values, factor);
         } catch (ReflectiveOperationException e) {
+            return values;
+        }
+    }
+
+    /**
+     * The synced values of a pose with only the fields of its transformation in {@code varying} (bits of
+     * {@link DisplayModel#TRANSLATION} and the others): the client keeps the fields it is not sent. Returned
+     * unchanged on a server that does not allow it.
+     */
+    List<?> varyingValues(List<?> values, int varying) {
+        if (this.poses == null || (varying & DisplayModel.WHOLE_POSE) == DisplayModel.WHOLE_POSE) {
+            return values;
+        }
+        try {
+            return this.poses.varyingOnly(values, varying);
+        } catch (ReflectiveOperationException | ClassCastException e) {
             return values;
         }
     }

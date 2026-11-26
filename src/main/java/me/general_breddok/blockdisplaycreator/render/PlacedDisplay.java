@@ -183,7 +183,17 @@ final class PlacedDisplay {
     }
 
     /**
-     * The packet that starts the parts of a frame towards their pose.
+     * Stands for a frame that has nothing to send, among the packets kept.
+     */
+    private static final Object NOTHING = new Object();
+
+    /**
+     * The packet that starts the parts of a frame towards their pose: for each part, the start and the duration of the
+     * interpolation and the fields of its transformation some pose of the model changes ({@link DisplayModel#varying}).
+     * The client keeps the others, which every pose packet gives the same value. A part that never leaves its rest is
+     * left out.
+     *
+     * @return null when the frame moves nothing
      */
     Object framePacket(NmsBridge nms, int animation, int frame) {
         Object[] packets = this.framePackets[animation];
@@ -194,11 +204,16 @@ final class PlacedDisplay {
             DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
             List<Object> parts = new ArrayList<>(played.parts().length);
             for (int i = 0; i < played.parts().length; i++) {
-                parts.add(nms.dataPacket(this.entityIds[played.parts()[i]], sent(nms, played.parts()[i], played.moving()[i])));
+                int part = played.parts()[i];
+                int varying = this.model.varying[part];
+                if (varying != 0) {
+                    // the fields are left out once the values are sized and raised: those add a missing scale or translation
+                    parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, played.moving()[i]), varying)));
+                }
             }
-            packets[frame] = nms.bundle(parts);
+            packets[frame] = parts.isEmpty() ? NOTHING : nms.bundle(parts);
         }
-        return packets[frame];
+        return packets[frame] == NOTHING ? null : packets[frame];
     }
 
     /**
