@@ -11,6 +11,8 @@ public final class StringMessagesValue implements ConstantConfigValue<String> {
     public static String REGION_DENIED_PLACE;
     public static String REGION_DENIED_BREAK;
     public static String PROTECTED_BREAK;
+    public static String COOLDOWN_WAIT;
+    public static String PLACED_DENIED_INTERACT;
     public static String REGION_DENIED_INTERACT;
 
     public static String ISLAND_DENIED_PLACE;
@@ -63,6 +65,8 @@ public final class StringMessagesValue implements ConstantConfigValue<String> {
         REGION_DENIED_BREAK = configuration.get("region-denied.break", "&c&lHey! &r&7Sorry, but you can`t break that custom block here.");
         REGION_DENIED_INTERACT = configuration.get("region-denied.interact", "&c&lHey! &r&7Sorry, but you can`t interact with that custom block here.");
         PROTECTED_BREAK = configuration.get("protected.break", "&7This custom block is protected (breakable: false). Remove it with &f/bdc custom-block break %x% %y% %z% %world%&7.");
+        COOLDOWN_WAIT = configuration.get("cooldown.wait", "&8&l« &6&lSH &8&l» &7Revenez dans &6%time%&7.");
+        PLACED_DENIED_INTERACT = configuration.get("placed-denied.interact", "&8&l« &c&lSH &8&l» &7Tu n'as &cpas accès&7 à ceci.");
 
         ISLAND_DENIED_PLACE = configuration.get("island-denied.place", "&c&lError | &7This island is protected. You cannot place custom blocks here.");
         ISLAND_DENIED_BREAK = configuration.get("island-denied.break", "&c&lError | &7This island is protected. You cannot break custom blocks here.");

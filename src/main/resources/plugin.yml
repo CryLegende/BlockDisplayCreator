@@ -43,6 +43,10 @@ permissions:
       bdc.bypass.wg: true
       bdc.bypass.skyblock: true
 
+  bdc.gizmo.admin:
+    description: Allows to set things on one placed custom block alone from the admin button of its gizmo or /bdc settings (click commands, cooldown, view distance, size from 10 to 1000 %, unbreakable...), and to move the blocks an administrator locked
+    default: op
+
   bdc.gizmo:
     description: Allows players to move and turn custom blocks shown through packets (shift + right click on one), where they may place and break custom blocks
     default: true

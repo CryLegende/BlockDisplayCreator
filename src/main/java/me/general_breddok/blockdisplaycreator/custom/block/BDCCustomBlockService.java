@@ -694,6 +694,13 @@ public class BDCCustomBlockService implements CustomBlockService {
 
         // the new entities first: when one is refused, the block keeps the ones it has
         List<Interaction> interactions = summonInteractions(abstractCustomBlock, location, rotation);
+        ConfiguredInteraction added = addedClickBox(customBlockData);
+        if (added != null) {
+            Interaction box = summonInteraction(abstractCustomBlock, added, location, rotation);
+            if (box != null) {
+                interactions.add(box);
+            }
+        }
         List<Shulker> collisions = summonCollisions(abstractCustomBlock, location, rotation);
         if (collisions.size() < expectedCollisions(abstractCustomBlock) || !interactions.stream().allMatch(Entity::isValid)) {
             // another plugin refused the summon (SuperiorSkyblock2 stops every spawn on an island nobody is active
@@ -843,7 +850,12 @@ public class BDCCustomBlockService implements CustomBlockService {
         // what is left of the turn once the yaw is taken out: the model tipped over in its own axes
         org.joml.Quaterniond tilt = new org.joml.Quaterniond(yawTo).invert().mul(turn).mul(yawFrom);
         List<UUID> uuids = new ArrayList<>();
-        for (ConfiguredInteraction configured : abstractCustomBlock.getConfiguredInteractions()) {
+        List<ConfiguredInteraction> configuredInteractions = new ArrayList<>(abstractCustomBlock.getConfiguredInteractions());
+        ConfiguredInteraction added = addedClickBox(data);
+        if (added != null) {
+            configuredInteractions.add(added);
+        }
+        for (ConfiguredInteraction configured : configuredInteractions) {
             if (isUseless(configured)) {
                 continue;
             }
@@ -868,6 +880,21 @@ public class BDCCustomBlockService implements CustomBlockService {
         data.set(CustomBlockKey.INTERACTION_UUID, PersistentDataTypes.UUID_ARRAY, uuids.toArray(UUID[]::new));
         data.set(CustomBlockKey.HITBOX_LAYOUT, PersistentDataType.STRING, HITBOX_LAYOUT_VERSION);
         return true;
+    }
+
+    /**
+     * The click box an administrator added to a placed block whose file gives it none, described as a file would
+     * describe it (a box with a square base standing on the block's axis), or null for none.
+     */
+    @Nullable
+    private static ConfiguredInteraction addedClickBox(CustomBlockData data) {
+        double[] box = me.general_breddok.blockdisplaycreator.render.BlockSettings.clickBoxOf(data.get(CustomBlockKey.SETTINGS, PersistentDataType.STRING));
+        if (box == null || box[0] <= 0 || box[1] <= 0) {
+            return null;
+        }
+        return new me.general_breddok.blockdisplaycreator.custom.ConfiguredInteractionDta(
+                new me.general_breddok.blockdisplaycreator.entity.interaction.InteractionSummoner((float) box[0], (float) box[1]),
+                me.general_breddok.blockdisplaycreator.render.BlockSettings.CLICK_BOX, new org.bukkit.util.Vector(0, box[2], 0));
     }
 
     /**
@@ -1122,6 +1149,7 @@ public class BDCCustomBlockService implements CustomBlockService {
         customBlockData.remove(CustomBlockKey.RENDER);
         customBlockData.remove(CustomBlockKey.SHIFT);
         customBlockData.remove(CustomBlockKey.HIDDEN_HITBOX);
+        customBlockData.remove(CustomBlockKey.SETTINGS);
 
         DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
         Block block = customBlockData.getBlock();

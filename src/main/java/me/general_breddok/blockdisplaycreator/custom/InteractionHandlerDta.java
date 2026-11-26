@@ -98,14 +98,18 @@ public class InteractionHandlerDta implements InteractionHandler, DeepCloneable<
         return true;
     }
 
-    private static void tellWait(Player player, long remaining, long now) {
+    /**
+     * Tells a player how long he still has to wait before a click does something ({@code cooldown.wait} in
+     * messages.yml), at most once a second.
+     */
+    public static void tellWait(Player player, long remaining, long now) {
         Long lastMessage = LAST_MESSAGE.get(player.getUniqueId());
         if (lastMessage != null && now - lastMessage < MESSAGE_GAP) {
             return;
         }
         LAST_MESSAGE.put(player.getUniqueId(), now);
-        player.sendMessage(ChatColor.translateAlternateColorCodes('&',
-                "&8&l« &6&lSH &8&l» &7Revenez dans &6" + formatWait(remaining) + "&7."));
+        me.general_breddok.blockdisplaycreator.util.ChatUtil.sendMessage(player,
+                me.general_breddok.blockdisplaycreator.file.config.value.StringMessagesValue.COOLDOWN_WAIT.replace("%time%", formatWait(remaining)));
     }
 
     /** {@code 23 h 12 min}, {@code 5 h}, {@code 12 min}, {@code 45 s}; always rounded up, never « 0 ». */

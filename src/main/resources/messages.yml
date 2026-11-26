@@ -106,3 +106,285 @@ command:
 
 
 
+
+#Message displayed when a click comes back too early on a click box (or a placed block) with a cooldown of a minute or more (%time% = what is left)
+cooldown:
+  wait: "&8&l« &6&lSH &8&l» &7Revenez dans &6%time%&7."
+
+#Message displayed when a player without the permission an administrator set on one placed block clicks it
+placed-denied:
+  interact: "&8&l« &c&lSH &8&l» &7Tu n'as &cpas accès&7 à ceci."
+
+#Texts of the gizmo (shift + right click on a custom block shown through packets)
+gizmo:
+  opened: "&8&l« &e&lSH &8&l» &7Gizmo &eactivé&7 : vise une pièce, &eclic gauche&7 pour la prendre, de nouveau pour la poser."
+  #%min% and %max% = the sizes the bar goes from and to, in %
+  help: "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (%min% à %max% %)&8 · &7Shift + clic droit &8: &efermer"
+  help-admin: "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (%min% à %max% %)&8 · &7bloc de commande &8: &eréglages de ce bloc seul &8· &7Shift + clic droit &8: &efermer"
+  closed: "&8&l« &e&lSH &8&l» &7Gizmo &efermé&7."
+  failed: "&8&l« &c&lSH &8&l» &7Le gizmo &cn'a pas pu s'ouvrir&7."
+  too-far: "&8&l« &6&lSH &8&l» &7Gizmo &6fermé&7 : tu t'es &6trop éloigné&7 du modèle."
+  refused: "&8&l« &c&lSH &8&l» &7Tu ne peux pas &cdéplacer&7 ce modèle &chors de ton île&7."
+  locked: "&8&l« &6&lSH &8&l» &7Ce modèle a été &6verrouillé&7 par un admin : il ne se déplace pas."
+  already-at-origin: "&8&l« &6&lSH &8&l» &7Ce modèle est &6déjà à sa place d'origine&7."
+  nothing-to-reset: "&8&l« &6&lSH &8&l» &7Rien à &6remettre à zéro&7 ici."
+  #Action bar while the gizmo is open: %readout% = the part aimed at or what it changes, %step%, %axes%
+  status: "&6&lGizmo &8» &f%readout% &8| &7pas &e%step% &8| &7axes &e%axes% &8| &7clic droit &eremise à zéro"
+  readout:
+    aim: "vise une pièce"
+    free-step: "libre"
+    model-axes: "du modèle"
+    world-axes: "du monde"
+    reset-all: "Remis à l'origine"
+    reset: "%part% remis à zéro"
+  label:
+    move: "Déplacer %axis%"
+    size: "Taille"
+    reset: "Remettre à l'origine"
+    turn: "Tourner"
+    tilt: "Pencher"
+    admin: "Réglages de ce bloc seul"
+
+#The admin panel of the gizmo (command block of the gizmo, or /bdc settings): what is set on one placed block alone.
+#Each icon has a material, a name and a lore; a lore line holding %list% gives one line per command.
+gizmo-admin:
+  title: "&8&lRéglages &8| %model%"
+  none: "&8aucun"
+  no-command: "&8aucune commande"
+  command-line: "&8%n%. &f/%command%"
+  server-distance: "celle du serveur, %blocks%"
+  items:
+    filler:
+      material: BLACK_STAINED_GLASS_PANE
+      name: " "
+    info:
+      material: LANTERN
+      name: "&e&l%model%"
+      lore:
+        - "&7Bloc &f%where%"
+        - "&7Note &8: &f%note%"
+        - ""
+        - "&7Ces réglages ne valent que pour &ece bloc&7 :"
+        - "&7les autres &f%model% &7gardent leur fichier."
+        - "&7Réglages changés &8: &e%count%"
+    size:
+      material: SLIME_BALL
+      name: "&eTaille &8: &f%value%"
+      lore:
+        - "&7De %min% à %max% de la taille du fichier."
+        - "&7Il grandit depuis le sol, la zone cliquable"
+        - "&7et la collision suivent."
+        - ""
+        - "&8Clic gauche &7: &f+10 %"
+        - "&8Clic droit &7: &f-10 %"
+        - "&8Shift + clic gauche &7: &fécrire une valeur"
+        - "&8Shift + clic droit &7: &f100 %"
+    view-distance:
+      material: SPYGLASS
+      name: "&eDistance d'affichage &8: &f%value% blocs"
+      lore:
+        - "&7Jusqu'où les joueurs voient ce bloc,"
+        - "&7autour de lui, au-dessus et en dessous."
+        - "&7Celle du modèle &8: &f%model%"
+        - ""
+        - "&8Clic gauche &7: &f+8 blocs"
+        - "&8Clic droit &7: &f-8 blocs"
+        - "&8Shift + clic gauche &7: &fécrire une valeur"
+        - "&8Shift + clic droit &7: &fcelle du modèle"
+    loops:
+      material: REPEATER
+      name: "&eAnimations en boucle &8: %state%"
+      state-on: "&ajouées"
+      state-off: "&carrêtées"
+      lore:
+        - "&7Arrêtées, ce bloc reste immobile"
+        - "&7(moins de paquets pour les joueurs)."
+        - ""
+        - "&8Clic &7: &fchanger"
+    loops-none:
+      material: GRAY_DYE
+      name: "&8Animations en boucle"
+      lore:
+        - "&7Ce modèle n'en a pas."
+    breakable:
+      material: BEDROCK
+      name: "&eCassable &8: %state%"
+      state-on: "&aoui"
+      state-off: "&cnon, même par un op"
+      lore:
+        - "&7Incassable, aucun coup ne le casse ;"
+        - "&7le bouton &cCasser&7 de ce panneau le retire."
+        - ""
+        - "&8Clic &7: &fchanger"
+    locked:
+      material: IRON_BARS
+      name: "&eGizmo &8: %state%"
+      state-on: "&créservé aux admins"
+      state-off: "&aceux qui peuvent construire ici"
+      lore:
+        - "&7Réservé, les joueurs de l'île ne peuvent"
+        - "&7plus le déplacer ni le tourner."
+        - ""
+        - "&8Clic &7: &fchanger"
+    note:
+      material: NAME_TAG
+      name: "&eNote &8: &f%value%"
+      lore:
+        - "&7Pour le staff, visible ici et dans"
+        - "&f/bdc settings list&7."
+        - ""
+        - "&8Clic &7: &fécrire"
+        - "&8Clic droit &7: &fretirer"
+    commands:
+      material: COMMAND_BLOCK
+      name: "&eCommandes au clic &8: &f%count%"
+      lore:
+        - "&7Lancées quand un joueur clique ce bloc."
+        - "&7%player% &8= &7le joueur, &7{x} {y} {z} {world} &8= &7le bloc."
+        - ""
+        - "%list%"
+        - ""
+        - "&8Clic gauche &7: &fajouter"
+        - "&8Clic droit &7: &fretirer la dernière"
+        - "&8Shift + clic droit &7: &ftout retirer"
+    source:
+      material: PLAYER_HEAD
+      name: "&eLancées par &8: %state%"
+      state-on: "&ble joueur"
+      state-off: "&dla console"
+      lore:
+        - "&7La console peut tout faire (tp, heal...),"
+        - "&7le joueur seulement ce qu'il a le droit de faire."
+        - ""
+        - "&8Clic &7: &fchanger"
+    model-commands:
+      material: CHAIN_COMMAND_BLOCK
+      name: "&eCommandes du fichier &8: %state%"
+      state-on: "&agardées"
+      state-off: "&cremplacées"
+      lore:
+        - "&7Remplacées, seules les commandes"
+        - "&7de ce bloc se lancent au clic."
+        - ""
+        - "&8Clic &7: &fchanger"
+    model-commands-none:
+      material: GRAY_DYE
+      name: "&8Commandes du fichier"
+      lore:
+        - "&7Le fichier de ce modèle n'en a pas."
+    click-animation:
+      material: ARMOR_STAND
+      name: "&eAnimation au clic &8: %state%"
+      state-on: "&ajouée"
+      state-off: "&carrêtée"
+      lore:
+        - "&7L'animation que le fichier joue"
+        - "&7quand on clique ce modèle."
+        - ""
+        - "&8Clic &7: &fchanger"
+    click-animation-none:
+      material: GRAY_DYE
+      name: "&8Animation au clic"
+      lore:
+        - "&7Ce modèle n'en a pas."
+    cooldown:
+      material: CLOCK
+      name: "&eDélai entre deux clics &8: &f%value%"
+      lore:
+        - "&7Par joueur. Dès 1 min, il survit aux"
+        - "&7redémarrages et le joueur voit le temps restant."
+        - ""
+        - "&8Clic gauche &7: &fplus long"
+        - "&8Clic droit &7: &fplus court"
+        - "&8Shift + clic gauche &7: &fécrire une durée"
+        - "&8Shift + clic droit &7: &faucun"
+    permission:
+      material: TRIPWIRE_HOOK
+      name: "&ePermission pour cliquer &8: &f%value%"
+      lore:
+        - "&7Sans elle, un clic ne fait rien."
+        - ""
+        - "&8Clic &7: &fécrire"
+        - "&8Clic droit &7: &fretirer"
+    click-box:
+      material: STONE_BUTTON
+      name: "&eZone cliquable &8: %state%"
+      state-on: "&aajoutée"
+      state-off: "&caucune"
+      lore:
+        - "&7Ce modèle n'en a pas : sans elle, ses"
+        - "&7commandes au clic ne se lancent jamais."
+        - "&7Elle prend la place de ce qu'il dessine."
+        - ""
+        - "&8Clic &7: &fchanger"
+    click-box-model:
+      material: OAK_BUTTON
+      name: "&eZone cliquable &8: &acelle du fichier"
+      lore:
+        - "&7Ce modèle a déjà la sienne."
+    copy:
+      material: MAP
+      name: "&eCopier ces réglages"
+      lore:
+        - "&7Pour les coller sur un autre bloc"
+        - "&7(la taille ne se copie pas)."
+    paste:
+      material: FILLED_MAP
+      name: "&eColler les réglages copiés"
+      lore:
+        - "&7Réglages copiés &8: &e%count%"
+        - "&7Ils remplacent ceux de ce bloc."
+    paste-empty:
+      material: GRAY_DYE
+      name: "&8Coller les réglages copiés"
+      lore:
+        - "&7Rien de copié pour l'instant."
+    reset:
+      material: STRUCTURE_VOID
+      name: "&cTout remettre comme le fichier"
+      lore:
+        - "&7Retire tous les réglages de ce bloc."
+        - "&7Sa place et sa taille restent :"
+        - "&7le bouton rouge du gizmo les remet."
+        - ""
+        - "&8Shift + clic &7: &fconfirmer"
+    break:
+      material: BARRIER
+      name: "&cCasser ce bloc"
+      lore:
+        - "&7Même incassable. Son objet va"
+        - "&7dans ton inventaire."
+        - ""
+        - "&8Shift + clic &7: &fconfirmer"
+    back:
+      material: PAPER
+      name: "&7Retour au gizmo"
+  #Messages in the chat that suggest the command to finish (%command% = that command)
+  prompt:
+    hover: "&7Clique pour écrire &f%command%"
+    size: "&8&l« &e&lSH &8&l» &7Écris la taille en % (ex. &e250&7) : &e&nclique ici"
+    view-distance: "&8&l« &e&lSH &8&l» &7Écris la distance en blocs (ex. &e96&7) : &e&nclique ici"
+    command: "&8&l« &e&lSH &8&l» &7Écris la commande, sans / (ex. &espawn %player%&7) : &e&nclique ici"
+    cooldown: "&8&l« &e&lSH &8&l» &7Écris le délai (ex. &e60s&7, &e5m&7, &e24h&7) : &e&nclique ici"
+    permission: "&8&l« &e&lSH &8&l» &7Écris la permission (ex. &eskyhand.vip&7) : &e&nclique ici"
+    note: "&8&l« &e&lSH &8&l» &7Écris la note : &e&nclique ici"
+  saved: "&8&l« &a&lSH &8&l» &7Réglage de &a%model%&7 enregistré."
+  copied: "&8&l« &a&lSH &8&l» &7Réglages de &a%model%&7 copiés."
+  broken: "&8&l« &a&lSH &8&l» &a%model%&7 cassé, son objet est dans ton inventaire."
+  confirm-reset: "&8&l« &6&lSH &8&l» &6Shift + clic&7 pour tout remettre comme le fichier."
+  confirm-break: "&8&l« &6&lSH &8&l» &6Shift + clic&7 pour casser ce bloc."
+  gone: "&8&l« &c&lSH &8&l» &7Ce bloc &cn'est plus là&7."
+  aim: "&8&l« &c&lSH &8&l» &7Vise un bloc de BDC (ou ouvre son gizmo), puis refais &c/bdc settings&7."
+  open-first: "&8&l« &c&lSH &8&l» &7Ouvre d'abord les réglages d'un bloc : bloc de commande de son gizmo, ou &c/bdc settings&7 en le visant."
+  no-permission: "&8&l« &c&lSH &8&l» &7Tu n'as &cpas la permission&7."
+  players-only: "&cOnly a player can set a block from its panel."
+  usage: "&8&l« &c&lSH &8&l» &7/bdc settings &8[&7size <%>&8 | &7view-distance <blocs>&8 | &7command add|remove|clear&8 | &7cooldown <durée>&8 | &7permission <perm>&8 | &7note <texte>&8 | &7list [rayon]&8]"
+  bad-size: "&8&l« &c&lSH &8&l» &7La taille va de &c%min%&7 à &c%max%&7."
+  bad-view-distance: "&8&l« &c&lSH &8&l» &7La distance va de &c1&7 à &c%max%&7 blocs (ou &cdefault&7)."
+  bad-command: "&8&l« &c&lSH &8&l» &7Ce n'est &cpas une commande&7."
+  bad-command-number: "&8&l« &c&lSH &8&l» &7Donne le numéro d'une des &c%count%&7 commandes."
+  bad-cooldown: "&8&l« &c&lSH &8&l» &7Écris une durée comme &c60s&7, &c5m&7, &c2h30m&7 (ou &cnone&7)."
+  bad-permission: "&8&l« &c&lSH &8&l» &7Une permission s'écrit &csans espace&7 (ou &cnone&7)."
+  list-title: "&8&l« &e&lSH &8&l» &e%count%&7 bloc(s) réglé(s) à moins de %radius% blocs (clique pour t'y téléporter) :"
+  list-line: "&8- &e%model% &7%where% &8(&7%count% réglage(s)&8) &f%note%"
+  list-empty: "&8&l« &e&lSH &8&l» &7Aucun bloc réglé à moins de %radius% blocs."

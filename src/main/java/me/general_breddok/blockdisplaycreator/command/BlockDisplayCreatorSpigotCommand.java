@@ -567,6 +567,14 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
             }
             case "import" -> importModel(sender, args);
             case "animation" -> animation(sender, args);
+            case "settings" -> {
+                me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = this.plugin.getDisplayRenderer();
+                if (renderer == null || renderer.gizmos() == null) {
+                    ChatUtil.sendMessage(sender, "&cBlock settings need the custom blocks to be shown through packets (packet-display: true in config.yml).");
+                } else {
+                    renderer.gizmos().adminMenu().command(sender, args);
+                }
+            }
             case "erasecbdata" -> {
 
                 if (!sender.hasPermission(DefaultPermissions.BDC.Command.ERASE_CB_DATA)) {
@@ -881,11 +889,17 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                     "custom-block",
                     "import",
                     "animation",
+                    "settings",
                     "erasecbdata",
                     "reload"
             ), result);
         } else if (arg1.equals("animation")) {
             animationTab(args, lookingLocation, result);
+        } else if (arg1.equals("settings")) {
+            me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = this.plugin.getDisplayRenderer();
+            if (renderer != null && renderer.gizmos() != null) {
+                result.addAll(renderer.gizmos().adminMenu().tab(sender, args));
+            }
         } else if (arg1.equals("import")) {
             if (args.length == 2) {
                 result.add("<number>");

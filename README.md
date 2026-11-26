@@ -65,3 +65,51 @@ A collision of a custom block is an invisible shulker that often stands in front
 ## Blocks nobody breaks by hitting them
 
 `breakable: false` at the root of a block file: no hit breaks its placed blocks, not even from an operator, who is told how to remove one instead (`protected.break` in `messages.yml`, with `%x%` `%y%` `%z%` `%world%`). `/bdc custom-block break <x> <y> <z> [world]` still removes it. Meant for characters and props other features rely on (quest NPCs, puzzle pieces).
+
+The same holds for one placed block made unbreakable from its admin panel (below), and for the central block of a full block (`BLOCK_` models): hitting the central block no longer breaks a block its file or its panel protects.
+
+## The gizmo
+
+Shift + right click on a custom block shown through packets, where the player may place and break custom blocks, opens its gizmo: arrows and squares move it, arcs turn and tip it, the white knob sets its size, the red button puts it back where it was placed. Its texts are in `messages.yml` (`gizmo`).
+
+- The tool is drawn after what the model really draws, at the size the block has: a flat item (a flower, a stick, a torch) counts one pixel thick however stretched, a head half a block. A small model gets a small tool (1 at least, 6 at most).
+- The size bar goes from `gizmo.size-min` to `gizmo.size-max` of the file's size (`config.yml`, 75 % to 125 %), from `gizmo.admin-size-min` to `gizmo.admin-size-max` for those with `bdc.gizmo.admin` (10 % to 1000 %, logarithmic: 100 % in the middle). A block standing upright grows from its floor: it neither sinks into the ground nor floats. A tipped block grows around its middle.
+
+## Settings of one placed block (admin panel)
+
+What is set here belongs to ONE placed block, stored with it (`custom-block-settings` in its chunk data) and gone when it is broken: the other blocks of the same file keep what their file gives them. Permission `bdc.gizmo.admin` (op).
+
+Open it with the command block at the left end of the gizmo's strip, or with `/bdc settings` aiming at a block (its click box, its central block or what it draws; else the block your gizmo is open on). Each click applies at once.
+
+| Icon | What it sets |
+|---|---|
+| Size | 10 % to 1000 % of the file's size (`gizmo.admin-size-min/max`). Left/right click ±10 %, Shift + left click to type a value, Shift + right click back to 100 %. Click boxes and collisions follow. |
+| View distance | How far players are sent this block, around it, above and below (counted in chunks around it, like `display.view-distance`). ±8 blocks, Shift + left click to type, Shift + right click back to the file's. |
+| Loops | Stops the loop animations of this block (it stays at rest, fewer packets). |
+| Breakable | Unbreakable: no hit breaks it, not even from an operator (who is told how to remove it). |
+| Gizmo | Reserved to administrators: players who may build there can no longer move or turn it (they are told so). |
+| Note | A note for the staff, shown in the panel and in `/bdc settings list`. |
+| Click commands | Commands run when a player clicks this block, with `%player%`, PlaceholderAPI and `{x} {y} {z} {world}`. |
+| Run by | The console (anything: tp, heal...) or the player who clicks (only what he may do). |
+| File's commands | Kept, or replaced by the block's own. Shown only when the file has some. |
+| Click animation | Plays, or not, the click animation of the file. Shown only when the file has one. |
+| Cooldown | Per player, between two clicks that do something. Left click goes to the next of `gizmo.admin-cooldowns`, right click to the one before, Shift + left click to type a duration (`90s`, `5m`, `2h30m`, `1d`). From one minute on, the wait outlives restarts and the player is told how long is left (`cooldown.wait` in `messages.yml`). |
+| Permission | The permission a player needs for his click to do anything (`placed-denied.interact` in `messages.yml` otherwise). |
+| Click box | For a model whose file gives it none (otherwise its click commands could never run): a box with a square base around what it draws. |
+| Copy / Paste | Copies these settings to paste them on another block (the size is not copied; an added click box is made again for the model it is pasted on). |
+| Reset | Shift + click: the block follows its file again (its place and size stay: the red button of the gizmo puts them back). |
+| Break | Shift + click: removes the block, even unbreakable, and gives its item to you. |
+
+Values to type are written with a command the panel suggests in the chat, on the block whose panel you opened last:
+
+```
+/bdc settings size <percent|default>
+/bdc settings view-distance <blocks|default>
+/bdc settings command add <command>      /bdc settings command remove <number>      /bdc settings command clear
+/bdc settings cooldown <duration|none>
+/bdc settings permission <permission|none>
+/bdc settings note <text|none>
+/bdc settings list [radius]              (blocks with settings within the radius, 64 by default; click a line to teleport)
+```
+
+The texts and icons of the panel are in `messages.yml` (`gizmo-admin`), its limits, cooldown steps and sounds in `config.yml` (`gizmo`).

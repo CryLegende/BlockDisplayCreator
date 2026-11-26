@@ -53,6 +53,11 @@ public final class GizmoManager implements Listener {
      * The permission to move custom blocks: everyone has it, wherever the usual checks let them build.
      */
     public static final String PERMISSION = "bdc.gizmo";
+    /**
+     * The permission to set things on one placed block alone, from the admin button of the gizmo (see
+     * {@link AdminMenu}), and to move the blocks an administrator locked.
+     */
+    public static final String ADMIN_PERMISSION = "bdc.gizmo.admin";
 
     private final BlockDisplayCreator plugin;
     private final DisplayRenderer renderer;
@@ -65,12 +70,57 @@ public final class GizmoManager implements Listener {
      */
     private final java.util.Set<UUID> sneaking = new java.util.HashSet<>();
     private int tick;
+    private final AdminMenu adminMenu;
 
     GizmoManager(BlockDisplayCreator plugin, DisplayRenderer renderer, NmsBridge nms) {
         this.plugin = plugin;
         this.renderer = renderer;
         this.nms = nms;
+        this.adminMenu = new AdminMenu(plugin, renderer, this);
+        plugin.getServer().getPluginManager().registerEvents(this.adminMenu, plugin);
         listenToUnknownEntities();
+    }
+
+    /**
+     * The panel of what is set on one block alone, opened by the admin button of the gizmo or by {@code /bdc settings}.
+     */
+    public AdminMenu adminMenu() {
+        return this.adminMenu;
+    }
+
+    /**
+     * Opens the admin panel of a block for a player whose gizmo is on it.
+     */
+    void openAdmin(Player player, PlacedDisplay placed) {
+        if (player.hasPermission(ADMIN_PERMISSION)) {
+            this.adminMenu.open(player, placed);
+        }
+    }
+
+    /**
+     * Brings the gizmos open on a block to where it now stands, after the admin panel changed it.
+     */
+    void follow(PlacedDisplay placed) {
+        for (Gizmo gizmo : this.sessions.values()) {
+            if (gizmo.target() == placed) {
+                gizmo.follow();
+            }
+        }
+    }
+
+    /**
+     * A number of config.yml, or a default when it is missing or not a number.
+     */
+    double setting(String path, double fallback) {
+        Object value = this.plugin.getYamlConfiguration().get(path);
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return value == null ? fallback : Double.parseDouble(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /**
@@ -88,7 +138,7 @@ public final class GizmoManager implements Listener {
         if (current != null) {
             current.close();
             if (current.target() == placed) {
-                say(player, 'e', "Gizmo &efermé&7.");
+                say(player, "gizmo.closed");
                 return;
             }
         }
@@ -99,20 +149,22 @@ public final class GizmoManager implements Listener {
             Gizmo gizmo = new Gizmo(this, this.renderer, this.nms, player, placed);
             this.sessions.put(player.getUniqueId(), gizmo);
             gizmo.status();
-            say(player, 'e', "Gizmo &eactivé&7 : vise une pièce, &eclic gauche&7 pour la prendre, de nouveau pour la poser.");
-            player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (75 à 125 %) &8· &7Shift + clic droit &8: &efermer"));
+            boolean admin = player.hasPermission(ADMIN_PERMISSION);
+            say(player, "gizmo.opened");
+            say(player, admin ? "gizmo.help-admin" : "gizmo.help",
+                    "%min%", Math.round(setting(admin ? "gizmo.admin-size-min" : "gizmo.size-min", admin ? 0.1 : 0.75) * 100),
+                    "%max%", Math.round(setting(admin ? "gizmo.admin-size-max" : "gizmo.size-max", admin ? 10 : 1.25) * 100));
         } catch (RuntimeException e) {
             this.plugin.getLogger().log(Level.WARNING, "Could not open the gizmo of custom block " + placed.modelName, e);
-            say(player, 'c', "Le gizmo &cn'a pas pu s'ouvrir&7.");
+            say(player, "gizmo.failed");
         }
     }
 
     /**
-     * Sends a message in the house style: a prefix coloured by the kind of message (a success, e information,
-     * 6 warning, c error), grey text, the words that matter in the colour.
+     * Sends a text of messages.yml (nothing for an empty one), placeholders replaced: pairs of placeholder and value.
      */
-    void say(Player player, char kind, String text) {
-        player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&8&l« &" + kind + "&lSH &8&l» &7" + text));
+    void say(Player player, String path, Object... pairs) {
+        me.general_breddok.blockdisplaycreator.util.ChatUtil.sendMessage(player, Texts.get(path, pairs));
     }
 
     /**
@@ -143,8 +195,19 @@ public final class GizmoManager implements Listener {
      */
     private boolean opens(Player player, PlacedDisplay placed) {
         Gizmo current = this.sessions.get(player.getUniqueId());
+        if (current != null && current.target() == placed) {
+            return true;
+        }
         // a block with a visible-if that keeps it from him cannot be selected
-        return (current != null && current.target() == placed) || this.renderer.sees(player, placed) && mayEditAt(player, placed, placed.base());
+        if (!this.renderer.sees(player, placed) || !mayEditAt(player, placed, placed.base())) {
+            return false;
+        }
+        if (placed.settings != null && placed.settings.locked && !player.hasPermission(ADMIN_PERMISSION)) {
+            // an administrator keeps this one where he put it: the click is left to the usual handling
+            say(player, "gizmo.locked");
+            return false;
+        }
+        return true;
     }
 
     private void end(Player player) {
@@ -186,7 +249,7 @@ public final class GizmoManager implements Listener {
                 gizmo.close();
                 Player player = this.plugin.getServer().getPlayer(entry.getKey());
                 if (player != null && closing.equals("far")) {
-                    say(player, '6', "Gizmo &6fermé&7 : tu t'es &6trop éloigné&7 du modèle.");
+                    say(player, "gizmo.too-far");
                 }
             }
         }
@@ -319,6 +382,26 @@ public final class GizmoManager implements Listener {
             return;
         }
         gizmo.rightClick(this.tick);
+    }
+
+    /**
+     * The block a player works on: the decoration he aims at (its click box, its central block, or what it draws),
+     * else the one his gizmo is open on, or null.
+     */
+    @org.jetbrains.annotations.Nullable
+    PlacedDisplay targetOf(Player player) {
+        PlacedDisplay placed = aimed(player);
+        if (placed == null) {
+            org.bukkit.block.Block block = player.getTargetBlockExact(6);
+            if (block != null) {
+                placed = placedAt(block);
+            }
+        }
+        if (placed == null) {
+            placed = aimedDrawn(player, distanceToBlock(player));
+        }
+        Gizmo gizmo = this.sessions.get(player.getUniqueId());
+        return placed == null && gizmo != null ? gizmo.target() : placed;
     }
 
     /**

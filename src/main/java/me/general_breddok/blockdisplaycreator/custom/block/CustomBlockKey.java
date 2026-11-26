@@ -47,6 +47,11 @@ public interface CustomBlockKey {
      * (its file has a {@code display.visible-if}): they are given back to everyone once the file no longer has one.
      */
     NamespacedKey HIDDEN_HITBOX = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-hidden-hitbox");
+    /**
+     * What an administrator set on this placed block alone, on top of its file (click commands, cooldown, view
+     * distance...): a YAML text, see {@code BlockSettings}.
+     */
+    NamespacedKey SETTINGS = new NamespacedKey(BlockDisplayCreator.getInstance(), "custom-block-settings");
 
     static DataHolder holder(PersistentDataHolder holder) {
         return new DataHolder(holder);

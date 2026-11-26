@@ -122,6 +122,33 @@ public class PlayerInteractEntityListener implements Listener {
 
         ConfiguredInteraction configuredInteraction = customBlock.getConfiguredInteraction(interaction);
 
+        // what an administrator set on this block alone: its own commands, who may click, how often
+        me.general_breddok.blockdisplaycreator.render.BlockSettings settings = renderer == null ? null : renderer.settingsAt(customBlock.getLocation());
+        if (settings != null && settings.handlesClicks()) {
+            event.setCancelled(true);
+            if (hand != EquipmentSlot.HAND) {
+                return;
+            }
+            if (!settings.allows(player)) {
+                ChatUtil.sendMessage(player, StringMessagesValue.PLACED_DENIED_INTERACT);
+                return;
+            }
+            if (configuredInteraction != null && !EventUtil.call(new CustomBlockInteractEvent(customBlock, player, interaction, configuredInteraction, hand))) {
+                return;
+            }
+            if (!settings.passCooldown(player, customBlock.getLocation())) {
+                return;
+            }
+            if (configuredInteraction != null && settings.runsModelCommands()) {
+                customBlock.handleClick(configuredInteraction, interaction, player, new CustomBlockPlaceholder(customBlock), new InteractionPlaceholder(interaction));
+            }
+            settings.run(player, new CustomBlockPlaceholder(customBlock), new InteractionPlaceholder(interaction));
+            if (settings.playsClickAnimation()) {
+                renderer.clicked(customBlock.getLocation().getBlock(), configuredInteraction == null ? null : configuredInteraction.getIdentifier());
+            }
+            return;
+        }
+
         if (configuredInteraction == null) {
             return;
         }
