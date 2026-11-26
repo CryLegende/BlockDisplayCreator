@@ -37,6 +37,8 @@ import java.util.TreeSet;
  *         root: [0, 0.06, 0]  # moves the whole model, one packet for all its parts (see root-motion in the file)
  *     optimise: false         # keeps every frame; by def the frames a client does not need are left out
  *     sound-range: 3          # blocks from which its sounds are heard; by def those of the game
+ *     distance: 16            # loop only: plays for the players within this many blocks of the block, the others
+ *                             # see its parts at rest. By def for all who see the block
  *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
  *       - at: 12
  *         sound: minecraft:block.note_block.harp
@@ -111,6 +113,11 @@ final class DisplayAnimation {
      */
     final long cooldown;
     /**
+     * A loop: how close to the block, in blocks, a player has to be for it to play for him ({@code distance}), 0 for
+     * every player who sees the block. The others see its parts at rest and are sent none of its frames.
+     */
+    final double distance;
+    /**
      * Whether a frame of it moves the whole model ({@code root}).
      */
     final boolean rooted;
@@ -158,7 +165,8 @@ final class DisplayAnimation {
     }
 
     private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable,
-                             double soundRange, double radius, long cooldown) {
+                             double soundRange, double radius, long cooldown, double distance) {
+        this.distance = distance;
         this.name = name;
         this.optimisable = optimisable;
         this.soundRange = soundRange;
@@ -340,7 +348,7 @@ final class DisplayAnimation {
             duration = Math.max(duration, note.at() + 1);
         }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
-                section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown);
+                section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown, loopDistance(trigger, section.get("distance")));
     }
 
     /**
@@ -408,6 +416,20 @@ final class DisplayAnimation {
         return millis;
     }
 
+    /**
+     * The {@code distance} of a loop, in blocks: 0 when absent, and for an animation that is no loop.
+     */
+    private static double loopDistance(Trigger trigger, Object value) {
+        if (value == null || trigger != Trigger.LOOP) {
+            return 0;
+        }
+        double distance = number(value, 0).doubleValue();
+        if (!(distance > 0) || Double.isInfinite(distance)) {
+            throw new IllegalArgumentException("distance must be a number of blocks above 0, not " + value);
+        }
+        return distance;
+    }
+
     private static double soundRange(Object value) {
         double range = number(value, 0).doubleValue();
         if (range < 0) {
@@ -441,7 +463,7 @@ final class DisplayAnimation {
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
         return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable, this.soundRange,
-                this.radius, this.cooldown);
+                this.radius, this.cooldown, this.distance);
     }
 
     /**
@@ -457,7 +479,7 @@ final class DisplayAnimation {
             kept = new Frame[]{new Frame(0, 0, new int[0], new List<?>[0], new List<?>[0], new Transformation[0], null, 1f, 1f, null)};
         }
         return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, kept, this.notes, this.optimisable, this.soundRange,
-                this.radius, this.cooldown);
+                this.radius, this.cooldown, this.distance);
     }
 
     /**

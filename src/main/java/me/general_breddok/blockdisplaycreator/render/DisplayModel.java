@@ -107,6 +107,21 @@ final class DisplayModel {
      * the whole model, so that a loop of frames of the same length never sends it again.
      */
     final int carrierGlide;
+    /**
+     * Its loops that play only for the players close to the block ({@code distance}): bit i for the animation i (the
+     * first 64 animations of the file).
+     */
+    final long distanceLoops;
+    /**
+     * Among them, those that move the whole model.
+     */
+    final long distanceRooted;
+
+    /**
+     * How many blocks further than its {@code distance} a player has to go before a loop stops playing for him: one
+     * walking along the edge does not see it start and stop over and over.
+     */
+    static final double LOOP_LEEWAY = 2;
 
     static final int TRANSLATION = 1;
     static final int SCALE = 2;
@@ -124,6 +139,8 @@ final class DisplayModel {
         this.approaches = approaches(animations);
         this.movesLook = movesLook(animations, lookAt);
         this.attentionChunks = attentionChunks(animations, this.approaches, lookAt);
+        this.distanceLoops = distanceLoops(animations, false);
+        this.distanceRooted = distanceLoops(animations, true);
         this.name = definition.getName();
         this.viewDistance = viewDistance;
         int everyWay = viewDistance > 0 ? viewDistance : -1;
@@ -173,6 +190,8 @@ final class DisplayModel {
         this.approaches = approaches(this.animations);
         this.movesLook = movesLook(this.animations, this.lookAt);
         this.attentionChunks = attentionChunks(this.animations, this.approaches, this.lookAt);
+        this.distanceLoops = distanceLoops(this.animations, false);
+        this.distanceRooted = distanceLoops(this.animations, true);
         // frames moving the whole model are kept as they are by the lighter animations
         this.carried = model.carried;
         this.carrierType = model.carrierType;
@@ -218,7 +237,23 @@ final class DisplayModel {
             // the pivot may stand to the side of the block: as far as the model is wide, and some more for its size
             reach = Math.max(reach, lookAt.radius + 2 * Math.hypot(lookAt.pivot.x, lookAt.pivot.z));
         }
+        for (DisplayAnimation animation : animations) {
+            if (animation.distance > 0) {
+                reach = Math.max(reach, animation.distance + LOOP_LEEWAY);
+            }
+        }
         return (int) Math.ceil((reach + 2) / 16) + 1;
+    }
+
+    private static long distanceLoops(List<DisplayAnimation> animations, boolean rootedOnly) {
+        long loops = 0;
+        for (int i = 0; i < animations.size() && i < 64; i++) {
+            DisplayAnimation animation = animations.get(i);
+            if (animation.distance > 0 && (!rootedOnly || animation.rooted)) {
+                loops |= 1L << i;
+            }
+        }
+        return loops;
     }
 
     private static int[] approaches(List<DisplayAnimation> animations) {
@@ -238,11 +273,11 @@ final class DisplayModel {
     }
 
     /**
-     * Whether players close by change what the model shows them: it has a {@code look-at} or an {@code approach}
-     * animation.
+     * Whether players close by change what the model shows them: it has a {@code look-at}, an {@code approach}
+     * animation or a loop with a {@code distance}.
      */
     boolean attentive() {
-        return this.lookAt != null || this.approaches.length > 0;
+        return this.lookAt != null || this.approaches.length > 0 || this.distanceLoops != 0;
     }
 
     /**

@@ -636,13 +636,13 @@ final class PlacedDisplay {
      *
      * @param out receives the position
      */
-    double[] lookCentre(int tick, double[] out) {
+    double[] lookCentre(int tick, long skipLoops, double[] out) {
         double[] centre = lookCentre();
         out[0] = centre[0];
         out[1] = centre[1];
         out[2] = centre[2];
         if (this.model.carried(this.model.lookAt.parts[0])) {
-            org.joml.Vector3f offset = rootTarget(tick);
+            org.joml.Vector3f offset = rootTarget(tick, skipLoops);
             if (offset != null) {
                 double[] moved = carrierAt(offset);
                 double[] still = pose(this.model.elements.get(0).pitch());
@@ -670,12 +670,19 @@ final class PlacedDisplay {
      * others by their last frame played), later animations of the file first, as the parts are caught up.
      */
     org.joml.Vector3f rootTarget(int tick) {
+        return rootTarget(tick, 0L);
+    }
+
+    /**
+     * @param skipLoops the loops (bit i for the animation i) left out: those not played for a player
+     */
+    org.joml.Vector3f rootTarget(int tick, long skipLoops) {
         org.joml.Vector3f target = null;
         List<DisplayAnimation> animations = this.model.animations;
         for (int a = 0; a < animations.size(); a++) {
             DisplayAnimation animation = animations.get(a);
-            if (!animation.rooted || animation.trigger == DisplayAnimation.Trigger.LOOP && !loops()) {
-                // an administrator may have stopped the loops of this block
+            if (!animation.rooted || animation.trigger == DisplayAnimation.Trigger.LOOP && (!loops() || a < 64 && (skipLoops & 1L << a) != 0)) {
+                // an administrator may have stopped the loops of this block, or this one is not played for him
                 continue;
             }
             org.joml.Vector3f after = animation.trigger == DisplayAnimation.Trigger.LOOP ? animation.rootAfter(tick, -1)

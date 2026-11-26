@@ -151,6 +151,9 @@ sound:
 #  #        volume: 1
 #  #The sounds of an animation carry as far as those of the game (16 blocks). A shorter distance, in blocks, keeps them for the players standing in front of the block.   By def 0, that of the game
 #  #    sound-range: 3
+#  #A loop only: it plays for the players within this many blocks of the block; the others see its parts at rest and are sent none of its frames
+#  #nor sounds. Coming within it, a player sees the parts glide from rest into the loop; going further than distance + 2, glide back to rest.   By def every player who sees the block
+#  #    distance: 16
 #  #A frame may move the whole model at once (a flying character bobbing, a jump): root is where it takes it, in blocks from where the block stands,
 #  #in the model's axes at size 1 as move is. Whatever the number of parts, a client gets one small packet for it; the parts keep their own frames on top.
 #  #A frame with a root moves no part unless it also has parts, move, rotate, scale or transformation. Over 59 ticks it is cut into pieces along the same line.

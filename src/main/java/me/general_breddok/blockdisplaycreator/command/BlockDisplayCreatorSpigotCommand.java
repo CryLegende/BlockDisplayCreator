@@ -1144,7 +1144,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
     }
 
     private static final String ANIMATION_USAGE = "&6/bdc animation play <player|selector|*> <animation> <x> <y> <z> [world]&7, "
-            + "&6/bdc animation stop <player|selector|*> <x> <y> <z> [world]&7, &6/bdc animation list <x> <y> <z> [world]";
+            + "&6/bdc animation stop <player|selector|*> <x> <y> <z> [world]&7, &6/bdc animation list <x> <y> <z> [world]&7, &6/bdc animation stats";
 
     /**
      * /bdc animation play|stop|list: plays an animation of a placed custom block for some players (the others keep
@@ -1163,6 +1163,11 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
             return;
         }
         String action = args.length > 1 ? args[1].toLowerCase(java.util.Locale.ROOT) : "";
+        if (action.equals("stats")) {
+            // what the players close to blocks (look-at, approach, loops with a distance) cost every tick
+            ChatUtil.sendMessage(sender, "&7Nearby players pass, " + renderer.attendStats());
+            return;
+        }
         int blockAt = switch (action) {
             case "play" -> 4;
             case "stop" -> 3;
@@ -1238,7 +1243,7 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
     private void animationTab(String[] args, @Nullable Location looking, List<String> result) {
         String typed = args[args.length - 1];
         if (args.length == 2) {
-            StringUtil.copyPartialMatches(typed, List.of("play", "stop", "list"), result);
+            StringUtil.copyPartialMatches(typed, List.of("play", "stop", "list", "stats"), result);
             return;
         }
         String action = args[1].toLowerCase(java.util.Locale.ROOT);
