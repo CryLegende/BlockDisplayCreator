@@ -116,7 +116,13 @@ public class BlockDisplayCreatorCAPICommand {
 
                                                         storage.reload(
                                                                 blockName,
-                                                                () -> ChatUtil.sendMessage(sender, StringMessagesValue.COMMAND_RELOAD_BLOCK.replace("%customblock_name%", blockName))
+                                                                () -> {
+                                                                    // the blocks of that name already shown take the new file
+                                                                    if (this.plugin.getDisplayRenderer() != null) {
+                                                                        this.plugin.getDisplayRenderer().reload(blockName);
+                                                                    }
+                                                                    ChatUtil.sendMessage(sender, StringMessagesValue.COMMAND_RELOAD_BLOCK.replace("%customblock_name%", blockName));
+                                                                }
                                                         );
                                                     } else {
                                                         this.plugin.getYamlConfiguration().reload(true);

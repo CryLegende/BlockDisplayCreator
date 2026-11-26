@@ -242,3 +242,22 @@ sound:
 #  visible-if:
 #    - "%questcreator_variable_secret_miel% == 1"
 #    - "%shenigmes_abeilles_trouve_3% == false"
+
+#For other plugins: the model of a file shown at a point, nothing of it written in the world (no block, no chunk data, no entity on the server).
+#Players get it as they get a block of that file placed there: view-distance, view-above/below, loops and their distance, look-at, approach, root frames,
+#visible-if, a player arriving caught up. Its place animations do not play, and none of its click boxes and collisions is created: the other plugin
+#takes the clicks with its own click box. Breaking, the gizmo, the settings of a block, /bdc animation and chunk wipes leave it alone, a block placed
+#at the same spot included. Main thread only. Needs packet-display: true.
+#  DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();   //null on a server that cannot show blocks through packets
+#  DisplayRenderer.ShownModel shown = renderer.show(plugin, "barrel", location, 1f);
+#      //location: its feet (exact coordinates) and its yaw (any angle, sides-count does not apply), in a loaded chunk; 1f = the size of the file
+#      //null when the file is unknown or draws nothing, the chunk is not loaded or packet display is off
+#  renderer.play(shown, "hop", List.of(player));   //for him alone (null = for everyone), as /bdc animation play: PLAYED, NO_BLOCK, NO_ANIMATION or LOOPING
+#  renderer.stop(shown, List.of(player));          //-1 when it is no longer shown
+#  renderer.shows(shown);   //false once hidden, or let go: chunk or world unloaded, file gone or drawing nothing after a reload, packet display off,
+#                           //BlockDisplayCreator or the plugin that showed it disabled. Show it again to have it back.
+#  renderer.hide(shown);
+#  renderer.knows("barrel");        //whether it can be shown
+#  renderer.animations("barrel");   //the names of all its animations
+#  renderer.bounds("barrel");       //{minX, minY, minZ, maxX, maxY, maxZ} of what it draws at rest, in blocks around its feet, size 1, before its yaw
+#/bdc reload <block> gives the blocks of that file already shown, and the models shown for other plugins, the file as it is now.
