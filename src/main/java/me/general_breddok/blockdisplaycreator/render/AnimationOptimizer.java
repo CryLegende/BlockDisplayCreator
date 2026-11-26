@@ -124,7 +124,8 @@ final class AnimationOptimizer {
         });
         Map<String, List<Integer>> groups = new LinkedHashMap<>();
         for (int i = 0; i < frames.length; i++) {
-            boolean free = true;
+            // a frame moving the whole model is one teleport: kept as it is
+            boolean free = frames[i].root() == null;
             for (int part : frames[i].parts()) {
                 free &= !blocked.contains(part);
             }
@@ -183,7 +184,7 @@ final class AnimationOptimizer {
         }
         List<Kept> out = new ArrayList<>();
         for (int i = 0; i < frames.length; i++) {
-            boolean free = true;
+            boolean free = frames[i].root() == null;
             for (int part : frames[i].parts()) {
                 free &= !blocked.contains(part);
             }
@@ -224,6 +225,13 @@ final class AnimationOptimizer {
                 out.writeInt(frame.at());
                 out.writeInt(frame.over());
                 out.writeBoolean(frame.sound() != null);
+                if (frame.root() != null) {
+                    // only then: the animations without root motion keep the fingerprint (and the cache) they had
+                    out.writeUTF("root");
+                    out.writeFloat(frame.root().x);
+                    out.writeFloat(frame.root().y);
+                    out.writeFloat(frame.root().z);
+                }
                 for (int i = 0; i < frame.parts().length; i++) {
                     out.writeInt(frame.parts()[i]);
                     write(out, frame.targets()[i]);

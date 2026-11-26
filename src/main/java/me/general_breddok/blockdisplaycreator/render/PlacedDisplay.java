@@ -97,6 +97,27 @@ final class PlacedDisplay {
      * By player, for each animation of the model, when its {@code approach} last played for him (milliseconds).
      */
     private java.util.Map<UUID, long[]> approached;
+    /**
+     * The id of the invisible display the parts of the model ride when its animations move the whole model, -1 for a
+     * model without one.
+     */
+    int carrierId = -1;
+    /**
+     * The ids of every entity a client is sent for the block: those of the model, then the carrier's.
+     */
+    int[] allIds;
+    /**
+     * The glide, in ticks, every player who sees the block has for the teleports of its carrier, -1 when they do not
+     * all have the same: a frame moving the whole model sends it only when it changes it.
+     */
+    int carrierGlide;
+    private Object passengersPacket;
+    /**
+     * For each animation, for each of its frames moving the whole model, the teleport of the carrier, alone then with
+     * the glide of the frame.
+     */
+    private Object[][] rootPackets;
+    private Object[][] rootGlidePackets;
 
     PlacedDisplay(World world, int x, int y, int z, String modelName, CustomBlockRotation rotation) {
         this.world = world;
@@ -150,6 +171,18 @@ final class PlacedDisplay {
         for (int i = 0; i < this.entityIds.length; i++) {
             this.entityIds[i] = nms.nextEntityId();
         }
+        if (model.hasCarrier()) {
+            this.carrierId = nms.nextEntityId();
+            this.allIds = java.util.Arrays.copyOf(this.entityIds, this.entityIds.length + 1);
+            this.allIds[this.entityIds.length] = this.carrierId;
+        } else {
+            this.carrierId = -1;
+            this.allIds = this.entityIds;
+        }
+        this.carrierGlide = model.carrierGlide;
+        this.passengersPacket = null;
+        this.rootPackets = new Object[model.animations.size()][];
+        this.rootGlidePackets = new Object[model.animations.size()][];
         this.spawnPacket = null;
         this.removePacket = null;
 
@@ -188,6 +221,8 @@ final class PlacedDisplay {
         this.framePackets = new Object[model.animations.size()][];
         this.unturnedFramePackets = new Object[model.animations.size()][];
         this.restPackets = new Object[model.animations.size()];
+        this.rootPackets = new Object[model.animations.size()][];
+        this.rootGlidePackets = new Object[model.animations.size()][];
     }
 
     /**
@@ -489,6 +524,11 @@ final class PlacedDisplay {
         this.spawnPacket = null;
         this.lookCentre = null;
         this.lookBack = null;
+        if (this.rootPackets != null) {
+            // the carrier goes to other places
+            java.util.Arrays.fill(this.rootPackets, null);
+            java.util.Arrays.fill(this.rootGlidePackets, null);
+        }
         if ((resized || this.model != null && this.model.sinks) && this.framePackets != null) {
             // the poses of the frames were multiplied by the old size, or raised for a block standing upright
             java.util.Arrays.fill(this.framePackets, null);
@@ -516,11 +556,131 @@ final class PlacedDisplay {
     }
 
     /**
+     * Where the pivot of the model's {@code look-at} stands in the world at a tick, x, y, z: moved with the whole model
+     * when its parts ride the carrier, by where the frames everyone sees have taken it.
+     *
+     * @param out receives the position
+     */
+    double[] lookCentre(int tick, double[] out) {
+        double[] centre = lookCentre();
+        out[0] = centre[0];
+        out[1] = centre[1];
+        out[2] = centre[2];
+        if (this.model.carried(this.model.lookAt.parts[0])) {
+            org.joml.Vector3f offset = rootTarget(tick);
+            if (offset != null) {
+                double[] moved = carrierAt(offset);
+                double[] still = pose(this.model.elements.get(0).pitch());
+                out[0] += moved[0] - still[0];
+                out[1] += moved[1] - still[1];
+                out[2] += moved[2] - still[2];
+            }
+        }
+        return out;
+    }
+
+    /**
      * The rotation that takes a direction of the world into the model, as its entities are turned.
      */
     org.joml.Quaterniond lookBack() {
         lookCentre();
         return this.lookBack;
+    }
+
+    // ---------- The whole model moved at once (root frames) ----------
+
+    /**
+     * Where the frames everyone sees have taken the whole model at a tick, in the model's axes (blocks at its scale),
+     * or null when none moved it: for each animation that moves it, its last frame doing so (a loop by its tick, the
+     * others by their last frame played), later animations of the file first, as the parts are caught up.
+     */
+    org.joml.Vector3f rootTarget(int tick) {
+        org.joml.Vector3f target = null;
+        List<DisplayAnimation> animations = this.model.animations;
+        for (int a = 0; a < animations.size(); a++) {
+            DisplayAnimation animation = animations.get(a);
+            if (!animation.rooted) {
+                continue;
+            }
+            org.joml.Vector3f after = animation.trigger == DisplayAnimation.Trigger.LOOP ? animation.rootAfter(tick, -1)
+                    : animation.rootAfter(-1, this.lastFrame[a]);
+            if (after != null) {
+                target = after;
+            }
+        }
+        return target;
+    }
+
+    /**
+     * Where the carrier stands in the world for the whole model moved by an offset (null for none): the offset turned
+     * and sized as the model is.
+     */
+    double[] carrierAt(org.joml.Vector3f offset) {
+        double[] pose = pose(this.model.elements.get(0).pitch());
+        if (offset == null) {
+            return pose;
+        }
+        org.joml.Vector3d moved = orientation(pose[3], pose[4]).transform(new org.joml.Vector3d(offset.x, offset.y, offset.z).mul(scale()));
+        return new double[]{pose[0] + moved.x, pose[1] + moved.y, pose[2] + moved.z, pose[3], pose[4]};
+    }
+
+    /**
+     * The packet that teleports the carrier where a frame moving the whole model takes it, over the frame's time:
+     * with the glide of the frame first when the client does not have it.
+     */
+    Object rootFramePacket(NmsBridge nms, int animation, int frame, boolean withGlide) {
+        Object[][] all = withGlide ? this.rootGlidePackets : this.rootPackets;
+        Object[] packets = all[animation];
+        if (packets == null) {
+            packets = all[animation] = new Object[this.model.animations.get(animation).frames.length];
+        }
+        if (packets[frame] == null) {
+            DisplayAnimation.Frame played = this.model.animations.get(animation).frames[frame];
+            double[] at = carrierAt(played.root());
+            Object teleport = nms.teleportPacket(this.carrierId, at[0], at[1], at[2], (float) at[3], (float) at[4]);
+            packets[frame] = withGlide ? nms.bundle(List.of(nms.dataPacket(this.carrierId, nms.teleportDurationValues(played.over())), teleport))
+                    : teleport;
+        }
+        return packets[frame];
+    }
+
+    /**
+     * The packet that takes the carrier somewhere over some ticks, for a client that has a given glide, and gives it
+     * another one after (the one the others have), when needed.
+     *
+     * @param holds   the glide the client has, -1 when it is not known
+     * @param restore the glide it is given after, -1 for none
+     */
+    Object carrierMove(NmsBridge nms, org.joml.Vector3f offset, int ticks, int holds, int restore) {
+        List<Object> packets = new ArrayList<>(3);
+        if (holds != ticks) {
+            packets.add(nms.dataPacket(this.carrierId, nms.teleportDurationValues(ticks)));
+        }
+        double[] at = carrierAt(offset);
+        packets.add(nms.teleportPacket(this.carrierId, at[0], at[1], at[2], (float) at[3], (float) at[4]));
+        if (restore >= 0 && restore != ticks) {
+            packets.add(nms.dataPacket(this.carrierId, nms.teleportDurationValues(restore)));
+        }
+        return nms.bundle(packets);
+    }
+
+    private Object passengersPacket(NmsBridge nms) {
+        if (this.passengersPacket == null) {
+            int count = 0;
+            for (int i = 0; i < this.entityIds.length; i++) {
+                if (this.model.carried(i)) {
+                    count++;
+                }
+            }
+            int[] riders = new int[count];
+            for (int i = 0, n = 0; i < this.entityIds.length; i++) {
+                if (this.model.carried(i)) {
+                    riders[n++] = this.entityIds[i];
+                }
+            }
+            this.passengersPacket = nms.passengersPacket(this.carrierId, riders);
+        }
+        return this.passengersPacket;
     }
 
     /**
@@ -722,6 +882,44 @@ final class PlacedDisplay {
     }
 
     /**
+     * The packet that makes a client create every display entity of the block, in one frame, with the whole model
+     * moved by an offset when it rides a carrier: the carrier, its parts where it stands (a part riding it is drawn
+     * from where it stands), then the parts seated on it.
+     *
+     * @param offset where the frames moving the whole model have taken it for this client, null for nowhere
+     * @param glide  the glide the carrier is given for its teleports
+     */
+    Object spawnPacket(NmsBridge nms, org.joml.Vector3f offset, int glide) {
+        if (!this.model.hasCarrier()) {
+            return spawnPacket(nms);
+        }
+        List<DisplayModel.Element> elements = this.model.elements;
+        List<Object> packets = new ArrayList<>(elements.size() * 2 + 3);
+        double[] at = carrierAt(offset);
+        packets.add(nms.spawnPacket(this.carrierId, UUID.randomUUID(), at[0], at[1], at[2], (float) at[4], (float) at[3], this.model.carrierType));
+        packets.add(nms.dataPacket(this.carrierId, nms.teleportDurationValues(Math.max(0, glide))));
+        for (int i = 0; i < elements.size(); i++) {
+            DisplayModel.Element element = elements.get(i);
+            double[] pose = pose(element.pitch());
+            boolean riding = this.model.carried(i);
+            double sink = riding ? 0 : sink(i);
+            packets.add(nms.spawnPacket(this.entityIds[i], UUID.randomUUID(), riding ? at[0] : pose[0], riding ? at[1] : pose[1] - sink,
+                    riding ? at[2] : pose[2], (float) pose[4], (float) pose[3], element.type()));
+            List<?> data = upright(element) ? element.upright() : element.data();
+            if (sink > 0) {
+                org.bukkit.block.Block lit = this.world.getBlockAt((int) Math.floor(pose[0]), (int) Math.floor(pose[1]), (int) Math.floor(pose[2]));
+                data = nms.litValues(data, lit.getLightFromBlocks(), lit.getLightFromSky());
+            }
+            data = sent(nms, i, data);
+            if (!data.isEmpty()) {
+                packets.add(nms.dataPacket(this.entityIds[i], data));
+            }
+        }
+        packets.add(passengersPacket(nms));
+        return nms.bundle(packets);
+    }
+
+    /**
      * The packet that makes a client create every display entity of the block, in one frame.
      */
     Object spawnPacket(NmsBridge nms) {
@@ -752,7 +950,7 @@ final class PlacedDisplay {
 
     Object removePacket(NmsBridge nms) {
         if (this.removePacket == null) {
-            this.removePacket = nms.removePacket(this.entityIds);
+            this.removePacket = nms.removePacket(this.allIds);
         }
         return this.removePacket;
     }

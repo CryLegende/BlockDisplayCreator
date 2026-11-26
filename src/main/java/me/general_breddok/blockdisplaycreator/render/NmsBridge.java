@@ -58,6 +58,11 @@ final class NmsBridge {
      * Bukkit locations are read instead.
      */
     private final Positions positions;
+    /**
+     * Builds the packet that makes entities ride another, or null on a server that names it otherwise: models are then
+     * shown without their root motion.
+     */
+    private final Passengers passengers;
 
     private NmsBridge() throws ReflectiveOperationException {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -121,6 +126,87 @@ final class NmsBridge {
             positions = null;
         }
         this.positions = positions;
+
+        Passengers riders;
+        try {
+            riders = new Passengers(packets, type.getDeclaringClass().getClassLoader());
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            riders = null;
+        }
+        this.passengers = riders;
+    }
+
+    /**
+     * The packet that seats entities on another, made from what the packet itself reads off the network: the id of the
+     * vehicle, then those of its passengers. The server only builds it from a real entity.
+     */
+    private static final class Passengers {
+        private final Constructor<?> read;
+        private final Constructor<?> friendly;
+        private final Method wrap;
+        private final Method release;
+        private final Method vehicle;
+        private final Method riders;
+
+        Passengers(String packets, ClassLoader server) throws ReflectiveOperationException {
+            Class<?> packet = Class.forName(packets + "ClientboundSetPassengersPacket", true, server);
+            Class<?> friendlyBuffer = Class.forName("net.minecraft.network.FriendlyByteBuf", true, server);
+            Class<?> buffer = Class.forName("io.netty.buffer.ByteBuf", true, server);
+            this.friendly = friendlyBuffer.getConstructor(buffer);
+            this.read = packet.getDeclaredConstructor(friendlyBuffer);
+            this.read.setAccessible(true);
+            this.wrap = Class.forName("io.netty.buffer.Unpooled", true, server).getMethod("wrappedBuffer", byte[].class);
+            this.release = buffer.getMethod("release");
+            this.vehicle = packet.getMethod("getVehicle");
+            this.riders = packet.getMethod("getPassengers");
+            // the packet reads what was written: should its format change, root motion is left out
+            Object test = make(7, new int[]{300, 9});
+            if ((Integer) this.vehicle.invoke(test) != 7 || !java.util.Arrays.equals((int[]) this.riders.invoke(test), new int[]{300, 9})) {
+                throw new IllegalStateException("ClientboundSetPassengersPacket reads another format");
+            }
+        }
+
+        Object make(int vehicle, int[] passengers) throws ReflectiveOperationException {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream(8 + passengers.length * 3);
+            varInt(bytes, vehicle);
+            varInt(bytes, passengers.length);
+            for (int passenger : passengers) {
+                varInt(bytes, passenger);
+            }
+            Object buffer = this.wrap.invoke(null, (Object) bytes.toByteArray());
+            try {
+                return this.read.newInstance(this.friendly.newInstance(buffer));
+            } finally {
+                this.release.invoke(buffer);
+            }
+        }
+
+        private static void varInt(java.io.ByteArrayOutputStream out, int value) {
+            while ((value & ~0x7F) != 0) {
+                out.write(value & 0x7F | 0x80);
+                value >>>= 7;
+            }
+            out.write(value);
+        }
+    }
+
+    /**
+     * Whether display entities can be seated on another one shown through packets: what moving a whole model with one
+     * packet (root motion) takes.
+     */
+    boolean canCarry() {
+        return this.passengers != null && this.moves != null;
+    }
+
+    /**
+     * The packet that seats entities on a vehicle: they stand where it stands and follow its moves.
+     */
+    Object passengersPacket(int vehicle, int[] passengers) {
+        try {
+            return this.passengers.make(vehicle, passengers);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /**

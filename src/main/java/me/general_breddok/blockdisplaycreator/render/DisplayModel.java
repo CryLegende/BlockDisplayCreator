@@ -92,6 +92,21 @@ final class DisplayModel {
      * where they are.
      */
     final int attentionChunks;
+    /**
+     * When one of its animations moves the whole model ({@code root} frames): for each entity, whether it rides the
+     * invisible carrier those frames teleport (all but those of {@code root-motion.exclude}). Null for the other
+     * models, which are shown without a carrier.
+     */
+    final boolean[] carried;
+    /**
+     * The entity type of the carrier: an empty block display, which draws nothing.
+     */
+    final Object carrierType;
+    /**
+     * The glide of the carrier its clients are given when they first get it: the length of the first frame moving
+     * the whole model, so that a loop of frames of the same length never sends it again.
+     */
+    final int carrierGlide;
 
     static final int TRANSLATION = 1;
     static final int SCALE = 2;
@@ -100,9 +115,12 @@ final class DisplayModel {
     static final int WHOLE_POSE = TRANSLATION | SCALE | LEFT_ROTATION | RIGHT_ROTATION;
 
     private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
-                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt) {
+                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt, boolean[] carried, Object carrierType) {
         this.varying = varying;
         this.lookAt = lookAt;
+        this.carried = carried;
+        this.carrierType = carrierType;
+        this.carrierGlide = carrierGlide(animations);
         this.approaches = approaches(animations);
         this.movesLook = movesLook(animations, lookAt);
         this.attentionChunks = attentionChunks(animations, this.approaches, lookAt);
@@ -155,6 +173,40 @@ final class DisplayModel {
         this.approaches = approaches(this.animations);
         this.movesLook = movesLook(this.animations, this.lookAt);
         this.attentionChunks = attentionChunks(this.animations, this.approaches, this.lookAt);
+        // frames moving the whole model are kept as they are by the lighter animations
+        this.carried = model.carried;
+        this.carrierType = model.carrierType;
+        this.carrierGlide = model.carrierGlide;
+    }
+
+    private static int carrierGlide(List<DisplayAnimation> animations) {
+        // the loops first: they play all the time
+        for (boolean loops : new boolean[]{true, false}) {
+            for (DisplayAnimation animation : animations) {
+                if (animation.rooted && (animation.trigger == DisplayAnimation.Trigger.LOOP) == loops) {
+                    for (DisplayAnimation.Frame frame : animation.frames) {
+                        if (frame.root() != null) {
+                            return frame.over();
+                        }
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Whether the model is shown on a carrier that its {@code root} frames move.
+     */
+    boolean hasCarrier() {
+        return this.carried != null;
+    }
+
+    /**
+     * Whether an entity of the model rides its carrier.
+     */
+    boolean carried(int part) {
+        return this.carried != null && this.carried[part];
     }
 
     private static int attentionChunks(List<DisplayAnimation> animations, int[] approaches, LookAt lookAt) {
@@ -229,8 +281,8 @@ final class DisplayModel {
      * @return the model, without any element when the summon commands of the block create nothing
      */
     static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
-                             ConfigurationSection animations, ConfigurationSection lookAt, int viewDistance, int viewAbove, int viewBelow,
-                             List<Condition> visibleIf, List<String> problems) {
+                             ConfigurationSection animations, ConfigurationSection lookAt, ConfigurationSection rootMotion, int viewDistance,
+                             int viewAbove, int viewBelow, List<Condition> visibleIf, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -271,8 +323,44 @@ final class DisplayModel {
                 varying[part] |= TRANSLATION | LEFT_ROTATION;
             }
         }
-        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read, look)), read, viewDistance, viewAbove, viewBelow, visibleIf,
-                varying, look);
+        boolean[] carried = null;
+        Object carrierType = null;
+        if (read.stream().anyMatch(animation -> animation.rooted)) {
+            if (!nms.canCarry()) {
+                problems.add("frames with a root are left out: this server cannot seat display entities on another one");
+                read = read.stream().map(DisplayAnimation::withoutRoot).toList();
+            } else {
+                carried = new boolean[elements.size()];
+                java.util.Arrays.fill(carried, true);
+                Object exclude = rootMotion == null ? null : rootMotion.get("exclude");
+                if (exclude != null) {
+                    try {
+                        for (int part : DisplayAnimation.parts(exclude, elements.size())) {
+                            carried[part] = false;
+                        }
+                    } catch (IllegalArgumentException e) {
+                        problems.add("root-motion.exclude: " + e.getMessage() + "; every part moves with the model");
+                    }
+                }
+                carrierType = carrierType(nms, location);
+            }
+        } else if (rootMotion != null) {
+            problems.add("root-motion has no use: no frame of its animations has a root");
+        }
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read, look, carried)), read, viewDistance, viewAbove, viewBelow,
+                visibleIf, varying, look, carried, carrierType);
+    }
+
+    /**
+     * The entity type of an empty block display, read from one summoned for an instant.
+     */
+    private static Object carrierType(NmsBridge nms, Location location) {
+        BlockDisplay display = location.getWorld().spawn(location, BlockDisplay.class, entity -> entity.setPersistent(false));
+        try {
+            return nms.type(nms.handle(display));
+        } finally {
+            display.remove();
+        }
     }
 
     /**
@@ -431,7 +519,8 @@ final class DisplayModel {
      * (billboard {@code vertical}) by their cylinder, which they do not leave; parts facing the player on every axis
      * by the sphere they turn in. An entity whose pose cannot be followed keeps being drawn at all times.
      */
-    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations, LookAt lookAt) {
+    private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations, LookAt lookAt,
+                                                boolean[] carried) {
         List<Element> boxed = new ArrayList<>(elements.size());
         for (int part = 0; part < elements.size(); part++) {
             Element element = elements.get(part);
@@ -485,7 +574,9 @@ final class DisplayModel {
             }
             float sink = reach[2] < -0.5f ? (float) Math.ceil((-reach[2] - 0.5f) * 16f + 1f) / 16f : 0f;
             float top = reach[1] + sink;
-            if (!followed || sink > MAX_SINK || top <= 0 || !nms.canAnimate() && sink > 0) {
+            // a part riding the carrier stands where it stands: it cannot be lowered, it is drawn at all times
+            boolean riding = carried != null && carried[part];
+            if (!followed || sink > MAX_SINK || top <= 0 || !nms.canAnimate() && sink > 0 || riding && sink > 0) {
                 boxed.add(element);
                 continue;
             }

@@ -32,6 +32,9 @@ import java.util.TreeSet;
  *         scale: 1.2          # or [x, y, z]
  *         pivot: [0, 1, 0]    # point the rotation and the scale are made around. By def the middle of the parts
  *         sound: minecraft:block.chest.open
+ *       - at: 0
+ *         over: 30
+ *         root: [0, 0.06, 0]  # moves the whole model, one packet for all its parts (see root-motion in the file)
  *     optimise: false         # keeps every frame; by def the frames a client does not need are left out
  *     sound-range: 3          # blocks from which its sounds are heard; by def those of the game
  *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
@@ -107,6 +110,26 @@ final class DisplayAnimation {
      * An {@code approach} animation: milliseconds before it plays again for the same player at the same block.
      */
     final long cooldown;
+    /**
+     * Whether a frame of it moves the whole model ({@code root}).
+     */
+    final boolean rooted;
+    /**
+     * For each tick of the animation, the index of the last frame moving the whole model that starts at it or before,
+     * -1 for none. Null when it has none.
+     */
+    final int[] rootAt;
+    /**
+     * For each frame, the index of the last frame moving the whole model up to it (itself included), -1 for none.
+     * Null when it has none.
+     */
+    final int[] rootBefore;
+
+    /**
+     * The most ticks a client takes to glide to a teleport: a frame moving the whole model over longer is cut into
+     * pieces of this length at most, along the same line.
+     */
+    static final int MAX_ROOT_OVER = 59;
 
     /**
      * @param at      the tick it starts at
@@ -115,8 +138,11 @@ final class DisplayAnimation {
      * @param moving  for each part, the synced values that take it to its pose over the frame's time
      * @param jumping for each part, the synced values that put it in its pose at once
      * @param targets for each part, its pose, as the client is sent it (null when the server cannot split a matrix)
+     * @param root    where it takes the whole model, in blocks from where the block stands, in the model's axes at its
+     *                scale; null for a frame that leaves it where it is. A frame moving the whole model moves no part
      */
-    record Frame(int at, int over, int[] parts, List<?>[] moving, List<?>[] jumping, Transformation[] targets, String sound, float volume, float pitch) {
+    record Frame(int at, int over, int[] parts, List<?>[] moving, List<?>[] jumping, Transformation[] targets, String sound, float volume, float pitch,
+                 Vector3f root) {
     }
 
     /**
@@ -152,6 +178,7 @@ final class DisplayAnimation {
             this.notesAt[notes[i].at()] = extended;
         }
         TreeSet<Integer> touched = new TreeSet<>();
+        boolean rooted = false;
         for (int i = 0; i < frames.length; i++) {
             int[] starting = this.startingAt[frames[i].at()];
             int[] extended = starting == null ? new int[1] : java.util.Arrays.copyOf(starting, starting.length + 1);
@@ -160,8 +187,55 @@ final class DisplayAnimation {
             for (int part : frames[i].parts()) {
                 touched.add(part);
             }
+            rooted |= frames[i].root() != null;
         }
         this.touched = touched.stream().mapToInt(Integer::intValue).toArray();
+        this.rooted = rooted;
+        if (rooted) {
+            this.rootBefore = new int[frames.length];
+            int last = -1;
+            for (int i = 0; i < frames.length; i++) {
+                if (frames[i].root() != null) {
+                    last = i;
+                }
+                this.rootBefore[i] = last;
+            }
+            this.rootAt = new int[duration + 1];
+            int frame = -1;
+            for (int tick = 0; tick <= duration; tick++) {
+                while (frame + 1 < frames.length && frames[frame + 1].at() <= tick) {
+                    frame++;
+                }
+                this.rootAt[tick] = frame < 0 ? -1 : this.rootBefore[frame];
+            }
+        } else {
+            this.rootBefore = null;
+            this.rootAt = null;
+        }
+    }
+
+    /**
+     * Where the frames of the animation played up to a tick of it have taken the whole model, or null when none of
+     * them moved it.
+     *
+     * @param tick   for a loop, its tick since the server started (a round that has turned before ends where the
+     *               last one left it); for another, -1 to go by {@code lastFrame}
+     * @param lastFrame for another animation, the last frame played, -1 for none
+     */
+    Vector3f rootAfter(int tick, int lastFrame) {
+        if (!this.rooted) {
+            return null;
+        }
+        int frame;
+        if (this.trigger == Trigger.LOOP && tick >= 0) {
+            frame = this.rootAt[tick % this.duration];
+            if (frame < 0 && tick >= this.duration) {
+                frame = this.rootBefore[this.frames.length - 1];
+            }
+        } else {
+            frame = lastFrame < 0 ? -1 : this.rootBefore[Math.min(lastFrame, this.frames.length - 1)];
+        }
+        return frame < 0 ? null : this.frames[frame].root();
     }
 
     /**
@@ -219,9 +293,24 @@ final class DisplayAnimation {
         for (Map<?, ?> entry : entries) {
             int at = Math.max(0, number(entry.get("at"), 0).intValue());
             int over = Math.max(0, number(entry.get("over"), 0).intValue());
-            int[] parts = parts(entry.get("parts"), elements.size());
             end = Math.max(end, at + over);
+            Object sound = entry.get("sound");
+            String soundName = sound == null ? null : sound.toString();
+            float volume = number(entry.get("volume"), 1f).floatValue();
+            float pitch = number(entry.get("pitch"), 1f).floatValue();
 
+            // a frame with a root moves the whole model, and its parts only when it names them or how they move
+            boolean movesParts = entry.get("root") == null || entry.containsKey("parts") || entry.containsKey("move") || entry.containsKey("rotate")
+                    || entry.containsKey("scale") || entry.containsKey("transformation");
+            if (entry.get("root") != null) {
+                Vector3f root = vector(entry.get("root"), "root").mul(scale);
+                frames.add(new Frame(at, over, new int[0], new List<?>[0], new List<?>[0], new Transformation[0],
+                        movesParts ? null : soundName, volume, pitch, root));
+            }
+            if (!movesParts) {
+                continue;
+            }
+            int[] parts = parts(entry.get("parts"), elements.size());
             List<?>[] moving = new List<?>[parts.length];
             List<?>[] jumping = new List<?>[parts.length];
             Transformation[] targets = new Transformation[parts.length];
@@ -232,11 +321,11 @@ final class DisplayAnimation {
                 jumping[i] = pose.jumping();
                 targets[i] = pose.target();
             }
-            Object sound = entry.get("sound");
-            frames.add(new Frame(at, over, parts, moving, jumping, targets, sound == null ? null : sound.toString(),
-                    number(entry.get("volume"), 1f).floatValue(), number(entry.get("pitch"), 1f).floatValue()));
+            frames.add(new Frame(at, over, parts, moving, jumping, targets, soundName, volume, pitch, null));
         }
         frames.sort(Comparator.comparingInt(Frame::at));
+        boolean loop = trigger == Trigger.LOOP;
+        frames = withShortRootFrames(frames, loop);
         List<Note> notes = new ArrayList<>();
         for (Map<?, ?> entry : section.getMapList("sounds")) {
             if (entry.get("sound") == null) {
@@ -252,6 +341,50 @@ final class DisplayAnimation {
         }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
                 section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown);
+    }
+
+    /**
+     * The frames, those that move the whole model over more than {@link #MAX_ROOT_OVER} ticks cut into pieces along the
+     * same line: a client glides a teleport over 59 ticks at most. Each piece starts where the one before arrives, from
+     * where the frame before left the model (in a loop, the last one of the round before; else where the block stands).
+     */
+    private static List<Frame> withShortRootFrames(List<Frame> frames, boolean loop) {
+        boolean any = false;
+        for (Frame frame : frames) {
+            any |= frame.root() != null && frame.over() > MAX_ROOT_OVER;
+        }
+        if (!any) {
+            return frames;
+        }
+        Vector3f from = new Vector3f();
+        if (loop) {
+            for (Frame frame : frames) {
+                if (frame.root() != null) {
+                    from = frame.root();
+                }
+            }
+        }
+        List<Frame> out = new ArrayList<>(frames.size() + 4);
+        for (Frame frame : frames) {
+            if (frame.root() == null) {
+                out.add(frame);
+                continue;
+            }
+            int pieces = (frame.over() + MAX_ROOT_OVER - 1) / MAX_ROOT_OVER;
+            for (int piece = 1; piece < pieces; piece++) {
+                int start = frame.over() * (piece - 1) / pieces;
+                int stop = frame.over() * piece / pieces;
+                Vector3f at = new Vector3f(from).lerp(frame.root(), stop / (float) frame.over());
+                out.add(new Frame(frame.at() + start, stop - start, new int[0], new List<?>[0], new List<?>[0], new Transformation[0],
+                        piece == 1 ? frame.sound() : null, frame.volume(), frame.pitch(), at));
+            }
+            int start = pieces > 1 ? frame.over() * (pieces - 1) / pieces : 0;
+            out.add(new Frame(frame.at() + start, frame.over() - start, new int[0], new List<?>[0], new List<?>[0], new Transformation[0],
+                    pieces > 1 ? null : frame.sound(), frame.volume(), frame.pitch(), frame.root()));
+            from = frame.root();
+        }
+        out.sort(Comparator.comparingInt(Frame::at));
+        return out;
     }
 
     /**
@@ -304,10 +437,26 @@ final class DisplayAnimation {
                 jumping[p] = frame.jumping()[j];
                 targets[p] = target;
             }
-            out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch());
+            out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch(), frame.root());
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
         return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable, this.soundRange,
+                this.radius, this.cooldown);
+    }
+
+    /**
+     * The same animation without the frames that move the whole model, on a server that cannot show them.
+     */
+    DisplayAnimation withoutRoot() {
+        if (!this.rooted) {
+            return this;
+        }
+        Frame[] kept = java.util.Arrays.stream(this.frames).filter(frame -> frame.root() == null).toArray(Frame[]::new);
+        if (kept.length == 0) {
+            // a frame that moves nothing holds the place of the animation
+            kept = new Frame[]{new Frame(0, 0, new int[0], new List<?>[0], new List<?>[0], new Transformation[0], null, 1f, 1f, null)};
+        }
+        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, kept, this.notes, this.optimisable, this.soundRange,
                 this.radius, this.cooldown);
     }
 

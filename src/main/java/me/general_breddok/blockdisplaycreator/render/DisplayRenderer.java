@@ -169,6 +169,7 @@ public final class DisplayRenderer implements Listener {
      */
     private final Location here = new Location(null, 0, 0, 0);
     private final org.joml.Vector3d direction = new org.joml.Vector3d();
+    private final double[] centre = new double[3];
     /**
      * The chunks holding custom blocks shown through packets, kept on disk: a chunk wiped while it is not loaded
      * (value true) is cleaned of them when it next loads.
@@ -319,6 +320,13 @@ public final class DisplayRenderer implements Listener {
          * The last frame played, -1 before the first.
          */
         int lastFrame = -1;
+        /**
+         * Whether it moved the whole model for him (root frames), where to, and the glide his client has for the
+         * teleports of the carrier (-1 when not known).
+         */
+        boolean rootMoved;
+        org.joml.Vector3f rootTarget;
+        int carrierGlide = -1;
 
         PrivatePlay(PlacedDisplay placed, int animation, int startedAt, boolean approach) {
             this.placed = placed;
@@ -525,6 +533,8 @@ public final class DisplayRenderer implements Listener {
     private void startPrivate(Player player, PlacedDisplay placed, int index, boolean approach) {
         UUID id = player.getUniqueId();
         List<PrivatePlay> plays = this.privatePlays.computeIfAbsent(id, k -> new ArrayList<>(1));
+        PrivatePlay play = new PrivatePlay(placed, index, this.tick + 1, approach);
+        play.carrierGlide = placed.carrierGlide;
         for (Iterator<PrivatePlay> iterator = plays.iterator(); iterator.hasNext(); ) {
             PrivatePlay old = iterator.next();
             if (old.placed == placed) {
@@ -534,9 +544,13 @@ public final class DisplayRenderer implements Listener {
                 if (old.animation != index && viewer != null && viewer.player == player && viewer.shown.contains(placed)) {
                     this.nms.send(player, placed.restPacket(this.nms, old.animation));
                 }
+                // the whole model stays where the other one took it, and goes back to the others once this one ends
+                play.rootMoved = old.rootMoved;
+                play.rootTarget = old.rootTarget;
+                play.carrierGlide = old.carrierGlide;
             }
         }
-        plays.add(new PrivatePlay(placed, index, this.tick + 1, approach));
+        plays.add(play);
         placed.privateFor.add(id);
     }
 
@@ -555,6 +569,7 @@ public final class DisplayRenderer implements Listener {
         int stopped = 0;
         if (players == null) {
             List<DisplayAnimation> animations = placed.model.animations;
+            boolean rooted = false;
             for (int i = 0; i < animations.size(); i++) {
                 if (animations.get(i).trigger == DisplayAnimation.Trigger.LOOP || placed.lastFrame[i] < 0 && placed.startedAt[i] < 0) {
                     continue;
@@ -562,9 +577,19 @@ public final class DisplayRenderer implements Listener {
                 if (placed.startedAt[i] >= 0) {
                     stopped++;
                 }
+                rooted |= animations.get(i).rooted && placed.lastFrame[i] >= 0;
                 placed.startedAt[i] = -1;
                 placed.lastFrame[i] = -1;
                 Object packet = placed.restPacket(this.nms, i);
+                for (Viewer viewer : placed.viewers) {
+                    if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        this.nms.send(viewer.player, packet);
+                    }
+                }
+            }
+            if (rooted && placed.model.hasCarrier() && !placed.viewers.isEmpty()) {
+                // the whole model goes back at once to where the loops have it, as the parts do
+                Object packet = placed.carrierMove(this.nms, placed.rootTarget(this.tick), 0, placed.carrierGlide, placed.carrierGlide);
                 for (Viewer viewer : placed.viewers) {
                     if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
                         this.nms.send(viewer.player, packet);
@@ -663,6 +688,23 @@ public final class DisplayRenderer implements Listener {
                 this.nms.send(viewer.player, placed.restPacket(this.nms, play.animation));
             }
             catchUp(viewer, placed, true);
+            if (play.rootMoved && placed.model.hasCarrier()) {
+                rejoinCarrier(viewer, placed, play);
+            }
+        }
+    }
+
+    /**
+     * Takes the whole model back, gliding, to where the others see it, for a player an animation that moved it was
+     * played for, and gives his client the glide the others have.
+     */
+    private void rejoinCarrier(Viewer viewer, PlacedDisplay placed, PrivatePlay play) {
+        org.joml.Vector3f target = placed.rootTarget(this.tick);
+        boolean there = java.util.Objects.equals(target, play.rootTarget) || target == null && play.rootTarget != null && play.rootTarget.lengthSquared() < 1.0E-12f;
+        if (!there) {
+            this.nms.send(viewer.player, placed.carrierMove(this.nms, target, REJOIN_TICKS, play.carrierGlide, placed.carrierGlide));
+        } else if (placed.carrierGlide >= 0 && play.carrierGlide != placed.carrierGlide) {
+            this.nms.send(viewer.player, this.nms.dataPacket(placed.carrierId, this.nms.teleportDurationValues(placed.carrierGlide)));
         }
     }
 
@@ -796,8 +838,8 @@ public final class DisplayRenderer implements Listener {
      */
     private Object glidePacket(PlacedDisplay placed) {
         List<?> values = this.nms.teleportDurationValues(GLIDE_TICKS);
-        List<Object> packets = new ArrayList<>(placed.entityIds.length);
-        for (int id : placed.entityIds) {
+        List<Object> packets = new ArrayList<>(placed.allIds.length);
+        for (int id : placed.allIds) {
             packets.add(this.nms.dataPacket(id, values));
         }
         return this.nms.bundle(packets);
@@ -815,6 +857,17 @@ public final class DisplayRenderer implements Listener {
             Object packet = glidePacket(placed);
             for (Viewer viewer : placed.viewers) {
                 this.nms.send(viewer.player, packet);
+            }
+        }
+        if (placed.carrierId >= 0) {
+            // every client now has this glide for the carrier: the next frame moving the whole model gives its own
+            placed.carrierGlide = GLIDE_TICKS;
+            for (List<PrivatePlay> plays : this.privatePlays.values()) {
+                for (PrivatePlay play : plays) {
+                    if (play.placed == placed) {
+                        play.carrierGlide = GLIDE_TICKS;
+                    }
+                }
             }
         }
     }
@@ -836,10 +889,20 @@ public final class DisplayRenderer implements Listener {
             return;
         }
         List<DisplayModel.Element> elements = placed.model.elements;
-        List<Object> packets = new ArrayList<>(elements.size() * 2);
+        List<Object> packets = new ArrayList<>(elements.size() * 2 + 1);
+        double[] carrier = null;
+        if (placed.carrierId >= 0) {
+            // the parts riding it follow; they are still teleported for the way they are turned
+            carrier = placed.carrierAt(placed.rootTarget(this.tick));
+            packets.add(this.nms.teleportPacket(placed.carrierId, carrier[0], carrier[1], carrier[2], (float) carrier[3], (float) carrier[4]));
+        }
         for (int i = 0; i < elements.size(); i++) {
             double[] pose = placed.pose(elements.get(i).pitch());
-            packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1] - placed.sink(i), pose[2], (float) pose[3], (float) pose[4]));
+            if (carrier != null && placed.model.carried(i)) {
+                packets.add(this.nms.teleportPacket(placed.entityIds[i], carrier[0], carrier[1], carrier[2], (float) pose[3], (float) pose[4]));
+            } else {
+                packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1] - placed.sink(i), pose[2], (float) pose[3], (float) pose[4]));
+            }
             if ((resized || elements.get(i).sink() > 0) && this.nms.canAnimate()) {
                 // each part goes to its resting pose, multiplied by the new size, raised as much as it stands lower
                 // than the block; a loop corrects it at its next frame
@@ -1426,8 +1489,8 @@ public final class DisplayRenderer implements Listener {
         }
         List<String> problems = new ArrayList<>();
         try {
-            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), lookAt(name), viewDistance(name),
-                    viewHeight(name, "display.view-above"), viewHeight(name, "display.view-below"), visibleIf(name, problems), problems);
+            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), lookAt(name), section(name, "root-motion"),
+                    viewDistance(name), viewHeight(name, "display.view-above"), viewHeight(name, "display.view-below"), visibleIf(name, problems), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
                 this.plugin.getLogger().log(Level.WARNING, "Could not read the display entities of the custom block " + name, e);
@@ -1554,13 +1617,16 @@ public final class DisplayRenderer implements Listener {
      */
     @Nullable
     private ConfigurationSection lookAt(String name) {
-        if (this.nms.canAnimate()) {
-            CustomBlockConfigurationFile file = file(name);
-            if (file != null && file.get("look-at") instanceof ConfigurationSection section) {
-                return section;
-            }
-        }
-        return null;
+        return this.nms.canAnimate() ? section(name, "look-at") : null;
+    }
+
+    /**
+     * A section of the file of a custom block, if it has it.
+     */
+    @Nullable
+    private ConfigurationSection section(String name, String path) {
+        CustomBlockConfigurationFile file = file(name);
+        return file != null && file.get(path) instanceof ConfigurationSection section ? section : null;
     }
 
     // ---------- Lighter animations ----------
@@ -1788,8 +1854,8 @@ public final class DisplayRenderer implements Listener {
      * (a reload, a chunk read again), are removed first: the client may still draw them.
      */
     private void sending(Viewer viewer, PlacedDisplay placed) {
-        int[] before = viewer.sent.computeIfAbsent(placed.world.getUID(), k -> new HashMap<>()).put(blockKey(placed), placed.entityIds);
-        if (before != null && before != placed.entityIds) {
+        int[] before = viewer.sent.computeIfAbsent(placed.world.getUID(), k -> new HashMap<>()).put(blockKey(placed), placed.allIds);
+        if (before != null && before != placed.allIds) {
             this.nms.send(viewer.player, this.nms.removePacket(before));
         }
     }
@@ -1800,7 +1866,7 @@ public final class DisplayRenderer implements Listener {
     private static void unsent(Viewer viewer, PlacedDisplay placed) {
         Map<Long, int[]> blocks = viewer.sent.get(placed.world.getUID());
         if (blocks != null) {
-            blocks.remove(blockKey(placed), placed.entityIds);
+            blocks.remove(blockKey(placed), placed.allIds);
         }
     }
 
@@ -2021,11 +2087,20 @@ public final class DisplayRenderer implements Listener {
             hitbox(viewer.player, placed, true);
         }
         sending(viewer, placed);
-        this.nms.send(viewer.player, placed.spawnPacket(this.nms));
+        PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(viewer.player.getUniqueId(), placed);
+        if (placed.model.hasCarrier()) {
+            // the whole model where the frames he gets have taken it: those played for him alone, or those of everyone
+            int glide = placed.carrierGlide >= 0 ? placed.carrierGlide : placed.model.carrierGlide;
+            this.nms.send(viewer.player, placed.spawnPacket(this.nms, own != null && own.rootMoved ? own.rootTarget : placed.rootTarget(this.tick), glide));
+            if (own != null) {
+                own.carrierGlide = glide;
+            }
+        } else {
+            this.nms.send(viewer.player, placed.spawnPacket(this.nms));
+        }
         if (placed.gliding) {
             this.nms.send(viewer.player, glidePacket(placed));
         }
-        PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(viewer.player.getUniqueId(), placed);
         if (own != null) {
             // where the animation played for this player has taken the block
             if (own.lastFrame >= 0) {
@@ -2204,7 +2279,7 @@ public final class DisplayRenderer implements Listener {
                 // he has not moved since he was last turned to
                 return;
             }
-            double[] centre = placed.lookCentre();
+            double[] centre = placed.model.hasCarrier() ? placed.lookCentre(this.tick, this.centre) : placed.lookCentre();
             double dx = px - centre[0];
             double dy = py + eyes - centre[1];
             double dz = pz - centre[2];
@@ -2383,6 +2458,15 @@ public final class DisplayRenderer implements Listener {
                                 this.nms.send(viewer.player, packet);
                             }
                             DisplayAnimation.Frame played = animation.frames[frame];
+                            if (played.root() != null && play.placed.carrierId >= 0) {
+                                if (sees) {
+                                    boolean withGlide = play.carrierGlide != played.over();
+                                    this.nms.send(viewer.player, play.placed.rootFramePacket(this.nms, play.animation, frame, withGlide));
+                                    play.carrierGlide = played.over();
+                                }
+                                play.rootMoved = true;
+                                play.rootTarget = played.root();
+                            }
                             if (hears && played.sound() != null) {
                                 player.playSound(play.placed.base(), played.sound(), played.volume(), played.pitch());
                             }
@@ -2450,10 +2534,34 @@ public final class DisplayRenderer implements Listener {
                 }
             }
             DisplayAnimation.Frame played = animation.frames[frame];
+            if (played.root() != null && placed.carrierId >= 0 && !placed.viewers.isEmpty()) {
+                moveCarrier(placed, index, frame, played);
+            }
             if (played.sound() != null) {
                 playSound(placed, animation, played.sound(), played.volume(), played.pitch());
             }
             placed.lastFrame[index] = frame;
+        }
+    }
+
+    /**
+     * Sends the players who see a block the teleport of its carrier a frame moving the whole model makes, with the
+     * glide of the frame only when they do not all have it already.
+     */
+    private void moveCarrier(PlacedDisplay placed, int index, int frame, DisplayAnimation.Frame played) {
+        boolean withGlide = placed.carrierGlide != played.over();
+        Object packet = placed.rootFramePacket(this.nms, index, frame, withGlide);
+        boolean skipped = false;
+        for (Viewer viewer : placed.viewers) {
+            if (!placed.privateFor.isEmpty() && placed.privateFor.contains(viewer.player.getUniqueId())) {
+                skipped = true;
+                continue;
+            }
+            this.nms.send(viewer.player, packet);
+        }
+        if (withGlide) {
+            // those left out keep the glide they had
+            placed.carrierGlide = skipped ? -1 : played.over();
         }
     }
 
@@ -2573,13 +2681,13 @@ public final class DisplayRenderer implements Listener {
         if (leaving != null) {
             int count = 0;
             for (PlacedDisplay placed : leaving) {
-                count += placed.entityIds.length;
+                count += placed.allIds.length;
             }
             int[] ids = new int[count];
             int offset = 0;
             for (PlacedDisplay placed : leaving) {
-                System.arraycopy(placed.entityIds, 0, ids, offset, placed.entityIds.length);
-                offset += placed.entityIds.length;
+                System.arraycopy(placed.allIds, 0, ids, offset, placed.allIds.length);
+                offset += placed.allIds.length;
             }
             this.nms.send(player, this.nms.removePacket(ids));
         }
