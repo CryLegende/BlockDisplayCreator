@@ -86,6 +86,12 @@ final class DisplayModel {
      * at the player again once it ends. Null without a {@code look-at}.
      */
     final boolean[] movesLook;
+    /**
+     * How many chunks away from the block a player may be and still be within the radius of its {@code look-at} or of
+     * one of its {@code approach} animations, with a chunk to spare for the players moving between two checks of
+     * where they are.
+     */
+    final int attentionChunks;
 
     static final int TRANSLATION = 1;
     static final int SCALE = 2;
@@ -99,6 +105,7 @@ final class DisplayModel {
         this.lookAt = lookAt;
         this.approaches = approaches(animations);
         this.movesLook = movesLook(animations, lookAt);
+        this.attentionChunks = attentionChunks(animations, this.approaches, lookAt);
         this.name = definition.getName();
         this.viewDistance = viewDistance;
         int everyWay = viewDistance > 0 ? viewDistance : -1;
@@ -147,6 +154,19 @@ final class DisplayModel {
         this.lookAt = model.lookAt;
         this.approaches = approaches(this.animations);
         this.movesLook = movesLook(this.animations, this.lookAt);
+        this.attentionChunks = attentionChunks(this.animations, this.approaches, this.lookAt);
+    }
+
+    private static int attentionChunks(List<DisplayAnimation> animations, int[] approaches, LookAt lookAt) {
+        double reach = 0;
+        for (int index : approaches) {
+            reach = Math.max(reach, animations.get(index).radius);
+        }
+        if (lookAt != null) {
+            // the pivot may stand to the side of the block: as far as the model is wide, and some more for its size
+            reach = Math.max(reach, lookAt.radius + 2 * Math.hypot(lookAt.pivot.x, lookAt.pivot.z));
+        }
+        return (int) Math.ceil((reach + 2) / 16) + 1;
     }
 
     private static int[] approaches(List<DisplayAnimation> animations) {

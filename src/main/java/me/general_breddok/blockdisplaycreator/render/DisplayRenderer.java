@@ -223,6 +223,16 @@ public final class DisplayRenderer implements Listener {
          * was shown of them. Null until he comes close to one.
          */
         Map<PlacedDisplay, Nearby> near;
+        /**
+         * Where the player stood at the tick {@link #readAt}, read once a tick for all the blocks close to him: the
+         * object his position is kept in (null where it cannot be read), its x, y, z, and the height of his eyes.
+         */
+        int readAt = -1;
+        Object position;
+        double x;
+        double y0;
+        double z;
+        double eyes;
 
         Viewer(Player player) {
             this.player = player;
@@ -2124,27 +2134,37 @@ public final class DisplayRenderer implements Listener {
     }
 
     private void attend(PlacedDisplay placed, Viewer viewer) {
+        DisplayModel model = placed.model;
+        Nearby near = viewer.near(placed);
+        if (near == null && (Math.abs(viewer.chunkX - placed.chunkX()) > model.attentionChunks || Math.abs(viewer.chunkZ - placed.chunkZ()) > model.attentionChunks)) {
+            // far from every radius, by the chunk he was in at the last check of where the players are
+            return;
+        }
         Player player = viewer.player;
         if (player.isDead() || player.getWorld() != placed.world) {
             // a dead player's client forgets the block when he respawns; one changing world, as he arrives
             return;
         }
-        Object position = this.nms.position(player);
-        double px;
-        double py;
-        double pz;
-        if (position != null) {
-            px = this.nms.coordinate(position, 0);
-            py = this.nms.coordinate(position, 1);
-            pz = this.nms.coordinate(position, 2);
-        } else {
-            player.getLocation(this.here);
-            px = this.here.getX();
-            py = this.here.getY();
-            pz = this.here.getZ();
+        if (viewer.readAt != this.tick) {
+            viewer.readAt = this.tick;
+            Object position = this.nms.position(player);
+            viewer.position = position;
+            if (position != null) {
+                viewer.x = this.nms.coordinate(position, 0);
+                viewer.y0 = this.nms.coordinate(position, 1);
+                viewer.z = this.nms.coordinate(position, 2);
+            } else {
+                player.getLocation(this.here);
+                viewer.x = this.here.getX();
+                viewer.y0 = this.here.getY();
+                viewer.z = this.here.getZ();
+            }
+            viewer.eyes = player.getEyeHeight();
         }
-        DisplayModel model = placed.model;
-        Nearby near = viewer.near(placed);
+        Object position = viewer.position;
+        double px = viewer.x;
+        double py = viewer.y0;
+        double pz = viewer.z;
 
         int[] approaches = model.approaches;
         if (approaches.length > 0) {
@@ -2175,7 +2195,7 @@ public final class DisplayRenderer implements Listener {
 
         LookAt lookAt = model.lookAt;
         if (lookAt != null) {
-            double eyes = player.getEyeHeight();
+            double eyes = viewer.eyes;
             if (near != null && near.looking && suspends(placed, viewer)) {
                 // an animation moving the parts goes first: from this tick on he gets its frames
                 near.looking = false;
