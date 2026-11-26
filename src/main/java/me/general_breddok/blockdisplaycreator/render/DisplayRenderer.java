@@ -630,7 +630,8 @@ public final class DisplayRenderer implements Listener {
         }
         List<String> names = new ArrayList<>();
         for (DisplayAnimation animation : placed.model.animations) {
-            names.add(animation.name + " (" + animation.trigger.name().toLowerCase(java.util.Locale.ROOT) + ", " + animation.duration + " ticks)");
+            names.add(animation.name + " (" + animation.trigger.name().toLowerCase(java.util.Locale.ROOT) + ", " + animation.duration + " ticks"
+                    + (animation.eased > 0 ? ", eased: " + animation.eased + " more frames" : "") + ")");
         }
         return Map.entry(placed.modelName, names);
     }

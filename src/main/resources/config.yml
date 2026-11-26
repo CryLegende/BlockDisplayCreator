@@ -21,6 +21,12 @@ packet-display: true
 #with optimise: false in its section.   By def true
 animation-optimisation: true
 
+#If set to true, the parts of custom blocks start and stop moving smoothly in the animations written with move, rotate and scale:
+#a frame of 6 ticks or more that starts from stillness eases in, one that ends in stillness eases out (three frames along the same
+#path instead of one). Frames in the middle of a motion (a windmill turning) and frames of 16 numbers (bdengine) stay as written.
+#An animation keeps its frames as written with ease: false in its section.   By def true
+animation-easing: true
+
 #If set to true, a custom block item given before its file changed gets the name and lore of the file back when its
 #owner joins and when a player opens a container block holding it (not in the menus of other plugins). A file whose
 #name or lore holds a placeholder is left out.   By def true

@@ -11,6 +11,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 
 /**
@@ -37,6 +38,8 @@ import java.util.TreeSet;
  *         root: [0, 0.06, 0]  # moves the whole model, one packet for all its parts (see root-motion in the file)
  *     optimise: false         # keeps every frame; by def the frames a client does not need are left out
  *     sound-range: 3          # blocks from which its sounds are heard; by def those of the game
+ *     ease: false             # its frames as written; by def (animation-easing in config.yml) a part that starts or
+ *                             # stops moving does so smoothly, see Easing
  *     distance: 16            # loop only: plays for the players within this many blocks of the block, the others
  *                             # see its parts at rest. By def for all who see the block
  *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
@@ -118,6 +121,20 @@ final class DisplayAnimation {
      */
     final double distance;
     /**
+     * Whether the starts and ends of its frames are eased ({@code ease}, by def {@code animation-easing} in
+     * config.yml): see {@link Easing}.
+     */
+    final boolean ease;
+    /**
+     * The frames read from 16 numbers (bdengine exports, already timed), which are never eased. Only kept until the
+     * animation is finished reading.
+     */
+    private final Set<Frame> absolute;
+    /**
+     * How many frames the easing added to it, 0 when it changed none.
+     */
+    int eased;
+    /**
      * Whether a frame of it moves the whole model ({@code root}).
      */
     final boolean rooted;
@@ -165,8 +182,10 @@ final class DisplayAnimation {
     }
 
     private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable,
-                             double soundRange, double radius, long cooldown, double distance) {
+                             double soundRange, double radius, long cooldown, double distance, boolean ease, Set<Frame> absolute) {
         this.distance = distance;
+        this.ease = ease;
+        this.absolute = absolute;
         this.name = name;
         this.optimisable = optimisable;
         this.soundRange = soundRange;
@@ -270,7 +289,56 @@ final class DisplayAnimation {
                 problems.add("animation " + name + ": " + (e instanceof IllegalArgumentException ? e.getMessage() : e.toString()));
             }
         }
+        // what the others move: a part a loop and another animation both move starts wherever the loop has it
+        java.util.Set<Integer> mixed = AnimationOptimizer.mixed(animations);
+        boolean rootMixed = animations.stream().anyMatch(a -> a.rooted && a.trigger == Trigger.LOOP)
+                && animations.stream().anyMatch(a -> a.rooted && a.trigger != Trigger.LOOP);
+        for (int i = 0; i < animations.size(); i++) {
+            DisplayAnimation animation = animations.get(i);
+            try {
+                animations.set(i, animation.finished(elements, nms, mixed, rootMixed, animation.ease));
+            } catch (RuntimeException | LinkageError e) {
+                // the easing must never cost an animation: it plays as written
+                problems.add("animation " + animation.name + ": could not be eased, it plays as written (" + e + ")");
+                try {
+                    animations.set(i, animation.finished(elements, nms, mixed, rootMixed, false));
+                } catch (RuntimeException | LinkageError again) {
+                    problems.add("animation " + animation.name + ": " + (again instanceof IllegalArgumentException ? again.getMessage() : again.toString()));
+                    animations.remove(i--);
+                }
+            }
+        }
         return animations;
+    }
+
+    /**
+     * The animation with the starts and ends of its frames eased (when it asks to be), then its frames moving the
+     * whole model over more than {@link #MAX_ROOT_OVER} ticks cut: itself when neither changes anything.
+     */
+    private DisplayAnimation finished(List<DisplayModel.Element> elements, NmsBridge nms, java.util.Set<Integer> mixed, boolean rootMixed, boolean ease) {
+        List<Frame> frames = java.util.Arrays.asList(this.frames);
+        List<Frame> eased = ease ? Easing.ease(frames, this.trigger == Trigger.LOOP, this.duration, elements, this.absolute, mixed, rootMixed, nms) : frames;
+        List<Frame> done = withShortRootFrames(eased, this.trigger == Trigger.LOOP);
+        if (done == frames) {
+            return this;
+        }
+        DisplayAnimation finished = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, done.toArray(Frame[]::new), this.notes,
+                this.optimisable, this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
+        finished.eased = eased.size() - frames.size();
+        return finished;
+    }
+
+    /**
+     * The {@code ease} of an animation: true or false, by def {@code animation-easing} in config.yml.
+     */
+    private static boolean ease(Object value) {
+        if (value == null) {
+            return me.general_breddok.blockdisplaycreator.file.config.value.BooleanConfigValue.ANIMATION_EASING;
+        }
+        if (value instanceof Boolean ease) {
+            return ease;
+        }
+        throw new IllegalArgumentException("ease must be true or false, not " + value);
     }
 
     private static DisplayAnimation read(String name, ConfigurationSection section, List<DisplayModel.Element> elements, NmsBridge nms) {
@@ -297,6 +365,7 @@ final class DisplayAnimation {
         float scale = me.general_breddok.blockdisplaycreator.file.config.loader.CustomBlockYamlFile.modelScale(
                 section.getRoot() == null ? null : section.getRoot().get("scale"));
         List<Frame> frames = new ArrayList<>();
+        Set<Frame> absolute = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         int end = 1;
         for (Map<?, ?> entry : entries) {
             int at = Math.max(0, number(entry.get("at"), 0).intValue());
@@ -329,11 +398,13 @@ final class DisplayAnimation {
                 jumping[i] = pose.jumping();
                 targets[i] = pose.target();
             }
-            frames.add(new Frame(at, over, parts, moving, jumping, targets, soundName, volume, pitch, null));
+            Frame frame = new Frame(at, over, parts, moving, jumping, targets, soundName, volume, pitch, null);
+            if (entry.get("transformation") != null) {
+                absolute.add(frame);
+            }
+            frames.add(frame);
         }
         frames.sort(Comparator.comparingInt(Frame::at));
-        boolean loop = trigger == Trigger.LOOP;
-        frames = withShortRootFrames(frames, loop);
         List<Note> notes = new ArrayList<>();
         for (Map<?, ?> entry : section.getMapList("sounds")) {
             if (entry.get("sound") == null) {
@@ -348,7 +419,8 @@ final class DisplayAnimation {
             duration = Math.max(duration, note.at() + 1);
         }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
-                section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown, loopDistance(trigger, section.get("distance")));
+                section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown, loopDistance(trigger, section.get("distance")),
+                ease(section.get("ease")), absolute);
     }
 
     /**
@@ -462,8 +534,10 @@ final class DisplayAnimation {
             out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch(), frame.root());
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
-        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable, this.soundRange,
-                this.radius, this.cooldown, this.distance);
+        DisplayAnimation lighter = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable,
+                this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
+        lighter.eased = this.eased;
+        return lighter;
     }
 
     /**
@@ -479,7 +553,7 @@ final class DisplayAnimation {
             kept = new Frame[]{new Frame(0, 0, new int[0], new List<?>[0], new List<?>[0], new Transformation[0], null, 1f, 1f, null)};
         }
         return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, kept, this.notes, this.optimisable, this.soundRange,
-                this.radius, this.cooldown, this.distance);
+                this.radius, this.cooldown, this.distance, this.ease, Set.of());
     }
 
     /**
