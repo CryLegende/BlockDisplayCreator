@@ -93,6 +93,24 @@ final class PlacedDisplay {
      */
     boolean attentive;
     /**
+     * Whether an animation everyone sees takes the parts of the {@code look-at} away from the players: worked out for
+     * all of them when {@code publicStamp} (counted up whenever such an animation starts or ends, or the model changes)
+     * is no longer {@code publicChecked}, or at the tick {@code publicRecheckAt} one gets to its first tick.
+     */
+    int publicStamp;
+    int publicChecked = -1;
+    int publicRecheckAt = Integer.MAX_VALUE;
+    boolean suspending;
+    /**
+     * Whether an animation played for one of the players who see the block takes the parts of its {@code look-at}
+     * from him: worked out when {@code privateStamp} (counted up whenever such an animation starts or ends, or the model
+     * changes) is no longer {@code privateChecked}, or at the tick {@code privateRecheckAt} one waiting to start does.
+     */
+    int privateStamp;
+    int privateChecked = -1;
+    int privateRecheckAt = Integer.MAX_VALUE;
+    boolean privateSuspending;
+    /**
      * Where the pivot of the model's {@code look-at} stands in the world, and the rotation that takes a direction of
      * the world into the model: worked out again once the block is moved. Null until needed.
      */
@@ -202,6 +220,8 @@ final class PlacedDisplay {
         this.lookCentre = null;
         this.lookBack = null;
         this.lowered = null;
+        this.publicStamp++;
+        this.privateStamp++;
         // the animations may be others, in another order
         this.approached = null;
     }
@@ -225,6 +245,8 @@ final class PlacedDisplay {
         }
         this.model = model;
         this.lowered = null;
+        this.publicStamp++;
+        this.privateStamp++;
         this.framePackets = new Object[model.animations.size()][];
         this.unturnedFramePackets = new Object[model.animations.size()][];
         this.restPackets = new Object[model.animations.size()];
@@ -1064,10 +1086,24 @@ final class PlacedDisplay {
                 duration = ticks;
             }
             org.bukkit.util.Transformation pose = lookAt.turned(base, turn);
-            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), duration);
-            parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, values), this.model.varying[part])));
+            parts.add(nms.dataPacket(this.entityIds[part], lookValues(nms, part, pose, duration)));
         }
         return nms.bundle(parts);
+    }
+
+    /**
+     * The synced values that take a part of the model's {@code look-at} to a pose over some ticks, with only the fields
+     * some pose of it changes: made so at once when nothing changes them on their way to the client (the block keeps
+     * its size, the part is neither lowered for its culling box nor lowered on a lifted carrier), the usual case.
+     */
+    private List<?> lookValues(NmsBridge nms, int part, org.bukkit.util.Transformation pose, int ticks) {
+        int varying = this.model.varying[part];
+        DisplayModel.Element element = this.model.elements.get(part);
+        if (scale() == 1 && !(element.sink() > 0 && upright(element)) && !(this.model.lift > 0 && this.model.carried(part))) {
+            return nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), ticks, varying);
+        }
+        List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), ticks);
+        return nms.varyingValues(sent(nms, part, values), varying);
     }
 
     /**
@@ -1107,8 +1143,7 @@ final class PlacedDisplay {
             }
             int part = lookAt.parts[p];
             org.bukkit.util.Transformation pose = lookAt.turned(target, turn);
-            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), from.ticks()[p]);
-            parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, values), this.model.varying[part])));
+            parts.add(nms.dataPacket(this.entityIds[part], lookValues(nms, part, pose, from.ticks()[p])));
         }
         return parts == null ? null : nms.bundle(parts);
     }
@@ -1142,8 +1177,7 @@ final class PlacedDisplay {
                 parts = new ArrayList<>(lookAt.parts.length);
             }
             org.bukkit.util.Transformation pose = lookAt.turned(target, turn);
-            List<?> values = nms.poseValues(pose.getTranslation(), pose.getLeftRotation(), pose.getScale(), pose.getRightRotation(), played.over());
-            parts.add(nms.dataPacket(this.entityIds[part], nms.varyingValues(sent(nms, part, values), this.model.varying[part])));
+            parts.add(nms.dataPacket(this.entityIds[part], lookValues(nms, part, pose, played.over())));
         }
         return parts == null ? null : nms.bundle(parts);
     }

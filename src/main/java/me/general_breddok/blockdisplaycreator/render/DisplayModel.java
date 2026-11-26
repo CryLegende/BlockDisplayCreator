@@ -150,6 +150,11 @@ final class DisplayModel {
      * Among them, those that move the whole model.
      */
     final long distanceRooted;
+    /**
+     * The farthest its frames take the whole model from where it stands (root), in its axes at size 1: how much further
+     * than the radius of its {@code look-at} a player may stand from its pivot at rest and still be within it.
+     */
+    final float rootReach;
 
     /**
      * How many blocks further than its {@code distance} a player has to go before a loop stops playing for him: one
@@ -186,6 +191,7 @@ final class DisplayModel {
         this.attentionChunks = attentionChunks(animations, this.approaches, lookAt);
         this.distanceLoops = distanceLoops(animations, false);
         this.distanceRooted = distanceLoops(animations, true);
+        this.rootReach = rootReach(animations);
         this.name = definition.getName();
         this.viewDistance = viewDistance;
         int everyWay = viewDistance > 0 ? viewDistance : -1;
@@ -250,7 +256,20 @@ final class DisplayModel {
         this.carrierType = model.carrierType;
         this.carrierGlide = model.carrierGlide;
         this.lift = model.lift;
+        this.rootReach = model.rootReach;
         this.spin = model.spin;
+    }
+
+    private static float rootReach(List<DisplayAnimation> animations) {
+        float reach = 0f;
+        for (DisplayAnimation animation : animations) {
+            for (DisplayAnimation.Frame frame : animation.frames) {
+                if (frame.root() != null) {
+                    reach = Math.max(reach, frame.root().length());
+                }
+            }
+        }
+        return reach;
     }
 
     private static int carrierGlide(List<DisplayAnimation> animations) {

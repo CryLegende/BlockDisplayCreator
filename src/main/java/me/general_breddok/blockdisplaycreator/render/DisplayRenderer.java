@@ -96,6 +96,10 @@ public final class DisplayRenderer implements Listener {
      */
     private static final int REJOIN_TICKS = 8;
     /**
+     * Ticks between two reads of whether a player who does not move is dead and of his world (see readPlace).
+     */
+    private static final int FULL_READ_TICKS = 20;
+    /**
      * Ticks between two checks of the {@code display.visible-if} of the blocks around each player.
      */
     private static final int VISIBILITY_PERIOD = 20;
@@ -177,6 +181,10 @@ public final class DisplayRenderer implements Listener {
      * Where a player's position is read into on a server where it cannot be read directly.
      */
     private final Location here = new Location(null, 0, 0, 0);
+    /**
+     * Where a player's place is read into for what he is shown (not shared with the other reads, done meanwhile).
+     */
+    private final Location placeHere = new Location(null, 0, 0, 0);
     private final org.joml.Vector3d direction = new org.joml.Vector3d();
     private final double[] centre = new double[3];
     /**
@@ -239,15 +247,30 @@ public final class DisplayRenderer implements Listener {
          */
         Map<PlacedDisplay, Nearby> near;
         /**
-         * Where the player stood at the tick {@link #readAt}, read once a tick for all the blocks close to him: the
-         * object his position is kept in (null where it cannot be read), its x, y, z, and the height of his eyes.
+         * Where the player stood at the tick {@link #readAt}, read once a tick for all the blocks close to him: how many
+         * times his place changed since he came, the object the server keeps his position in (null where it cannot be
+         * read), his x, y, z, and the height of his eyes.
          */
         int readAt = -1;
+        int moves;
         Object position;
         double x;
         double y0;
         double z;
         double eyes;
+        /**
+         * Whether he is dead and the world he is in, read again with his coordinates (see readPlace) at the tick
+         * {@code fullReadAt}.
+         */
+        boolean dead;
+        World world0;
+        int fullReadAt = -1;
+        /**
+         * The block {@link #near(PlacedDisplay)} was last asked about, and its answer: a player close to one block
+         * finds it without the map.
+         */
+        private PlacedDisplay lastPlaced;
+        private Nearby lastNear;
 
         Viewer(Player player) {
             this.player = player;
@@ -255,7 +278,24 @@ public final class DisplayRenderer implements Listener {
 
         @Nullable
         Nearby near(PlacedDisplay placed) {
-            return this.near == null ? null : this.near.get(placed);
+            if (placed == this.lastPlaced) {
+                return this.lastNear;
+            }
+            Nearby near = this.near == null ? null : this.near.get(placed);
+            this.lastPlaced = placed;
+            this.lastNear = near;
+            return near;
+        }
+
+        /**
+         * What he was shown close by is forgotten for every block, as he is read afresh (a respawn, a world change).
+         */
+        void forgetAllNear() {
+            this.near = null;
+            this.lastPlaced = null;
+            this.lastNear = null;
+            this.position = null;
+            this.fullReadAt = -1;
         }
 
         /**
@@ -274,6 +314,9 @@ public final class DisplayRenderer implements Listener {
         void forgetNear(PlacedDisplay placed) {
             if (this.near != null) {
                 this.near.remove(placed);
+            }
+            if (placed == this.lastPlaced) {
+                this.lastNear = null;
             }
         }
     }
@@ -305,10 +348,10 @@ public final class DisplayRenderer implements Listener {
          */
         int resumeAt = -1;
         /**
-         * Where he stood (the object his position is kept in) and how high his eyes were the last time nothing was
+         * Where he stood (how many times his place had changed) and how high his eyes were the last time nothing was
          * left to send him: while they stay the same, nothing is worked out again.
          */
-        Object settledAt;
+        int settledMoves = -1;
         double settledEyes = Double.NaN;
         /**
          * For each {@code approach} animation of the model (bit i for the i-th), whether he is within its radius.
@@ -549,6 +592,7 @@ public final class DisplayRenderer implements Listener {
         if (players == null) {
             // its first frame goes out with the next tick, over what it was playing
             placed.startedAt[index] = this.tick + 1;
+            placed.publicStamp++;
             this.playing.add(placed);
             return PlayResult.PLAYED;
         }
@@ -626,6 +670,8 @@ public final class DisplayRenderer implements Listener {
         }
         plays.add(play);
         placed.privateFor.add(id);
+        // whether it takes the parts of the look-at from him is worked out again (see suspends)
+        placed.privateStamp++;
     }
 
     /**
@@ -667,6 +713,7 @@ public final class DisplayRenderer implements Listener {
                 }
                 rooted |= animations.get(i).rooted && placed.lastFrame[i] >= 0;
                 placed.startedAt[i] = -1;
+                placed.publicStamp++;
                 placed.lastFrame[i] = -1;
                 Object packet = placed.restPacket(this.nms, i);
                 for (Viewer viewer : placed.viewers) {
@@ -793,6 +840,7 @@ public final class DisplayRenderer implements Listener {
     private void end(UUID id, PrivatePlay play, boolean glide) {
         PlacedDisplay placed = play.placed;
         placed.privateFor.remove(id);
+        placed.privateStamp++;
         Viewer viewer = this.viewers.get(id);
         if (viewer != null && viewer.player.isOnline() && viewer.shown.contains(placed)) {
             if (placed.model.conditional() && !visibleTo(viewer.player, placed)) {
@@ -890,6 +938,7 @@ public final class DisplayRenderer implements Listener {
             }
         }
         placed.privateFor.clear();
+        placed.privateStamp++;
     }
 
     /**
@@ -903,6 +952,7 @@ public final class DisplayRenderer implements Listener {
                     && (animation.interaction == null || animation.interaction.equalsIgnoreCase(interaction))) {
                 // its first frame goes out with the next tick
                 placed.startedAt[i] = this.tick + 1;
+                placed.publicStamp++;
                 this.playing.add(placed);
             }
         }
@@ -1609,7 +1659,7 @@ public final class DisplayRenderer implements Listener {
             if (near != null) {
                 // the direction of the player from the block changed: worked out again at the next tick, and the
                 // parts sent their rest pose again are turned back towards him
-                near.settledAt = null;
+                near.settledMoves = -1;
                 if (rested) {
                     near.looking = false;
                 }
@@ -1842,7 +1892,10 @@ public final class DisplayRenderer implements Listener {
         this.playing.clear();
         // the blocks are read again and get new entity ids: what was played for players is dropped
         for (List<PrivatePlay> plays : this.privatePlays.values()) {
-            plays.forEach(play -> play.placed.privateFor.clear());
+            plays.forEach(play -> {
+                play.placed.privateFor.clear();
+                play.placed.privateStamp++;
+            });
         }
         this.privatePlays.clear();
 
@@ -2050,7 +2103,10 @@ public final class DisplayRenderer implements Listener {
             }
             List<PrivatePlay> plays = this.privatePlays.remove(id);
             if (plays != null) {
-                plays.forEach(play -> play.placed.privateFor.remove(id));
+                plays.forEach(play -> {
+                    play.placed.privateFor.remove(id);
+                    play.placed.privateStamp++;
+                });
             }
         }
     }
@@ -2114,7 +2170,10 @@ public final class DisplayRenderer implements Listener {
         this.tick++;
         // before the frames: a frame that moves the parts turned towards a player goes to him from its first tick
         attend();
+        long animating = System.nanoTime();
         animate();
+        long animated = System.nanoTime();
+        this.animateNanos += animated - animating;
         if (this.tick % MODEL_RETRY_PERIOD == 0 && !this.retryChunks.isEmpty()) {
             this.tasks.addAll(this.retryChunks);
             this.retryChunks.clear();
@@ -2123,6 +2182,7 @@ public final class DisplayRenderer implements Listener {
             for (Player player : Bukkit.getOnlinePlayers()) {
                 update(player);
             }
+            this.placesNanos += System.nanoTime() - animated;
         }
         if (this.anyConditional && this.tick % VISIBILITY_PERIOD == 0) {
             recheck();
@@ -3203,25 +3263,36 @@ public final class DisplayRenderer implements Listener {
     private long tickNanos;
     private long tickMost;
     private long tickCount;
+    /**
+     * Of that work, the frames played (animations and spins) and the looks at where the players are, every few ticks.
+     */
+    private long animateNanos;
+    private long placesNanos;
 
     /**
      * The cost of the pass over the players close to the blocks with a look-at, an approach animation or a loop with
      * a distance, since this was last asked (then counted afresh): microseconds a tick, pairs a tick, nanoseconds a
-     * pair; then the whole work of the renderer a tick, and the models shown for other plugins.
+     * pair; then the whole work of the renderer a tick, and the models shown for other plugins; then, of that work,
+     * the frames played, the looks at where the players are, and the packets sent, a tick.
      */
     public synchronized String attendStats() {
         long ticks = Math.max(1, this.attendTicks);
+        long all = Math.max(1, this.tickCount);
         String text = String.format(java.util.Locale.ROOT, "%d ticks: %.1f µs a tick, %.1f (player, block) pairs a tick, %.0f ns a pair;"
-                        + " all of the renderer %.1f µs a tick over %d ticks (longest %.1f); %d model(s) shown for other plugins",
+                        + " all of the renderer %.1f µs a tick over %d ticks (longest %.1f); %d model(s) shown for other plugins;"
+                        + " frames %.1f µs a tick, players' places %.1f µs a tick, %.1f packets a tick",
                 this.attendTicks, this.attendNanos / 1000.0 / ticks, this.attendPairs / (double) ticks,
                 this.attendPairs == 0 ? 0.0 : this.attendNanos / (double) this.attendPairs,
-                this.tickNanos / 1000.0 / Math.max(1, this.tickCount), this.tickCount, this.tickMost / 1000.0, shownCount());
+                this.tickNanos / 1000.0 / all, this.tickCount, this.tickMost / 1000.0, shownCount(),
+                this.animateNanos / 1000.0 / all, this.placesNanos / 1000.0 / all, this.nms.takeSent() / (double) all);
         this.attendNanos = 0;
         this.attendTicks = 0;
         this.attendPairs = 0;
         this.tickNanos = 0;
         this.tickMost = 0;
         this.tickCount = 0;
+        this.animateNanos = 0;
+        this.placesNanos = 0;
         return text;
     }
 
@@ -3233,27 +3304,24 @@ public final class DisplayRenderer implements Listener {
             return;
         }
         Player player = viewer.player;
-        if (player.isDead() || player.getWorld() != placed.world) {
+        if (viewer.readAt != this.tick) {
+            readPlace(viewer);
+        }
+        if (viewer.dead || viewer.world0 != placed.world) {
             // a dead player's client forgets the block when he respawns; one changing world, as he arrives
             return;
         }
-        if (viewer.readAt != this.tick) {
-            viewer.readAt = this.tick;
-            Object position = this.nms.position(player);
-            viewer.position = position;
-            if (position != null) {
-                viewer.x = this.nms.coordinate(position, 0);
-                viewer.y0 = this.nms.coordinate(position, 1);
-                viewer.z = this.nms.coordinate(position, 2);
-            } else {
-                player.getLocation(this.here);
-                viewer.x = this.here.getX();
-                viewer.y0 = this.here.getY();
-                viewer.z = this.here.getZ();
+        int moves = viewer.moves;
+        LookAt lookAt = model.lookAt;
+        if (lookAt != null && near != null && near.looking && moves == near.settledMoves && viewer.eyes == near.settledEyes) {
+            // he has not moved since he was last turned to: neither the radii he is within nor the way he is looked at
+            // change; only an animation taking the parts from him, or the rest of a slow frame
+            if (!suspends(placed, viewer)) {
+                resume(placed, viewer, near);
+                return;
             }
-            viewer.eyes = player.getEyeHeight();
+            near.looking = false;
         }
-        Object position = viewer.position;
         double px = viewer.x;
         double py = viewer.y0;
         double pz = viewer.z;
@@ -3313,24 +3381,40 @@ public final class DisplayRenderer implements Listener {
             }
         }
 
-        LookAt lookAt = model.lookAt;
         if (lookAt != null) {
             double eyes = viewer.eyes;
             if (near != null && near.looking && suspends(placed, viewer)) {
                 // an animation moving the parts goes first: from this tick on he gets its frames
                 near.looking = false;
             }
-            if (near != null && near.looking && position != null && position == near.settledAt && eyes == near.settledEyes) {
+            if (near != null && near.looking && moves == near.settledMoves && eyes == near.settledEyes) {
                 // he has not moved since he was last turned to; a slow frame goes on once the turn is done
                 resume(placed, viewer, near);
                 return;
             }
-            double[] centre = placed.model.hasCarrier() ? placed.lookCentre(this.tick, skipLoops(viewer, placed), this.centre) : placed.lookCentre();
+            boolean was = near != null && near.gazing;
+            double reach = was ? lookAt.radius + LEEWAY : lookAt.radius;
+            double[] centre = placed.lookCentre();
+            if (placed.model.hasCarrier()) {
+                if (!was) {
+                    // farther from the pivot at rest than the radius however far the frames take the whole model: he is
+                    // not within it, and where they have it now need not be worked out (most players who see it)
+                    double far = reach + placed.model.rootReach * placed.scale();
+                    double sx = px - centre[0];
+                    double sy = py + eyes - centre[1];
+                    double sz = pz - centre[2];
+                    if (sx * sx + sy * sy + sz * sz > far * far) {
+                        if (near != null && near.idle()) {
+                            viewer.forgetNear(placed);
+                        }
+                        return;
+                    }
+                }
+                centre = placed.lookCentre(this.tick, skipLoops(viewer, placed), this.centre);
+            }
             double dx = px - centre[0];
             double dy = py + eyes - centre[1];
             double dz = pz - centre[2];
-            boolean was = near != null && near.gazing;
-            double reach = was ? lookAt.radius + LEEWAY : lookAt.radius;
             if (dx * dx + dy * dy + dz * dz > reach * reach) {
                 if (was) {
                     near.gazing = false;
@@ -3348,13 +3432,52 @@ public final class DisplayRenderer implements Listener {
                     near = nearby(viewer, placed);
                 }
                 near.gazing = true;
-                gaze(placed, viewer, near, lookAt, position, eyes, dx, dy, dz);
+                gaze(placed, viewer, near, lookAt, moves, eyes, dx, dy, dz);
                 resume(placed, viewer, near);
             }
         }
         if (near != null && near.idle()) {
             viewer.forgetNear(placed);
         }
+    }
+
+    /**
+     * Reads, once a tick, what the pass over the blocks close to a player needs of him: where he stands (a change
+     * counted, for the blocks to tell whether he moved since they last looked at him), how high his eyes are, whether
+     * he is dead and his world. Only the object the server keeps his position in is looked at while it stays the same
+     * (it makes a new one whenever he moves): the rest is read again when it changes, and once a second (a player
+     * killed or sent to another world where he stood; a respawn or a world change reads him afresh anyway).
+     */
+    private void readPlace(Viewer viewer) {
+        Player player = viewer.player;
+        viewer.readAt = this.tick;
+        Object position = this.nms.position(player);
+        if (position == null || position != viewer.position || this.tick - viewer.fullReadAt >= FULL_READ_TICKS) {
+            viewer.position = position;
+            viewer.fullReadAt = this.tick;
+            viewer.dead = player.isDead();
+            viewer.world0 = player.getWorld();
+            double x;
+            double y;
+            double z;
+            if (position == null) {
+                Location at = player.getLocation(this.here);
+                x = at.getX();
+                y = at.getY();
+                z = at.getZ();
+            } else {
+                x = this.nms.coordinate(position, 0);
+                y = this.nms.coordinate(position, 1);
+                z = this.nms.coordinate(position, 2);
+            }
+            if (x != viewer.x || y != viewer.y0 || z != viewer.z) {
+                viewer.x = x;
+                viewer.y0 = y;
+                viewer.z = z;
+                viewer.moves++;
+            }
+        }
+        viewer.eyes = player.getEyeHeight();
     }
 
     /**
@@ -3416,10 +3539,17 @@ public final class DisplayRenderer implements Listener {
     }
 
     private static Nearby nearby(Viewer viewer, PlacedDisplay placed) {
-        if (viewer.near == null) {
-            viewer.near = new HashMap<>(4);
+        Nearby near = viewer.near(placed);
+        if (near == null) {
+            if (viewer.near == null) {
+                viewer.near = new HashMap<>(4);
+            }
+            near = new Nearby();
+            viewer.near.put(placed, near);
+            viewer.lastPlaced = placed;
+            viewer.lastNear = near;
         }
-        return viewer.near.computeIfAbsent(placed, k -> new Nearby());
+        return near;
     }
 
     /**
@@ -3431,7 +3561,7 @@ public final class DisplayRenderer implements Listener {
      *
      * @param dx where his eyes are from the pivot, in the world
      */
-    private void gaze(PlacedDisplay placed, Viewer viewer, Nearby near, LookAt lookAt, Object position, double eyes, double dx, double dy, double dz) {
+    private void gaze(PlacedDisplay placed, Viewer viewer, Nearby near, LookAt lookAt, int moves, double eyes, double dx, double dy, double dz) {
         if (suspends(placed, viewer)) {
             near.looking = false;
             return;
@@ -3448,7 +3578,7 @@ public final class DisplayRenderer implements Listener {
         yaw = Math.max(-lookAt.maxYaw, Math.min(lookAt.maxYaw, yaw));
         pitch = Math.max(-lookAt.maxPitch, Math.min(lookAt.maxPitch, pitch));
         if (near.looking && Math.abs(yaw - near.yaw) < lookAt.step && Math.abs(pitch - near.pitch) < lookAt.step) {
-            near.settledAt = position;
+            near.settledMoves = moves;
             near.settledEyes = eyes;
             return;
         }
@@ -3465,7 +3595,7 @@ public final class DisplayRenderer implements Listener {
         near.yaw = yaw;
         near.pitch = pitch;
         near.sentAt = this.tick;
-        near.settledAt = position;
+        near.settledMoves = moves;
         near.settledEyes = eyes;
         // a frame on its way for longer: the rest of it once the turn is done
         near.resumeAt = placed.lasting(from, lookAt.over) ? this.tick + lookAt.over : -1;
@@ -3505,14 +3635,55 @@ public final class DisplayRenderer implements Listener {
      * him (see {@link DisplayModel#composesLook}).
      */
     private boolean suspends(PlacedDisplay placed, Viewer viewer) {
-        boolean[] moves = placed.model.movesLook;
-        boolean[] keeps = placed.model.composesLook;
-        for (int i = 0; i < moves.length && i < placed.startedAt.length; i++) {
-            if (moves[i] && !keeps[i] && placed.startedAt[i] >= 0 && placed.startedAt[i] <= this.tick) {
-                return true;
+        if (placed.publicChecked != placed.publicStamp || this.tick >= placed.publicRecheckAt) {
+            // the same for every player who sees the block: worked out again only when an animation everyone sees
+            // starts or ends, or one waiting for its first tick gets there
+            boolean[] moves = placed.model.movesLook;
+            boolean[] keeps = placed.model.composesLook;
+            placed.publicChecked = placed.publicStamp;
+            placed.publicRecheckAt = Integer.MAX_VALUE;
+            placed.suspending = false;
+            for (int i = 0; i < moves.length && i < placed.startedAt.length; i++) {
+                if (!moves[i] || keeps[i] || placed.startedAt[i] < 0) {
+                    continue;
+                }
+                if (placed.startedAt[i] > this.tick) {
+                    placed.publicRecheckAt = Math.min(placed.publicRecheckAt, placed.startedAt[i]);
+                    continue;
+                }
+                placed.suspending = true;
+                break;
             }
         }
-        if (!placed.privateFor.isEmpty() && placed.privateFor.contains(viewer.player.getUniqueId())) {
+        if (placed.suspending) {
+            return true;
+        }
+        if (placed.privateChecked == placed.privateStamp && this.tick < placed.privateRecheckAt && !placed.privateSuspending) {
+            // nothing played for one of them takes the parts: no player needs looking for
+            return false;
+        }
+        boolean[] moves = placed.model.movesLook;
+        boolean[] keeps = placed.model.composesLook;
+        if (placed.privateChecked != placed.privateStamp || this.tick >= placed.privateRecheckAt) {
+            // whether an animation played for one of them takes the parts from him (else no player needs looking for):
+            // worked out again only when one starts or ends, or one waiting to start does
+            placed.privateChecked = placed.privateStamp;
+            placed.privateRecheckAt = Integer.MAX_VALUE;
+            placed.privateSuspending = false;
+            for (UUID id : placed.privateFor) {
+                PrivatePlay play = privatePlay(id, placed);
+                if (play == null || play.animation >= moves.length || !moves[play.animation] || keeps[play.animation]) {
+                    continue;
+                }
+                if (play.startedAt > this.tick) {
+                    placed.privateRecheckAt = Math.min(placed.privateRecheckAt, play.startedAt);
+                    continue;
+                }
+                placed.privateSuspending = true;
+                break;
+            }
+        }
+        if (placed.privateSuspending && placed.privateFor.contains(viewer.player.getUniqueId())) {
             PrivatePlay play = privatePlay(viewer.player.getUniqueId(), placed);
             return play != null && play.startedAt <= this.tick && play.animation < moves.length && moves[play.animation] && !keeps[play.animation];
         }
@@ -3579,6 +3750,7 @@ public final class DisplayRenderer implements Listener {
                 }
                 if (elapsed >= animation.duration) {
                     placed.startedAt[i] = -1;
+                    placed.publicStamp++;
                     // the parts it took from the loops go back to them
                     rejoinLoops(placed, i);
                 } else {
@@ -3666,7 +3838,9 @@ public final class DisplayRenderer implements Listener {
                 PrivatePlay play = iterator.next();
                 DisplayAnimation animation = play.placed.model.animations.get(play.animation);
                 int elapsed = this.tick - play.startedAt;
-                if (elapsed >= 0 && elapsed < animation.duration) {
+                // most ticks of an animation start no frame and play no sound nor particle: nothing to look up then
+                if (elapsed >= 0 && elapsed < animation.duration
+                        && (animation.startingAt[elapsed] != null || animation.sparksAt[elapsed] != null || animation.notesAt[elapsed] != null)) {
                     boolean sees = viewer != null && viewer.shown.contains(play.placed);
                     // sounds come from the block: heard in its world only, and by those it is sent to when it has a
                     // visible-if
@@ -3910,7 +4084,7 @@ public final class DisplayRenderer implements Listener {
         viewer.shown.clear();
         viewer.guarded.clear();
         viewer.withheld.clear();
-        viewer.near = null;
+        viewer.forgetAllNear();
         viewer.stale = true;
     }
 
@@ -3926,7 +4100,7 @@ public final class DisplayRenderer implements Listener {
             viewer = new Viewer(player);
             this.viewers.put(player.getUniqueId(), viewer);
         }
-        Location location = player.getLocation();
+        Location location = player.getLocation(this.placeHere);
         World world = location.getWorld();
         if (world == null) {
             return;

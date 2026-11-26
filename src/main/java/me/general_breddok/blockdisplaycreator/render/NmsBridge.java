@@ -687,6 +687,30 @@ final class NmsBridge {
                     this.createValue.invoke(null, this.scaleAccessor, scale),
                     this.createValue.invoke(null, this.rightRotationAccessor, rightRotation));
         }
+
+        /**
+         * The same with only the fields of the transformation in {@code varying}, in the same order: what
+         * {@link #varyingOnly} leaves of the whole, without making the others.
+         */
+        List<?> values(Object translation, Object leftRotation, Object scale, Object rightRotation, int duration, int varying)
+                throws ReflectiveOperationException {
+            List<Object> out = new java.util.ArrayList<>(6);
+            out.add(this.createValue.invoke(null, this.startAccessor, 0));
+            out.add(this.createValue.invoke(null, this.durationAccessor, duration));
+            if ((varying & DisplayModel.TRANSLATION) != 0) {
+                out.add(this.createValue.invoke(null, this.translationAccessor, translation));
+            }
+            if ((varying & DisplayModel.LEFT_ROTATION) != 0) {
+                out.add(this.createValue.invoke(null, this.leftRotationAccessor, leftRotation));
+            }
+            if ((varying & DisplayModel.SCALE) != 0) {
+                out.add(this.createValue.invoke(null, this.scaleAccessor, scale));
+            }
+            if ((varying & DisplayModel.RIGHT_ROTATION) != 0) {
+                out.add(this.createValue.invoke(null, this.rightRotationAccessor, rightRotation));
+            }
+            return out;
+        }
     }
 
     /**
@@ -828,6 +852,20 @@ final class NmsBridge {
     }
 
     /**
+     * The same as {@code varyingValues(poseValues(...), varying)}, without making the fields left out.
+     */
+    List<?> poseValues(Vector3f translation, Quaternionf leftRotation, Vector3f scale, Quaternionf rightRotation, int duration, int varying) {
+        if ((varying & DisplayModel.WHOLE_POSE) == DisplayModel.WHOLE_POSE) {
+            return poseValues(translation, leftRotation, scale, rightRotation, duration);
+        }
+        try {
+            return this.poses.values(translation, leftRotation, scale, rightRotation, duration, varying);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
      * Entity ids come from the server's own counter, so that none is ever shared with a real entity. Paper hands
      * them out through its unsafe values up to 1.21, and through the worlds since Minecraft 26.
      */
@@ -932,12 +970,24 @@ final class NmsBridge {
         }
     }
 
+    /**
+     * How many packets (a bundle counting for one) were sent since this was last asked.
+     */
+    private long sent;
+
+    long takeSent() {
+        long count = this.sent;
+        this.sent = 0;
+        return count;
+    }
+
     void send(Player player, Object packet) {
         try {
             Object connection = this.getConnection.invoke(this.getHandle.invoke(player));
             if (connection == null) {
                 return;
             }
+            this.sent++;
             if (packet instanceof List<?> bundles) {
                 for (Object bundle : bundles) {
                     this.send.invoke(connection, bundle);
