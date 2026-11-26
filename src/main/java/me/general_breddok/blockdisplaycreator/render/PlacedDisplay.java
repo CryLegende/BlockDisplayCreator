@@ -1084,21 +1084,38 @@ final class PlacedDisplay {
      * @param glide  the glide the carrier is given for its teleports
      */
     Object spawnPacket(NmsBridge nms, org.joml.Vector3f offset, int glide) {
-        if (!this.model.hasCarrier()) {
+        return spawnPacket(nms, offset, glide, Float.NaN);
+    }
+
+    /**
+     * @param spin how far its {@code spin} has turned its spinning parts, in degrees, NaN for not at all: they are
+     *             created turned so, and given the glide of the spin
+     */
+    Object spawnPacket(NmsBridge nms, org.joml.Vector3f offset, int glide, float spin) {
+        boolean spinning = !Float.isNaN(spin) && this.model.spin != null;
+        if (!this.model.hasCarrier() && !spinning) {
             return spawnPacket(nms);
         }
         List<DisplayModel.Element> elements = this.model.elements;
         List<Object> packets = new ArrayList<>(elements.size() * 2 + 3);
-        double[] at = carrierAt(offset);
-        packets.add(nms.spawnPacket(this.carrierId, UUID.randomUUID(), at[0], at[1], at[2], (float) at[4], (float) at[3], this.model.carrierType));
-        packets.add(nms.dataPacket(this.carrierId, nms.teleportDurationValues(Math.max(0, glide))));
+        double[] at = this.model.hasCarrier() ? carrierAt(offset) : null;
+        if (at != null) {
+            packets.add(nms.spawnPacket(this.carrierId, UUID.randomUUID(), at[0], at[1], at[2], (float) at[4], (float) at[3], this.model.carrierType));
+            packets.add(nms.dataPacket(this.carrierId, nms.teleportDurationValues(Math.max(0, glide))));
+        }
         for (int i = 0; i < elements.size(); i++) {
             DisplayModel.Element element = elements.get(i);
             double[] pose = pose(element.pitch());
             boolean riding = this.model.carried(i);
             double sink = riding ? 0 : sink(i);
+            boolean turning = spinning && this.model.spin.turns(i);
+            float yaw = (float) pose[3] + (turning ? spin : 0);
             packets.add(nms.spawnPacket(this.entityIds[i], UUID.randomUUID(), riding ? at[0] : pose[0], riding ? at[1] : pose[1] - sink,
-                    riding ? at[2] : pose[2], (float) pose[4], (float) pose[3], element.type()));
+                    riding ? at[2] : pose[2], (float) pose[4], yaw, element.type()));
+            if (turning) {
+                // a client glides the rotations of the spin over the time between two
+                packets.add(nms.dataPacket(this.entityIds[i], nms.teleportDurationValues(this.model.spin.step)));
+            }
             List<?> data = upright(element) ? element.upright() : element.data();
             if (sink > 0) {
                 org.bukkit.block.Block lit = this.world.getBlockAt((int) Math.floor(pose[0]), (int) Math.floor(pose[1]), (int) Math.floor(pose[2]));
@@ -1109,7 +1126,46 @@ final class PlacedDisplay {
                 packets.add(nms.dataPacket(this.entityIds[i], data));
             }
         }
-        packets.add(passengersPacket(nms));
+        if (at != null) {
+            packets.add(passengersPacket(nms));
+        }
+        return nms.bundle(packets);
+    }
+
+    // ---------- Parts turning on and on (spin) ----------
+
+    /**
+     * Whether the {@code spin} of the model turns parts of this block: it has one, its loops play (an administrator may
+     * stop them), and the block stands upright, as summoned (on a wall or tipped, the vertical axis of its parts is no
+     * longer the world's, around which a yaw turns them).
+     */
+    boolean spins() {
+        return this.model.spin != null && loops() && Math.abs(pose(this.model.elements.get(0).pitch())[4]) < 1.0E-6;
+    }
+
+    /**
+     * The packet that turns the spinning parts by an angle from their rest, in degrees: they glide there over the step
+     * of the spin.
+     */
+    Object spinPacket(NmsBridge nms, float angle) {
+        Spin spin = this.model.spin;
+        List<Object> packets = new ArrayList<>(spin.parts.length);
+        for (int part : spin.parts) {
+            double[] pose = pose(this.model.elements.get(part).pitch());
+            packets.add(nms.rotationPacket(this.entityIds[part], (float) pose[3] + angle, (float) pose[4]));
+        }
+        return nms.bundle(packets);
+    }
+
+    /**
+     * The packet that gives the spinning parts the glide of the spin again (an operator's moves give them another).
+     */
+    Object spinGlidePacket(NmsBridge nms) {
+        List<?> values = nms.teleportDurationValues(this.model.spin.step);
+        List<Object> packets = new ArrayList<>(this.model.spin.parts.length);
+        for (int part : this.model.spin.parts) {
+            packets.add(nms.dataPacket(this.entityIds[part], values));
+        }
         return nms.bundle(packets);
     }
 

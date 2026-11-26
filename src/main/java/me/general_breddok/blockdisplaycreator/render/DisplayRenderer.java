@@ -147,6 +147,10 @@ public final class DisplayRenderer implements Listener {
      */
     private final Set<PlacedDisplay> looping = new HashSet<>();
     /**
+     * The blocks someone sees whose model turns parts on and on ({@code spin}).
+     */
+    private final Set<PlacedDisplay> spinning = new HashSet<>();
+    /**
      * The blocks with an animation started by a click or their placement that has not ended.
      */
     private final Set<PlacedDisplay> playing = new HashSet<>();
@@ -928,10 +932,12 @@ public final class DisplayRenderer implements Listener {
         }
         for (int i = 0; i < elements.size(); i++) {
             double[] pose = placed.pose(elements.get(i).pitch());
+            // a spinning part keeps turned as far as the spin has it
+            float turned = (float) pose[3] + (placed.model.spin != null && placed.model.spin.turns(i) && placed.spins() ? placed.model.spin.angle(this.tick) : 0f);
             if (carrier != null && placed.model.carried(i)) {
-                packets.add(this.nms.teleportPacket(placed.entityIds[i], carrier[0], carrier[1], carrier[2], (float) pose[3], (float) pose[4]));
+                packets.add(this.nms.teleportPacket(placed.entityIds[i], carrier[0], carrier[1], carrier[2], turned, (float) pose[4]));
             } else {
-                packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1] - placed.sink(i), pose[2], (float) pose[3], (float) pose[4]));
+                packets.add(this.nms.teleportPacket(placed.entityIds[i], pose[0], pose[1] - placed.sink(i), pose[2], turned, (float) pose[4]));
             }
             if ((resized || elements.get(i).sink() > 0) && this.nms.canAnimate()) {
                 // each part goes to its resting pose, multiplied by the new size, raised as much as it stands lower
@@ -967,6 +973,21 @@ public final class DisplayRenderer implements Listener {
      */
     synchronized void commitShift(PlacedDisplay placed) {
         placed.gliding = false;
+        if (placed.model.spin != null && !placed.viewers.isEmpty()) {
+            // the operator's moves gave every entity their glide: the spinning parts get that of the spin back, and spin
+            // again or no longer (a block put on its side does not spin)
+            Object glide = placed.spinGlidePacket(this.nms);
+            Object turn = placed.spinPacket(this.nms, placed.spins() ? placed.model.spin.angle(this.tick) : 0f);
+            for (Viewer viewer : placed.viewers) {
+                this.nms.send(viewer.player, glide);
+                this.nms.send(viewer.player, turn);
+            }
+            if (placed.spins()) {
+                this.spinning.add(placed);
+            } else {
+                this.spinning.remove(placed);
+            }
+        }
         Block block = placed.world.getBlockAt(placed.x, placed.y, placed.z);
         CustomBlockData data = new CustomBlockData(block, this.plugin);
         String text = placed.shiftText();
@@ -1086,6 +1107,7 @@ public final class DisplayRenderer implements Listener {
                 }
             } else {
                 this.looping.remove(placed);
+                this.spinning.remove(placed);
                 List<DisplayAnimation> animations = placed.model.animations;
                 for (int i = 0; i < animations.size(); i++) {
                     if (animations.get(i).trigger != DisplayAnimation.Trigger.LOOP) {
@@ -1107,6 +1129,18 @@ public final class DisplayRenderer implements Listener {
             if (placed.model.hasCarrier() && !placed.viewers.isEmpty()) {
                 // the whole model at once where the frames now playing have it, as its parts
                 carrierToLoops(placed);
+            }
+            if (placed.model.spin != null && !placed.viewers.isEmpty()) {
+                // the spin stops and starts with the loops: back to rest, or on from where it is
+                Object packet = placed.spinPacket(this.nms, placed.spins() ? placed.model.spin.angle(this.tick) : 0f);
+                for (Viewer viewer : placed.viewers) {
+                    this.nms.send(viewer.player, packet);
+                }
+                if (placed.spins()) {
+                    this.spinning.add(placed);
+                } else {
+                    this.spinning.remove(placed);
+                }
             }
         }
 
@@ -1224,6 +1258,7 @@ public final class DisplayRenderer implements Listener {
         this.index.clear();
         this.viewers.clear();
         this.looping.clear();
+        this.spinning.clear();
         this.playing.clear();
         this.privatePlays.clear();
         this.attentive.clear();
@@ -1662,6 +1697,7 @@ public final class DisplayRenderer implements Listener {
         List<String> problems = new ArrayList<>();
         try {
             model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), lookAt(name), section(name, "root-motion"),
+                    this.nms.canAnimate() ? section(name, "spin") : null,
                     viewDistance(name), viewHeight(name, "display.view-above"), viewHeight(name, "display.view-below"), visibleIf(name, problems), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
@@ -2010,6 +2046,7 @@ public final class DisplayRenderer implements Listener {
         viewer.forgetNear(placed);
         if (placed.viewers.isEmpty()) {
             this.looping.remove(placed);
+            this.spinning.remove(placed);
         }
         viewer.withheld.add(placed);
         this.nms.send(viewer.player, placed.removePacket(this.nms));
@@ -2281,11 +2318,16 @@ public final class DisplayRenderer implements Listener {
             }
         }
         PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(viewer.player.getUniqueId(), placed);
-        if (placed.model.hasCarrier()) {
-            // the whole model where the frames he gets have taken it: those played for him alone, or those of everyone
+        boolean spins = placed.spins();
+        if (placed.model.hasCarrier() || spins) {
+            // the whole model where the frames he gets have taken it: those played for him alone, or those of everyone;
+            // the spinning parts turned as far as the spin has them
             int glide = placed.carrierGlide >= 0 ? placed.carrierGlide : placed.model.carrierGlide;
             this.nms.send(viewer.player, placed.spawnPacket(this.nms, own != null && own.rootMoved ? own.rootTarget
-                    : placed.rootTarget(this.tick, skipLoops(viewer, placed)), glide));
+                    : placed.rootTarget(this.tick, skipLoops(viewer, placed)), glide, spins ? placed.model.spin.angle(this.tick) : Float.NaN));
+            if (spins) {
+                this.spinning.add(placed);
+            }
             if (own != null) {
                 own.carrierGlide = glide;
             }
@@ -2710,6 +2752,16 @@ public final class DisplayRenderer implements Listener {
         if (!this.privatePlays.isEmpty()) {
             animatePrivate();
         }
+        for (PlacedDisplay placed : this.spinning) {
+            Spin spin = placed.model.spin;
+            if (spin != null && this.tick % spin.step == 0 && !placed.viewers.isEmpty()) {
+                // where the spin has them in a step: the clients glide there meanwhile
+                Object packet = placed.spinPacket(this.nms, spin.angle((long) this.tick + spin.step));
+                for (Viewer viewer : placed.viewers) {
+                    this.nms.send(viewer.player, packet);
+                }
+            }
+        }
         for (PlacedDisplay placed : this.looping) {
             List<DisplayAnimation> animations = placed.model.animations;
             for (int i = 0; i < animations.size(); i++) {
@@ -2948,6 +3000,7 @@ public final class DisplayRenderer implements Listener {
             this.gizmos.forget(placed);
         }
         this.looping.remove(placed);
+        this.spinning.remove(placed);
         dropPrivatePlays(placed);
         if (placed.model != null && placed.model.conditional()) {
             for (Viewer viewer : this.viewers.values()) {
@@ -2980,6 +3033,7 @@ public final class DisplayRenderer implements Listener {
             placed.viewers.remove(viewer);
             if (placed.viewers.isEmpty()) {
                 this.looping.remove(placed);
+                this.spinning.remove(placed);
             }
             if (placed.hitbox != null && online) {
                 hitbox(viewer.player, placed, false);
@@ -3035,6 +3089,7 @@ public final class DisplayRenderer implements Listener {
                 unsent(viewer, placed);
                 if (placed.viewers.isEmpty()) {
                     this.looping.remove(placed);
+                    this.spinning.remove(placed);
                 }
                 if (placed.model.conditional()) {
                     viewer.guarded.remove(placed);

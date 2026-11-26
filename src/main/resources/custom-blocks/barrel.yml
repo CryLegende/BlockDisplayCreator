@@ -175,6 +175,17 @@ sound:
 #  #      over: 30
 #  #      root: [0, 0, 0]
 
+#Parts that turn on and on around the vertical axis of the model (a carousel, a fan): through the yaw of their entities, which the players'
+#games glide on their own, one small packet every step ticks instead of many frames a turn. They still play the frames that move them
+#(an up and down on top). A block hung on a wall or tipped by an operator does not spin. An administrator stopping the loops stops it too.   The field may be missing
+#spin:
+#  #Display entities that turn, numbered as in the frames.   Required
+#  parts: [3, 4, "8-12"]
+#  #Ticks a whole turn takes, 4 or more: clockwise seen from above, a negative number the other way.   Required
+#  period: 240
+#  #Ticks between two packets, 59 at most and less than half the period.   By def a third of the period, 40 at most
+#  step: 40
+
 #Settings of the frames that move the whole model (root, see the animations above).   The field may be missing
 #The parts ride an invisible display, which those frames move. A part riding it that goes lower than half a block under the block is drawn at all times.
 #root-motion:

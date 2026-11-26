@@ -63,6 +63,11 @@ final class NmsBridge {
      * shown without their root motion.
      */
     private final Passengers passengers;
+    /**
+     * Builds the packet that turns an entity (its yaw and pitch, in 256ths of a turn), or null on a server that names it
+     * otherwise: models are then shown without their spin.
+     */
+    private final MethodHandle newRotation;
 
     private NmsBridge() throws ReflectiveOperationException {
         MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -134,6 +139,34 @@ final class NmsBridge {
             riders = null;
         }
         this.passengers = riders;
+
+        MethodHandle rotation;
+        try {
+            rotation = lookup.findConstructor(Class.forName(packets + "ClientboundMoveEntityPacket$Rot", true, type.getDeclaringClass().getClassLoader()),
+                    MethodType.methodType(void.class, int.class, byte.class, byte.class, boolean.class));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            rotation = null;
+        }
+        this.newRotation = rotation;
+    }
+
+    /**
+     * Whether the parts of a model can be turned on and on through the yaw of their entities ({@code spin}).
+     */
+    boolean canSpin() {
+        return this.newRotation != null && this.moves != null;
+    }
+
+    /**
+     * The packet that turns an entity to a yaw and a pitch, in degrees: a display glides there over its teleport
+     * duration. Sent in 256ths of a turn.
+     */
+    Object rotationPacket(int id, float yaw, float pitch) {
+        try {
+            return this.newRotation.invoke(id, (byte) Math.floor(yaw * 256f / 360f), (byte) Math.floor(pitch * 256f / 360f), false);
+        } catch (Throwable e) {
+            throw failure(e);
+        }
     }
 
     /**

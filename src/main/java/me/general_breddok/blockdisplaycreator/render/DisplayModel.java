@@ -108,6 +108,10 @@ final class DisplayModel {
      */
     final int carrierGlide;
     /**
+     * Its file's {@code spin}: parts turning on and on through the yaw of their entities, or null.
+     */
+    final Spin spin;
+    /**
      * Its loops that play only for the players close to the block ({@code distance}): bit i for the animation i (the
      * first 64 animations of the file).
      */
@@ -130,7 +134,9 @@ final class DisplayModel {
     static final int WHOLE_POSE = TRANSLATION | SCALE | LEFT_ROTATION | RIGHT_ROTATION;
 
     private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
-                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt, boolean[] carried, Object carrierType) {
+                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt, boolean[] carried, Object carrierType,
+                         Spin spin) {
+        this.spin = spin;
         this.varying = varying;
         this.lookAt = lookAt;
         this.carried = carried;
@@ -196,6 +202,7 @@ final class DisplayModel {
         this.carried = model.carried;
         this.carrierType = model.carrierType;
         this.carrierGlide = model.carrierGlide;
+        this.spin = model.spin;
     }
 
     private static int carrierGlide(List<DisplayAnimation> animations) {
@@ -321,6 +328,17 @@ final class DisplayModel {
     static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
                              ConfigurationSection animations, ConfigurationSection lookAt, ConfigurationSection rootMotion, int viewDistance,
                              int viewAbove, int viewBelow, List<Condition> visibleIf, List<String> problems) {
+        return read(nms, definition, summonTexts, world, chunkX, chunkZ, animations, lookAt, rootMotion, null, viewDistance, viewAbove, viewBelow,
+                visibleIf, problems);
+    }
+
+    /**
+     * @param spinSection the {@code spin} section of its file, or null
+     */
+    static DisplayModel read(NmsBridge nms, AbstractCustomBlock definition, List<String[]> summonTexts, World world, int chunkX, int chunkZ,
+                             ConfigurationSection animations, ConfigurationSection lookAt, ConfigurationSection rootMotion,
+                             ConfigurationSection spinSection, int viewDistance,
+                             int viewAbove, int viewBelow, List<Condition> visibleIf, List<String> problems) {
         Location location = new Location(world, (chunkX << 4) + 8.5, world.getMaxHeight() + READING_HEIGHT, (chunkZ << 4) + 8.5);
         List<Element> elements = new ArrayList<>();
 
@@ -386,7 +404,27 @@ final class DisplayModel {
             problems.add("root-motion has no use: no frame of its animations has a root");
         }
         return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read, look, carried)), read, viewDistance, viewAbove, viewBelow,
-                visibleIf, varying, look, carried, carrierType);
+                visibleIf, varying, look, carried, carrierType, spin(nms, spinSection, elements, problems));
+    }
+
+    /**
+     * The {@code spin} of the file of a block, or null when it has none or it cannot be read (said in problems).
+     */
+    private static Spin spin(NmsBridge nms, ConfigurationSection section, List<Element> elements, List<String> problems) {
+        if (section == null || elements.isEmpty()) {
+            return null;
+        }
+        if (!nms.canSpin()) {
+            problems.add("spin is left out: this server cannot turn display entities shown through packets");
+            return null;
+        }
+        try {
+            return Spin.read(section, elements);
+        } catch (RuntimeException e) {
+            // the block is still shown, its parts do not turn
+            problems.add("spin: " + (e instanceof IllegalArgumentException ? e.getMessage() : e.toString()));
+            return null;
+        }
     }
 
     /**
