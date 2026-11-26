@@ -29,6 +29,11 @@ final class PlacedDisplay {
     final CustomBlockRotation rotation;
     final List<DisplayRenderer.Viewer> viewers = new ArrayList<>(2);
     /**
+     * The model shown for another plugin this draws, null for a placed block (see {@link DisplayRenderer#show}): it
+     * stands where it was shown, turned by the exact yaw it was given, and nothing of it is in the world.
+     */
+    DisplayRenderer.ShownModel shownFor;
+    /**
      * The players a command plays an animation of the block for: until it ends, they get none of the frames the
      * others see.
      */
@@ -1005,7 +1010,8 @@ final class PlacedDisplay {
         float pitch;
         BlockFace face = this.rotation.getAttachedFace();
         if (face == BlockFace.UP || face == BlockFace.DOWN) {
-            yaw = new YawSnapper(this.model.sidesCount).getClosestAngle(this.rotation.getDirection());
+            // a model shown for another plugin takes any angle, whatever the sides of its file
+            yaw = this.shownFor != null ? this.rotation.getDirection() : new YawSnapper(this.model.sidesCount).getClosestAngle(this.rotation.getDirection());
             pitch = Location.normalizePitch(summonedPitch);
         } else {
             pitch = 90;

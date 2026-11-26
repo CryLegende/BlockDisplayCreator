@@ -134,6 +134,30 @@ final class NmsBridge {
             riders = null;
         }
         this.passengers = riders;
+
+        ThreadLocal<?> running;
+        try {
+            Field context = Class.forName("net.minecraft.commands.Commands", false, type.getDeclaringClass().getClassLoader())
+                    .getDeclaredField("CURRENT_EXECUTION_CONTEXT");
+            context.setAccessible(true);
+            running = (ThreadLocal<?>) context.get(null);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            running = null;
+        }
+        this.runningCommand = running;
+    }
+
+    /**
+     * Where the server keeps the command it is running on a thread, or null on a server that names it otherwise.
+     */
+    private final ThreadLocal<?> runningCommand;
+
+    /**
+     * Whether a command is being run on this thread, or it cannot be told: a command dispatched now would only run once
+     * that one ends, so a model cannot be read by summoning it.
+     */
+    boolean inCommand() {
+        return this.runningCommand == null || this.runningCommand.get() != null;
     }
 
     /**

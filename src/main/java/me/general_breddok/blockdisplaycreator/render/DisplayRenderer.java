@@ -211,6 +211,11 @@ public final class DisplayRenderer implements Listener {
          * sent again with other ids, instead of staying on screen as a frozen copy without click box.
          */
         final Map<UUID, Map<Long, int[]>> sent = new HashMap<>();
+        /**
+         * The same for the models shown for other plugins, by model: they have no block of their own, and one may
+         * stand at the position of a placed block.
+         */
+        final Map<PlacedDisplay, int[]> sentModels = new HashMap<>();
         UUID world;
         int chunkX;
         int chunkZ;
@@ -347,7 +352,8 @@ public final class DisplayRenderer implements Listener {
     public enum PlayResult {
         PLAYED,
         /**
-         * No custom block shown through packets at that position.
+         * No custom block shown through packets at that position, or a model shown for another plugin that is no
+         * longer shown.
          */
         NO_BLOCK,
         /**
@@ -506,7 +512,10 @@ public final class DisplayRenderer implements Listener {
      *                come to see it while it plays, as a click does
      */
     public synchronized PlayResult play(Block block, String name, @Nullable java.util.Collection<? extends Player> players) {
-        PlacedDisplay placed = find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+        return playOn(find(block.getWorld(), block.getX(), block.getY(), block.getZ()), name, players);
+    }
+
+    private PlayResult playOn(@Nullable PlacedDisplay placed, String name, @Nullable java.util.Collection<? extends Player> players) {
         if (placed == null || placed.model == null) {
             return PlayResult.NO_BLOCK;
         }
@@ -567,7 +576,10 @@ public final class DisplayRenderer implements Listener {
      * @return the number of animations stopped, -1 when there is no custom block shown through packets there
      */
     public synchronized int stop(Block block, @Nullable java.util.Collection<? extends Player> players) {
-        PlacedDisplay placed = find(block.getWorld(), block.getX(), block.getY(), block.getZ());
+        return stopOn(find(block.getWorld(), block.getX(), block.getY(), block.getZ()), players);
+    }
+
+    private int stopOn(@Nullable PlacedDisplay placed, @Nullable java.util.Collection<? extends Player> players) {
         if (placed == null || placed.model == null) {
             return -1;
         }
@@ -827,14 +839,510 @@ public final class DisplayRenderer implements Listener {
         return count;
     }
 
+    // ---------- Models shown for other plugins ----------
+
+    /**
+     * A model shown for another plugin: nothing of it is stored in the world. Given by
+     * {@link #show(org.bukkit.plugin.Plugin, String, Location, float)}.
+     */
+    public static final class ShownModel {
+        private final org.bukkit.plugin.Plugin owner;
+        private final String model;
+        private final Location location;
+        /**
+         * What draws it, null once it is no longer shown.
+         */
+        PlacedDisplay placed;
+
+        private ShownModel(org.bukkit.plugin.Plugin owner, String model, Location location) {
+            this.owner = owner;
+            this.model = model;
+            this.location = location;
+        }
+
+        /**
+         * The name of its custom block file.
+         */
+        public String model() {
+            return this.model;
+        }
+
+        /**
+         * Where it was shown: the point it stands on, as given, with its yaw. A copy.
+         */
+        public Location location() {
+            return this.location.clone();
+        }
+
+        /**
+         * The plugin it was shown for.
+         */
+        public org.bukkit.plugin.Plugin owner() {
+            return this.owner;
+        }
+
+        @Override
+        public String toString() {
+            return "ShownModel[" + this.model + " for " + this.owner.getName() + " at " + this.location.getX() + " " + this.location.getY() + " "
+                    + this.location.getZ() + " in " + (this.location.getWorld() == null ? "?" : this.location.getWorld().getName()) + "]";
+        }
+    }
+
+    /**
+     * The models shown for other plugins, by world and chunk. Kept apart from the placed blocks: nothing that finds,
+     * breaks, reads, wipes or counts the blocks of a position or a chunk reaches them, and they leave nothing in the
+     * chunk nor in {@link #REGISTRY_FILE}.
+     */
+    private final Map<UUID, Map<Long, List<PlacedDisplay>>> shownModels = new ConcurrentHashMap<>();
+
+    /**
+     * Shows the model of a custom block file for another plugin, as a block of that file placed there would be shown,
+     * without anything being written in the world: no block, no chunk data, no entity on the server.
+     * <p>
+     * Players are sent it as they are a placed block: within the {@code display.view-distance}, {@code view-above}
+     * and {@code view-below} of its file once they have its chunk, with its loops (and their {@code distance}), its
+     * {@code look-at}, its {@code approach} animations, its {@code root} frames and its {@code display.visible-if}; a
+     * player arriving gets it where its animations have taken it. Its {@code place} animations do not play. None of
+     * the click boxes and collisions of its file is created and this plugin handles no click on it: the other plugin
+     * puts its own click box if it wants one. Breaking, the gizmo, the settings of a block and whatever else is done to
+     * placed blocks leave it alone, a block placed at the same position included, and it leaves them alone.
+     * <p>
+     * It stays shown until {@link #hide(ShownModel)} or until this plugin lets it go: its chunk or its world unloads,
+     * its file is gone or draws nothing after a reload, packet display is turned off, this plugin or its owner is
+     * disabled. {@link #shows(ShownModel)} then turns false; the owner shows it again when it wants it back.
+     * <p>
+     * Main thread only, as every method of the renderer.
+     *
+     * @param owner the plugin it is shown for: its models are taken away when it is disabled
+     * @param model the name of the custom block file
+     * @param where the point it stands on (its feet), as it is rather than the corner or the middle of a block, and
+     *              its yaw, which turns it as it turns an entity: any angle, the {@code sides-count} of the file does
+     *              not apply. Its chunk must be loaded
+     * @param size  what the size of the model is multiplied by, around that point: 1 for the size of its file
+     * @return what was shown, or null when the file is unknown, draws nothing or keeps its model in its item, the
+     * chunk is not loaded, packet display is off, or the owner is not enabled; null too the first time a model is
+     * asked for from inside a command (one of the owner's commands, or an event a command fires): it is read from its
+     * file at the next tick, and shown when asked again
+     * @throws IllegalArgumentException when the size is not a positive number or the location has no world
+     */
+    @Nullable
+    public synchronized ShownModel show(org.bukkit.plugin.Plugin owner, String model, Location where, float size) {
+        java.util.Objects.requireNonNull(owner, "owner");
+        java.util.Objects.requireNonNull(model, "model");
+        World world = where.getWorld();
+        if (world == null) {
+            throw new IllegalArgumentException("The location to show " + model + " at has no world");
+        }
+        if (!(size > 0) || Float.isInfinite(size)) {
+            throw new IllegalArgumentException("The size of " + model + " must be a positive number, not " + size);
+        }
+        int chunkX = where.getBlockX() >> 4;
+        int chunkZ = where.getBlockZ() >> 4;
+        if (!isActive() || !owner.isEnabled() || !this.plugin.isEnabled() || !world.isChunkLoaded(chunkX, chunkZ)) {
+            return null;
+        }
+        DisplayModel read = modelFor(model, world.getChunkAt(chunkX, chunkZ));
+        if (read == null) {
+            return null;
+        }
+        PlacedDisplay placed = new PlacedDisplay(world, where.getBlockX(), where.getBlockY(), where.getBlockZ(), model,
+                new me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockRotation(org.bukkit.block.BlockFace.UP, where.getYaw()));
+        placed.baseX = where.getX();
+        placed.baseY = where.getY();
+        placed.baseZ = where.getZ();
+        // its size is applied as an operator's resize is, around the point it stands on
+        placed.shift[5] = size;
+        ShownModel shown = new ShownModel(owner, model, where.clone());
+        shown.placed = placed;
+        placed.shownFor = shown;
+        placed.bind(read, this.nms);
+        this.shownModels.computeIfAbsent(world.getUID(), k -> new ConcurrentHashMap<>())
+                .computeIfAbsent(chunkKey(chunkX, chunkZ), k -> new ArrayList<>(1)).add(placed);
+        showModel(placed);
+        return shown;
+    }
+
+    /**
+     * Takes a model shown for another plugin away from every player. Nothing happens when it is no longer shown.
+     */
+    public synchronized void hide(ShownModel shown) {
+        PlacedDisplay placed = shown.placed;
+        if (placed == null) {
+            return;
+        }
+        Map<Long, List<PlacedDisplay>> chunks = this.shownModels.get(placed.world.getUID());
+        long key = chunkKey(placed.chunkX(), placed.chunkZ());
+        List<PlacedDisplay> list = chunks == null ? null : chunks.get(key);
+        if (list != null) {
+            list.remove(placed);
+            if (list.isEmpty()) {
+                chunks.remove(key);
+            }
+        }
+        drop(placed);
+    }
+
+    /**
+     * Whether a model shown for another plugin is still shown: false once hidden, or let go by this plugin (see
+     * {@link #show(org.bukkit.plugin.Plugin, String, Location, float)}).
+     */
+    public synchronized boolean shows(ShownModel shown) {
+        return shown != null && shown.placed != null;
+    }
+
+    /**
+     * Plays an animation of a model shown for another plugin from its start, whatever starts it in its file, as
+     * {@link #play(Block, String, java.util.Collection)} does on a placed block.
+     *
+     * @param players the players it is played for, the only ones who see it and hear its sounds: the others keep
+     *                seeing the model as it is, and once it ends these players see it as the others do. Null plays it
+     *                for everyone who sees the model and those who come to see it while it plays
+     * @return {@link PlayResult#NO_BLOCK} when the model is no longer shown
+     */
+    public synchronized PlayResult play(ShownModel shown, String animation, @Nullable java.util.Collection<? extends Player> players) {
+        return playOn(shown.placed, animation, players);
+    }
+
+    /**
+     * Stops the animations played on a model shown for another plugin, as {@link #stop(Block, java.util.Collection)}
+     * does on a placed block.
+     *
+     * @param players the players whose own animations are stopped: they see the model as the others do. Null stops
+     *                those played for everyone, and the model goes back to rest
+     * @return the number of animations stopped, -1 when the model is no longer shown
+     */
+    public synchronized int stop(ShownModel shown, @Nullable java.util.Collection<? extends Player> players) {
+        return stopOn(shown.placed, players);
+    }
+
+    /**
+     * Whether a model of that name can be shown: its file is known, draws something and does not keep its model in
+     * its item, and packet display is on. Read from the file the first time it is asked, as a placement would.
+     */
+    public synchronized boolean knows(String model) {
+        if (!isActive()) {
+            return false;
+        }
+        if (modelFor(model, null) != null) {
+            return true;
+        }
+        if (this.unavailableModels.containsKey(model)) {
+            // its last reading found no file, or nothing drawn
+            return false;
+        }
+        // not read yet (asked from inside a command, or no chunk loaded): its file says
+        AbstractCustomBlock definition = definition(model);
+        return definition != null && !"item".equals(definition.getSaveSystem());
+    }
+
+    /**
+     * The names of all the animations of a model, whatever starts them, in the order of its file; empty for an unknown
+     * model.
+     */
+    public synchronized Set<String> animations(String model) {
+        Set<String> names = new java.util.LinkedHashSet<>();
+        DisplayModel read = isActive() ? modelFor(model, null) : null;
+        if (read != null) {
+            for (DisplayAnimation animation : read.animations) {
+                names.add(animation.name);
+            }
+        } else if (isActive() && !this.unavailableModels.containsKey(model)) {
+            // not read yet: its file says
+            ConfigurationSection section = animationSection(model);
+            if (section != null) {
+                names.addAll(section.getKeys(false));
+            }
+        }
+        return java.util.Collections.unmodifiableSet(names);
+    }
+
+    /**
+     * The box that holds what a model draws at rest: {minX, minY, minZ, maxX, maxY, maxZ}, in blocks around the point
+     * it is shown at, in the model's own axes (before the yaw it is shown with turns it) and at the size of its file
+     * (to be multiplied by the size it is shown at). Null for an unknown model, or one not read yet (see
+     * {@link #show(org.bukkit.plugin.Plugin, String, Location, float)}).
+     */
+    public synchronized double @Nullable [] bounds(String model) {
+        DisplayModel read = isActive() ? modelFor(model, null) : null;
+        if (read == null) {
+            return null;
+        }
+        float[] box = read.bounds();
+        double[] bounds = new double[6];
+        for (int i = 0; i < 6; i++) {
+            bounds[i] = box[i];
+        }
+        return bounds;
+    }
+
+    /**
+     * The model of a file, for a model shown for another plugin: read now when it has not been, in a chunk whose
+     * entities are loaded (the given one when it can).
+     * <p>
+     * A model is read by running its summon commands. Inside a command (another plugin's command, or an event it
+     * fires), those would only run once that command ends: nothing would be read, and the entities they summon would
+     * stay in the world. It is then read at the next tick, and null is given until then.
+     *
+     * @return null when it cannot be read, or not now
+     */
+    @Nullable
+    private DisplayModel modelFor(String name, @Nullable Chunk preferred) {
+        DisplayModel model = this.models.get(name);
+        if (model != null) {
+            return model;
+        }
+        if (this.nms.inCommand()) {
+            readSoon(name);
+            return null;
+        }
+        Chunk chunk = preferred != null && preferred.isEntitiesLoaded() ? preferred : someLoadedChunk();
+        return chunk == null ? null : model(name, chunk.getWorld(), chunk.getX(), chunk.getZ());
+    }
+
+    /**
+     * The models asked for from inside a command, read at the next tick.
+     */
+    private final Set<String> readingSoon = new HashSet<>();
+
+    private void readSoon(String name) {
+        if (!this.readingSoon.add(name) || !this.plugin.isEnabled()) {
+            return;
+        }
+        Bukkit.getScheduler().runTask(this.plugin, () -> {
+            synchronized (this) {
+                this.readingSoon.remove(name);
+                if (isActive() && !this.nms.inCommand()) {
+                    modelFor(name, null);
+                }
+            }
+        });
+    }
+
+    /**
+     * A chunk whose entities are loaded, to read a model in: where a player stands, else the spawn of a world, else
+     * any.
+     */
+    @Nullable
+    private Chunk someLoadedChunk() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            Location at = player.getLocation(this.here);
+            World world = at.getWorld();
+            if (world != null && world.isChunkLoaded(at.getBlockX() >> 4, at.getBlockZ() >> 4)) {
+                Chunk chunk = world.getChunkAt(at.getBlockX() >> 4, at.getBlockZ() >> 4);
+                if (chunk.isEntitiesLoaded()) {
+                    return chunk;
+                }
+            }
+        }
+        for (World world : Bukkit.getWorlds()) {
+            Location spawn = world.getSpawnLocation();
+            if (world.isChunkLoaded(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4)) {
+                Chunk chunk = world.getChunkAt(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4);
+                if (chunk.isEntitiesLoaded()) {
+                    return chunk;
+                }
+            }
+            for (Chunk chunk : world.getLoadedChunks()) {
+                if (chunk.isEntitiesLoaded()) {
+                    return chunk;
+                }
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private AbstractCustomBlock definition(String name) {
+        return this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage ? storage.peek(name)
+                : this.plugin.getCustomBlockService().getStorage().getAbstractCustomBlock(name);
+    }
+
+    /**
+     * Sends a model shown for another plugin to the players already close enough to see it who have its chunk; the
+     * others get it at their next look at where they are.
+     */
+    private void showModel(PlacedDisplay placed) {
+        UUID world = placed.world.getUID();
+        for (Viewer viewer : this.viewers.values()) {
+            if (!viewer.stale && world.equals(viewer.world)
+                    && inRange(viewer, placed, 0) && !viewer.shown.contains(placed) && !viewer.withheld.contains(placed)) {
+                if (chunkSent(viewer.player, placed.chunkX(), placed.chunkZ())) {
+                    reach(viewer, placed);
+                } else {
+                    viewer.stale = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends a player the models shown for other plugins in the chunks around him, as {@link #update(Player)} does the
+     * placed blocks.
+     */
+    private void showModelsAround(Viewer viewer, World world, int chunkX, int chunkZ, int radius) {
+        Map<Long, List<PlacedDisplay>> chunks = this.shownModels.get(world.getUID());
+        if (chunks == null || chunks.isEmpty()) {
+            return;
+        }
+        int side = 2 * radius + 1;
+        if (chunks.size() < side * side) {
+            for (List<PlacedDisplay> list : chunks.values()) {
+                PlacedDisplay any = list.isEmpty() ? null : list.get(0);
+                if (any != null && inRange(any.chunkX() - chunkX, any.chunkZ() - chunkZ, radius)) {
+                    showAll(viewer, list);
+                }
+            }
+        } else {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (inRange(dx, dz, radius)) {
+                        List<PlacedDisplay> list = chunks.get(chunkKey(chunkX + dx, chunkZ + dz));
+                        if (list != null) {
+                            showAll(viewer, list);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Takes a model shown for another plugin away from its viewers, and from the clients that may still draw it
+     * without being among them (a player who respawned or changed world, until the next look at where he is): no
+     * frozen copy is left. It is then no longer shown; the caller has taken it out of {@link #shownModels}.
+     */
+    private void drop(PlacedDisplay placed) {
+        hide(placed);
+        // its sounds would go on without it
+        this.playing.remove(placed);
+        for (Viewer viewer : this.viewers.values()) {
+            int[] ids = viewer.sentModels.remove(placed);
+            if (ids != null && viewer.player.isOnline()) {
+                this.nms.send(viewer.player, this.nms.removePacket(ids));
+            }
+        }
+        if (placed.shownFor != null) {
+            placed.shownFor.placed = null;
+        }
+    }
+
+    /**
+     * Lets go the models shown for other plugins in a chunk that unloaded.
+     */
+    private void dropModels(World world, int chunkX, int chunkZ) {
+        Map<Long, List<PlacedDisplay>> chunks = this.shownModels.get(world.getUID());
+        List<PlacedDisplay> list = chunks == null ? null : chunks.remove(chunkKey(chunkX, chunkZ));
+        if (list != null) {
+            list.forEach(this::drop);
+        }
+    }
+
+    /**
+     * Whether models are shown for other plugins in a chunk. Read on the thread of its world.
+     */
+    private boolean showsIn(Chunk chunk) {
+        Map<Long, List<PlacedDisplay>> chunks = this.shownModels.get(chunk.getWorld().getUID());
+        return chunks != null && chunks.containsKey(chunkKey(chunk.getX(), chunk.getZ()));
+    }
+
+    /**
+     * Gives the models shown for other plugins their file again after a reload, of every file or of one: a model
+     * whose file is gone or draws nothing any more is let go.
+     *
+     * @param name the file read again, null for all of them
+     */
+    private void reloadModels(@Nullable String name) {
+        for (Map<Long, List<PlacedDisplay>> chunks : this.shownModels.values()) {
+            for (Iterator<List<PlacedDisplay>> lists = chunks.values().iterator(); lists.hasNext(); ) {
+                List<PlacedDisplay> list = lists.next();
+                for (Iterator<PlacedDisplay> iterator = list.iterator(); iterator.hasNext(); ) {
+                    PlacedDisplay placed = iterator.next();
+                    if (name != null && !placed.modelName.equals(name)) {
+                        continue;
+                    }
+                    hide(placed);
+                    this.playing.remove(placed);
+                    DisplayModel model = isActive() ? modelFor(placed.modelName, placed.world.getChunkAt(placed.chunkX(), placed.chunkZ())) : null;
+                    if (model == null) {
+                        iterator.remove();
+                        drop(placed);
+                    } else {
+                        // new ids: a client still drawing the old ones is told to remove them when it gets the new
+                        placed.bind(model, this.nms);
+                        showModel(placed);
+                    }
+                }
+                if (list.isEmpty()) {
+                    lists.remove();
+                }
+            }
+        }
+    }
+
+    /**
+     * Takes away the models shown for a plugin being disabled.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPluginDisable(org.bukkit.event.server.PluginDisableEvent event) {
+        synchronized (this) {
+            for (Map<Long, List<PlacedDisplay>> chunks : this.shownModels.values()) {
+                for (Iterator<List<PlacedDisplay>> lists = chunks.values().iterator(); lists.hasNext(); ) {
+                    List<PlacedDisplay> list = lists.next();
+                    for (Iterator<PlacedDisplay> iterator = list.iterator(); iterator.hasNext(); ) {
+                        PlacedDisplay placed = iterator.next();
+                        if (placed.shownFor != null && placed.shownFor.owner == event.getPlugin()) {
+                            iterator.remove();
+                            drop(placed);
+                        }
+                    }
+                    if (list.isEmpty()) {
+                        lists.remove();
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * How many models are shown for other plugins.
+     */
+    private int shownCount() {
+        int count = 0;
+        for (Map<Long, List<PlacedDisplay>> chunks : this.shownModels.values()) {
+            for (List<PlacedDisplay> list : chunks.values()) {
+                count += list.size();
+            }
+        }
+        return count;
+    }
+
+    /**
+     * The chunks of the placed blocks, then those of the models shown for other plugins: for what applies to every
+     * model drawn.
+     */
+    private List<Map<Long, List<PlacedDisplay>>> allChunks() {
+        List<Map<Long, List<PlacedDisplay>>> all = new ArrayList<>(this.index.values());
+        all.addAll(this.shownModels.values());
+        return all;
+    }
+
     // ---------- Moving blocks (operators) ----------
 
     /**
-     * The blocks a player is sent at the moment.
+     * The placed blocks a player is sent at the moment: the models shown for other plugins are theirs.
      */
     synchronized List<PlacedDisplay> shownTo(Player player) {
         Viewer viewer = this.viewers.get(player.getUniqueId());
-        return viewer == null ? List.of() : new ArrayList<>(viewer.shown);
+        if (viewer == null) {
+            return List.of();
+        }
+        List<PlacedDisplay> blocks = new ArrayList<>(viewer.shown.size());
+        for (PlacedDisplay placed : viewer.shown) {
+            if (placed.shownFor == null) {
+                blocks.add(placed);
+            }
+        }
+        return blocks;
     }
 
     /**
@@ -1185,12 +1693,57 @@ public final class DisplayRenderer implements Listener {
                 }
             }
         }
+        // the models shown for other plugins take their new file, or go when it no longer draws anything
+        reloadModels(null);
         // blocks whose file was missing, and blocks to convert
         for (World world : Bukkit.getWorlds()) {
             for (Chunk chunk : world.getLoadedChunks()) {
                 queue(chunk);
             }
         }
+    }
+
+    /**
+     * Shows again from its file every placed block and every model shown for another plugin of one custom block,
+     * once that file alone has been read again ({@code /bdc reload <block>}): the others are left as they are. A
+     * block whose file is gone or draws nothing any more stops being shown, as at a whole reload.
+     */
+    public synchronized void reload(String name) {
+        this.models.remove(name);
+        this.unavailableModels.remove(name);
+        this.reportedModels.remove(name);
+        if (!isActive()) {
+            return;
+        }
+        for (Map.Entry<UUID, Map<Long, List<PlacedDisplay>>> worlds : this.index.entrySet()) {
+            for (Iterator<List<PlacedDisplay>> lists = worlds.getValue().values().iterator(); lists.hasNext(); ) {
+                List<PlacedDisplay> list = lists.next();
+                for (Iterator<PlacedDisplay> iterator = list.iterator(); iterator.hasNext(); ) {
+                    PlacedDisplay placed = iterator.next();
+                    if (!placed.modelName.equals(name)) {
+                        continue;
+                    }
+                    hide(placed);
+                    this.playing.remove(placed);
+                    DisplayModel model = model(name, placed.world, placed.chunkX(), placed.chunkZ());
+                    if (model == null) {
+                        // read again once its file draws something (see read)
+                        iterator.remove();
+                        this.tasks.add(new ChunkTask(worlds.getKey(), placed.chunkX(), placed.chunkZ(), false));
+                    } else {
+                        CustomBlockData data = new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin);
+                        refreshHitbox(placed, model, data);
+                        placed.bind(model, this.nms);
+                        guardHitbox(placed, data);
+                        show(placed);
+                    }
+                }
+                if (list.isEmpty()) {
+                    lists.remove();
+                }
+            }
+        }
+        reloadModels(name);
     }
 
     /**
@@ -1210,6 +1763,10 @@ public final class DisplayRenderer implements Listener {
      * Removes the display entities from the clients: the plugin is being disabled.
      */
     public synchronized void shutdown() {
+        for (Map<Long, List<PlacedDisplay>> chunks : this.shownModels.values()) {
+            chunks.values().forEach(list -> list.forEach(this::drop));
+        }
+        this.shownModels.clear();
         for (Map<Long, List<PlacedDisplay>> chunks : this.index.values()) {
             for (List<PlacedDisplay> list : chunks.values()) {
                 list.forEach(this::hide);
@@ -1279,7 +1836,7 @@ public final class DisplayRenderer implements Listener {
     public void onChunkUnload(ChunkUnloadEvent event) {
         Chunk chunk = event.getChunk();
         Map<Long, List<PlacedDisplay>> chunks = this.index.get(chunk.getWorld().getUID());
-        if (chunks != null && chunks.containsKey(chunkKey(chunk.getX(), chunk.getZ()))) {
+        if (chunks != null && chunks.containsKey(chunkKey(chunk.getX(), chunk.getZ())) || showsIn(chunk)) {
             this.tasks.add(new ChunkTask(chunk.getWorld().getUID(), chunk.getX(), chunk.getZ(), true));
         }
     }
@@ -1290,6 +1847,10 @@ public final class DisplayRenderer implements Listener {
             Map<Long, List<PlacedDisplay>> chunks = this.index.remove(event.getWorld().getUID());
             if (chunks != null) {
                 chunks.values().forEach(list -> list.forEach(this::hide));
+            }
+            Map<Long, List<PlacedDisplay>> models = this.shownModels.remove(event.getWorld().getUID());
+            if (models != null) {
+                models.values().forEach(list -> list.forEach(this::drop));
             }
         }
     }
@@ -1344,7 +1905,8 @@ public final class DisplayRenderer implements Listener {
     // ---------- Every tick ----------
 
     private synchronized void tick() {
-        long deadline = System.nanoTime() + SCAN_BUDGET_NANOS;
+        long begun = System.nanoTime();
+        long deadline = begun + SCAN_BUDGET_NANOS;
         ChunkTask task;
         while ((task = this.tasks.poll()) != null) {
             World world = Bukkit.getWorld(task.world());
@@ -1385,6 +1947,10 @@ public final class DisplayRenderer implements Listener {
             this.registryDirty = false;
             saveRegistry();
         }
+        long spent = System.nanoTime() - begun;
+        this.tickNanos += spent;
+        this.tickMost = Math.max(this.tickMost, spent);
+        this.tickCount++;
     }
 
     private void unload(World world, int chunkX, int chunkZ) {
@@ -1392,6 +1958,7 @@ public final class DisplayRenderer implements Listener {
             // loaded again since: its blocks are the same
             return;
         }
+        dropModels(world, chunkX, chunkZ);
         Map<Long, List<PlacedDisplay>> chunks = this.index.get(world.getUID());
         List<PlacedDisplay> list = chunks == null ? null : chunks.remove(chunkKey(chunkX, chunkZ));
         if (list != null) {
@@ -1655,7 +2222,7 @@ public final class DisplayRenderer implements Listener {
         }
         List<String> problems = new ArrayList<>();
         try {
-            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animations(name), lookAt(name), section(name, "root-motion"),
+            model = DisplayModel.read(this.nms, definition, summonTexts, world, chunkX, chunkZ, animationSection(name), lookAt(name), section(name, "root-motion"),
                     viewDistance(name), viewHeight(name, "display.view-above"), viewHeight(name, "display.view-below"), visibleIf(name, problems), problems);
         } catch (RuntimeException e) {
             if (this.reportedModels.add(name)) {
@@ -1766,7 +2333,7 @@ public final class DisplayRenderer implements Listener {
      * The {@code animations} section of the file of a custom block, if it has one and this server can play it.
      */
     @Nullable
-    private ConfigurationSection animations(String name) {
+    private ConfigurationSection animationSection(String name) {
         if (this.nms.canAnimate()
                 && this.plugin.getCustomBlockService().getStorage() instanceof BDCCustomBlockConfigStorage storage
                 && storage.getCustomBlockRepository() != null) {
@@ -1874,7 +2441,7 @@ public final class DisplayRenderer implements Listener {
         List<PlacedDisplay> blocks = new ArrayList<>();
         Set<PlacedDisplay> privately = new HashSet<>();
         this.privatePlays.values().forEach(plays -> plays.forEach(play -> privately.add(play.placed)));
-        for (Map<Long, List<PlacedDisplay>> chunks : this.index.values()) {
+        for (Map<Long, List<PlacedDisplay>> chunks : allChunks()) {
             for (List<PlacedDisplay> list : chunks.values()) {
                 for (PlacedDisplay placed : list) {
                     if (placed.model != current) {
@@ -2020,7 +2587,8 @@ public final class DisplayRenderer implements Listener {
      * (a reload, a chunk read again), are removed first: the client may still draw them.
      */
     private void sending(Viewer viewer, PlacedDisplay placed) {
-        int[] before = viewer.sent.computeIfAbsent(placed.world.getUID(), k -> new HashMap<>()).put(blockKey(placed), placed.allIds);
+        int[] before = placed.shownFor != null ? viewer.sentModels.put(placed, placed.allIds)
+                : viewer.sent.computeIfAbsent(placed.world.getUID(), k -> new HashMap<>()).put(blockKey(placed), placed.allIds);
         if (before != null && before != placed.allIds) {
             this.nms.send(viewer.player, this.nms.removePacket(before));
         }
@@ -2030,6 +2598,10 @@ public final class DisplayRenderer implements Listener {
      * The client was told to remove these ids.
      */
     private static void unsent(Viewer viewer, PlacedDisplay placed) {
+        if (placed.shownFor != null) {
+            viewer.sentModels.remove(placed, placed.allIds);
+            return;
+        }
         Map<Long, int[]> blocks = viewer.sent.get(placed.world.getUID());
         if (blocks != null) {
             blocks.remove(blockKey(placed), placed.allIds);
@@ -2414,20 +2986,31 @@ public final class DisplayRenderer implements Listener {
     private long attendNanos;
     private long attendTicks;
     private long attendPairs;
+    /**
+     * What the whole work of a tick has cost since {@link #attendStats()} was last asked, and its longest tick.
+     */
+    private long tickNanos;
+    private long tickMost;
+    private long tickCount;
 
     /**
      * The cost of the pass over the players close to the blocks with a look-at, an approach animation or a loop with
      * a distance, since this was last asked (then counted afresh): microseconds a tick, pairs a tick, nanoseconds a
-     * pair.
+     * pair; then the whole work of the renderer a tick, and the models shown for other plugins.
      */
     public synchronized String attendStats() {
         long ticks = Math.max(1, this.attendTicks);
-        String text = String.format(java.util.Locale.ROOT, "%d ticks: %.1f µs a tick, %.1f (player, block) pairs a tick, %.0f ns a pair",
+        String text = String.format(java.util.Locale.ROOT, "%d ticks: %.1f µs a tick, %.1f (player, block) pairs a tick, %.0f ns a pair;"
+                        + " all of the renderer %.1f µs a tick over %d ticks (longest %.1f); %d model(s) shown for other plugins",
                 this.attendTicks, this.attendNanos / 1000.0 / ticks, this.attendPairs / (double) ticks,
-                this.attendPairs == 0 ? 0.0 : this.attendNanos / (double) this.attendPairs);
+                this.attendPairs == 0 ? 0.0 : this.attendNanos / (double) this.attendPairs,
+                this.tickNanos / 1000.0 / Math.max(1, this.tickCount), this.tickCount, this.tickMost / 1000.0, shownCount());
         this.attendNanos = 0;
         this.attendTicks = 0;
         this.attendPairs = 0;
+        this.tickNanos = 0;
+        this.tickMost = 0;
+        this.tickCount = 0;
         return text;
     }
 
@@ -3014,6 +3597,7 @@ public final class DisplayRenderer implements Listener {
             this.nms.send(player, this.nms.removePacket(ids));
         }
 
+        showModelsAround(viewer, world, chunkX, chunkZ, radius);
         Map<Long, List<PlacedDisplay>> chunks = this.index.get(world.getUID());
         if (chunks == null || chunks.isEmpty()) {
             return;

@@ -620,7 +620,10 @@ public class BlockDisplayCreatorSpigotCommand implements TabExecutor {
                     plugin.reloadConfig();
                     ChatUtil.sendMessage(sender, "&aConfig has been reloaded!");
                 } else {
-                    this.plugin.getCustomBlockService().getStorage().reload(arg2);
+                    // the blocks of that name already shown, and the models shown for other plugins, take the new file
+                    me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = this.plugin.getDisplayRenderer();
+                    String name = arg2;
+                    this.plugin.getCustomBlockService().getStorage().reload(name, renderer == null ? null : () -> renderer.reload(name));
                     ChatUtil.sendMessage(sender, "&a%s block has been reloaded!", arg2);
                 }
             }
