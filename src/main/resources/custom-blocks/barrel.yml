@@ -151,6 +151,17 @@ sound:
 #  #        volume: 1
 #  #The sounds of an animation carry as far as those of the game (16 blocks). A shorter distance, in blocks, keeps them for the players standing in front of the block.   By def 0, that of the game
 #  #    sound-range: 3
+#  #Particles of the game shown along the animation, seen by those who see it (one played for a player alone: by him alone). The position
+#  #(by def where the block stands) and the spread (offset, each way, by def none) are in blocks, in the model's axes at size 1 as move is:
+#  #they follow the rotation, moves and size of the block, and the whole model when root frames move it. count is at most
+#  #animation-particles-max of config.yml (64). dust also takes color "#RRGGBB" and size; particles needing a block or an item are refused.
+#  #    particles:
+#  #      - at: 12
+#  #        particle: enchant
+#  #        count: 8
+#  #        offset: [0.3, 0.2, 0.3]
+#  #        speed: 0.05
+#  #        position: [0, 1.2, 0]
 #  #A loop only: it plays for the players within this many blocks of the block; the others see its parts at rest and are sent none of its frames
 #  #nor sounds. Coming within it, a player sees the parts glide from rest into the loop; going further than distance + 2, glide back to rest.   By def every player who sees the block
 #  #    distance: 16

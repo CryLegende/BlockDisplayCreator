@@ -40,6 +40,13 @@ import java.util.TreeSet;
  *     sound-range: 3          # blocks from which its sounds are heard; by def those of the game
  *     ease: false             # its frames as written; by def (animation-easing in config.yml) a part that starts or
  *                             # stops moving does so smoothly, see Easing
+ *     particles:              # particles of the game, seen by those who see the animation
+ *       - at: 12
+ *         particle: enchant
+ *         count: 8            # at most animation-particles-max of config.yml
+ *         offset: [0.3, 0.2, 0.3]
+ *         speed: 0.05
+ *         position: [0, 1.2, 0]  # in the model's axes, as move; dust also takes color: "#RRGGBB" and size
  *     distance: 16            # loop only: plays for the players within this many blocks of the block, the others
  *                             # see its parts at rest. By def for all who see the block
  *     sounds:                 # sounds of their own, for a tune: a sound of the game, its tick, its pitch and volume
@@ -94,6 +101,14 @@ final class DisplayAnimation {
      * For each tick of the animation, the indexes of the notes played at it, or null.
      */
     final int[][] notesAt;
+    /**
+     * Particles shown at the block along the animation.
+     */
+    final Spark[] sparks;
+    /**
+     * For each tick of the animation, the indexes of the particles shown at it, or null.
+     */
+    final int[][] sparksAt;
     /**
      * The display entities some frame of the animation moves, in increasing order.
      */
@@ -181,7 +196,17 @@ final class DisplayAnimation {
     record Note(int at, String sound, float volume, float pitch) {
     }
 
-    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, boolean optimisable,
+    /**
+     * Particles of the game shown at a tick of the animation, at a point of the model.
+     *
+     * @param position where, in the model's axes at its scale (blocks from where the block stands)
+     * @param offset   how far they spread each way, in the model's axes at its scale
+     * @param data     what the particle needs besides (the colour and size of dust), null for none
+     */
+    record Spark(int at, org.bukkit.Particle particle, int count, Vector3f position, Vector3f offset, double speed, Object data) {
+    }
+
+    private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, Spark[] sparks, boolean optimisable,
                              double soundRange, double radius, long cooldown, double distance, boolean ease, Set<Frame> absolute) {
         this.distance = distance;
         this.ease = ease;
@@ -198,6 +223,14 @@ final class DisplayAnimation {
         this.startingAt = new int[duration + 1][];
         this.notes = notes;
         this.notesAt = new int[duration + 1][];
+        this.sparks = sparks;
+        this.sparksAt = new int[duration + 1][];
+        for (int i = 0; i < sparks.length; i++) {
+            int[] showing = this.sparksAt[sparks[i].at()];
+            int[] extended = showing == null ? new int[1] : java.util.Arrays.copyOf(showing, showing.length + 1);
+            extended[extended.length - 1] = i;
+            this.sparksAt[sparks[i].at()] = extended;
+        }
         for (int i = 0; i < notes.length; i++) {
             int[] playing = this.notesAt[notes[i].at()];
             int[] extended = playing == null ? new int[1] : java.util.Arrays.copyOf(playing, playing.length + 1);
@@ -323,7 +356,7 @@ final class DisplayAnimation {
             return this;
         }
         DisplayAnimation finished = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, done.toArray(Frame[]::new), this.notes,
-                this.optimisable, this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
+                this.sparks, this.optimisable, this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
         finished.eased = eased.size() - frames.size();
         return finished;
     }
@@ -418,7 +451,15 @@ final class DisplayAnimation {
         for (Note note : notes) {
             duration = Math.max(duration, note.at() + 1);
         }
+        List<Spark> sparks = new ArrayList<>();
+        for (Map<?, ?> entry : section.getMapList("particles")) {
+            sparks.add(spark(entry, scale));
+        }
+        for (Spark spark : sparks) {
+            duration = Math.max(duration, spark.at() + 1);
+        }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
+                sparks.toArray(Spark[]::new),
                 section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown, loopDistance(trigger, section.get("distance")),
                 ease(section.get("ease")), absolute);
     }
@@ -489,6 +530,63 @@ final class DisplayAnimation {
     }
 
     /**
+     * Reads one particle entry: {@code at}, {@code particle} (a particle of the game, minecraft: or not), {@code count}
+     * (by def 1), {@code offset} (spread each way, blocks, by def none), {@code speed} (by def 0), {@code position}
+     * (in the model's axes at size 1, by def where the block stands), and for {@code dust} its {@code color}
+     * ("#RRGGBB", by def white) and {@code size} (by def 1).
+     */
+    private static Spark spark(Map<?, ?> entry, float modelScale) {
+        Object name = entry.get("particle");
+        if (name == null) {
+            throw new IllegalArgumentException("a particle has no particle key");
+        }
+        org.bukkit.Particle particle = particle(name.toString());
+        int at = Math.max(0, number(entry.get("at"), 0).intValue());
+        int count = number(entry.get("count"), 1).intValue();
+        if (count < 0) {
+            throw new IllegalArgumentException("count must not be below 0, not " + entry.get("count"));
+        }
+        Vector3f position = entry.get("position") == null ? new Vector3f() : vector(entry.get("position"), "position").mul(modelScale);
+        Vector3f offset = entry.get("offset") == null ? new Vector3f() : vector(entry.get("offset"), "offset").mul(modelScale);
+        double speed = number(entry.get("speed"), 0).doubleValue();
+        Object data = null;
+        Class<?> needs = particle.getDataType();
+        if (needs == org.bukkit.Particle.DustOptions.class) {
+            org.bukkit.Color color = org.bukkit.Color.WHITE;
+            Object written = entry.get("color");
+            if (written != null) {
+                String hex = written.toString().trim().replace("#", "");
+                try {
+                    color = org.bukkit.Color.fromRGB(Integer.parseInt(hex, 16) & 0xFFFFFF);
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("color is written #RRGGBB, not " + written);
+                }
+            }
+            data = new org.bukkit.Particle.DustOptions(color, number(entry.get("size"), 1f).floatValue());
+        } else if (needs != Void.class) {
+            throw new IllegalArgumentException("particle " + name + " needs a " + needs.getSimpleName() + ", which an animation cannot give it");
+        }
+        return new Spark(at, particle, count, position, offset, speed, data);
+    }
+
+    /**
+     * A particle of the game by its name: minecraft:end_rod, end_rod or END_ROD.
+     */
+    private static org.bukkit.Particle particle(String name) {
+        String key = name.trim().toLowerCase(Locale.ROOT);
+        if (key.startsWith("minecraft:")) {
+            key = key.substring("minecraft:".length());
+        }
+        for (org.bukkit.Particle particle : org.bukkit.Particle.values()) {
+            // a Keyed on the servers that name particles by key (the API the plugin is built on does not say so)
+            if ((Object) particle instanceof org.bukkit.Keyed keyed && keyed.getKey().getKey().equals(key) || particle.name().equalsIgnoreCase(key)) {
+                return particle;
+            }
+        }
+        throw new IllegalArgumentException("there is no particle " + name);
+    }
+
+    /**
      * The {@code distance} of a loop, in blocks: 0 when absent, and for an animation that is no loop.
      */
     private static double loopDistance(Trigger trigger, Object value) {
@@ -534,7 +632,7 @@ final class DisplayAnimation {
             out[i] = new Frame(k.at(), k.over(), parts, moving, jumping, targets, frame.sound(), frame.volume(), frame.pitch(), frame.root());
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
-        DisplayAnimation lighter = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.optimisable,
+        DisplayAnimation lighter = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.sparks, this.optimisable,
                 this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
         lighter.eased = this.eased;
         return lighter;
@@ -552,7 +650,7 @@ final class DisplayAnimation {
             // a frame that moves nothing holds the place of the animation
             kept = new Frame[]{new Frame(0, 0, new int[0], new List<?>[0], new List<?>[0], new Transformation[0], null, 1f, 1f, null)};
         }
-        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, kept, this.notes, this.optimisable, this.soundRange,
+        return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, kept, this.notes, this.sparks, this.optimisable, this.soundRange,
                 this.radius, this.cooldown, this.distance, this.ease, Set.of());
     }
 

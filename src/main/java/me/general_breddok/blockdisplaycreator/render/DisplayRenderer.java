@@ -540,6 +540,11 @@ public final class DisplayRenderer implements Listener {
         List<PrivatePlay> plays = this.privatePlays.computeIfAbsent(id, k -> new ArrayList<>(1));
         PrivatePlay play = new PrivatePlay(placed, index, this.tick + 1, approach);
         play.carrierGlide = placed.carrierGlide;
+        if (placed.carrierId >= 0) {
+            // he gets none of the others' frames from now on: the whole model stays for him where they have it now
+            Viewer viewer = this.viewers.get(id);
+            play.rootTarget = placed.rootTarget(this.tick, viewer == null || viewer.player != player ? 0L : skipLoops(viewer, placed));
+        }
         for (Iterator<PrivatePlay> iterator = plays.iterator(); iterator.hasNext(); ) {
             PrivatePlay old = iterator.next();
             if (old.placed == placed) {
@@ -2712,6 +2717,7 @@ public final class DisplayRenderer implements Listener {
                 if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
                     play(placed, i, animation, animation.startingAt[this.tick % animation.duration]);
                     sound(placed, animation, this.tick % animation.duration);
+                    sparks(placed, i, animation, this.tick % animation.duration, null);
                 }
             }
         }
@@ -2728,6 +2734,7 @@ public final class DisplayRenderer implements Listener {
                 if (elapsed >= 0 && elapsed <= animation.duration) {
                     play(placed, i, animation, animation.startingAt[elapsed]);
                     sound(placed, animation, elapsed);
+                    sparks(placed, i, animation, elapsed, null);
                 }
                 if (elapsed >= animation.duration) {
                     placed.startedAt[i] = -1;
@@ -2782,6 +2789,9 @@ public final class DisplayRenderer implements Listener {
                             play.lastFrame = frame;
                         }
                     }
+                    if (sees && animation.sparksAt[elapsed] != null) {
+                        sparks(play.placed, play.animation, animation, elapsed, viewer);
+                    }
                     int[] due = animation.notesAt[elapsed];
                     if (hears && due != null) {
                         for (int note : due) {
@@ -2798,6 +2808,51 @@ public final class DisplayRenderer implements Listener {
             if (entry.getValue().isEmpty()) {
                 entries.remove();
             }
+        }
+    }
+
+    /**
+     * Shows the particles of an animation due at a tick of it: to a player it is played for alone, or to those who see
+     * the block and get its frames (not those watching an animation of their own on it, nor those too far for a loop
+     * with a distance). Where the model's point is, as the block is turned, moved and sized, with the whole model when
+     * its frames have moved it.
+     *
+     * @param only the player it is played for alone, null for everyone
+     */
+    private void sparks(PlacedDisplay placed, int index, DisplayAnimation animation, int at, @Nullable Viewer only) {
+        int[] due = animation.sparksAt[at];
+        if (due == null || placed.viewers.isEmpty()) {
+            return;
+        }
+        int most = (int) Math.max(0, Math.min(Integer.MAX_VALUE, me.general_breddok.blockdisplaycreator.file.config.value.LongConfigValue.ANIMATION_PARTICLES_MAX));
+        for (int spark : due) {
+            DisplayAnimation.Spark shown = animation.sparks[spark];
+            if (only != null) {
+                PrivatePlay play = privatePlay(only.player.getUniqueId(), placed);
+                // where the whole model is for him: where his animation took it, or where it was when it started
+                org.joml.Vector3f root = play != null && (play.rootMoved || play.rootTarget != null) ? play.rootTarget
+                        : placed.rootTarget(this.tick, skipLoops(only, placed));
+                spark(only, placed, shown, root, most);
+                continue;
+            }
+            for (Viewer viewer : placed.viewers) {
+                if (!placed.privateFor.isEmpty() && placed.privateFor.contains(viewer.player.getUniqueId())
+                        || animation.distance > 0 && !plays(viewer, placed, index)) {
+                    continue;
+                }
+                spark(viewer, placed, shown, placed.model.hasCarrier() ? placed.rootTarget(this.tick, skipLoops(viewer, placed)) : null, most);
+            }
+        }
+    }
+
+    private void spark(Viewer viewer, PlacedDisplay placed, DisplayAnimation.Spark spark, @Nullable org.joml.Vector3f root, int most) {
+        double[] at = placed.modelPoint(spark.position(), root);
+        double[] spread = placed.modelSpread(spark.offset());
+        int count = Math.min(spark.count(), most);
+        if (spark.data() == null) {
+            viewer.player.spawnParticle(spark.particle(), at[0], at[1], at[2], count, spread[0], spread[1], spread[2], spark.speed());
+        } else {
+            viewer.player.spawnParticle(spark.particle(), at[0], at[1], at[2], count, spread[0], spread[1], spread[2], spark.speed(), spark.data());
         }
     }
 

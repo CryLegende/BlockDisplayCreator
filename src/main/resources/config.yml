@@ -27,6 +27,10 @@ animation-optimisation: true
 #An animation keeps its frames as written with ease: false in its section.   By def true
 animation-easing: true
 
+#The most particles one entry of the particles of an animation shows at once, whatever its count: it keeps the games of the players
+#who see a block from drawing too many.   By def 64
+animation-particles-max: 64
+
 #If set to true, a custom block item given before its file changed gets the name and lore of the file back when its
 #owner joins and when a player opens a container block holding it (not in the menus of other plugins). A file whose
 #name or lore holds a placeholder is left out.   By def true

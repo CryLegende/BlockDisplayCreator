@@ -708,6 +708,43 @@ final class PlacedDisplay {
     }
 
     /**
+     * Where a point of the model (in its axes at its scale, blocks from where the block stands) is in the world: turned,
+     * moved and sized as the block is, with the whole model when its root frames have moved it ({@code root}, null for
+     * not).
+     */
+    double[] modelPoint(org.joml.Vector3f local, org.joml.Vector3f root) {
+        double[] pose = pose(this.model.elements.get(0).pitch());
+        org.joml.Vector3d point = new org.joml.Vector3d(local.x, local.y, local.z);
+        if (root != null && this.model.hasCarrier()) {
+            point.add(root.x, root.y, root.z);
+        }
+        orientation(pose[3], pose[4]).transform(point.mul(scale()));
+        return new double[]{pose[0] + point.x, pose[1] + point.y, pose[2] + point.z};
+    }
+
+    /**
+     * How far particles spread each way in the world for a spread in the model's axes: turned as the block is (a
+     * spread along the world's axes, so the box around it) and sized.
+     */
+    double[] modelSpread(org.joml.Vector3f local) {
+        double[] pose = pose(this.model.elements.get(0).pitch());
+        org.joml.Quaterniond turn = orientation(pose[3], pose[4]);
+        double[] out = new double[3];
+        for (int axis = 0; axis < 3; axis++) {
+            org.joml.Vector3d along = new org.joml.Vector3d(axis == 0 ? local.x : 0, axis == 1 ? local.y : 0, axis == 2 ? local.z : 0);
+            turn.transform(along);
+            out[0] += Math.abs(along.x);
+            out[1] += Math.abs(along.y);
+            out[2] += Math.abs(along.z);
+        }
+        double size = scale();
+        out[0] *= size;
+        out[1] *= size;
+        out[2] *= size;
+        return out;
+    }
+
+    /**
      * The packet that teleports the carrier where a frame moving the whole model takes it, over the frame's time:
      * with the glide of the frame first when the client does not have it.
      */
