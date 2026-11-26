@@ -102,6 +102,9 @@ sound:
 #    #command (only /bdc animation play <player|selector|*> <animation> <x> <y> <z> [world], which can also start the others but loops)
 #    #or approach (a player who comes close, see radius and cooldown).
 #    #Played for chosen players, only they see it and hear its sounds, and once it ends they see the block as the others do; * plays it for everyone.
+#    #While an animation other than a loop plays for everyone (a click, a command for *), the loops leave it the parts it moves: none of their
+#    #frames go for them until it ends, then those parts glide back into the loops (a player arriving meanwhile gets them where it has them).
+#    #The same for the whole model when both move it (root, see below).
 #    #   By def loop
 #    trigger: click
 #    #Click only: the interaction that starts it.   By def any interaction
@@ -165,6 +168,12 @@ sound:
 #  #A loop only: it plays for the players within this many blocks of the block; the others see its parts at rest and are sent none of its frames
 #  #nor sounds. Coming within it, a player sees the parts glide from rest into the loop; going further than distance + 2, glide back to rest.   By def every player who sees the block
 #  #    distance: 16
+#  #With a look-at (see below): whether the parts that look at a player keep doing so while this animation plays, played for everyone or for
+#  #him alone: each of its frames moving them reaches him turned towards him (a blink, a breath, a look that drifts, a nod). false: they leave
+#  #him while it plays and take its poses as written (a scene where the head looks at a map), then turn to him again; a loop: he sees them at rest.
+#  #   By def true for an animation that only shows, hides or sizes them (its frames change their size, around any pivot, and nothing else)
+#  #   and for the loops with loop: true, else false
+#  #    look-at: true
 #  #A frame may move the whole model at once (a flying character bobbing, a jump): root is where it takes it, in blocks from where the block stands,
 #  #in the model's axes at size 1 as move is. Whatever the number of parts, a client gets one small packet for it; the parts keep their own frames on top.
 #  #A frame with a root moves no part unless it also has parts, move, rotate, scale or transformation. Over 59 ticks it is cut into pieces along the same line.
@@ -188,6 +197,8 @@ sound:
 
 #Settings of the frames that move the whole model (root, see the animations above).   The field may be missing
 #The parts ride an invisible display, which those frames move. A part riding it that goes lower than half a block under the block is drawn at all times.
+#When frames take the model under its floor (a crouch before a jump, a landing), that display stands as much higher and the parts as much lower
+#on it: they are drawn where the frames put them, with the light of the place the model stands in, never black from the ground under it.
 #root-motion:
 #  #Parts that stay where they are when the whole model moves (a shadow on the ground), numbered as in the frames.   By def none
 #  exclude: [12]
@@ -195,7 +206,8 @@ sound:
 #Parts that turn towards each player standing close by, as the head of a character does.   The field may be missing
 #Each player sees them turned towards himself (the others see them as they are), and back as they were once he goes further than radius + 0.5.
 #While they look at a player, the frames of the loops that move them are kept from him: he sees them at rest, turned to him, the other parts keep moving.
-#An animation that moves them goes first (a click one everyone sees, one played for him alone): they turn to him again once it ends.
+#An animation that moves them goes first (a click one everyone sees, one played for him alone): they turn to him again once it ends. One with
+#look-at: true (see the animations) keeps them looking at him instead, its frames turned towards him, as one that only shows or hides them does.
 #A player who stands still is sent nothing. They need the display entities to be shown through packets (packet-display in config.yml).
 #look-at:
 #  #Display entities that turn together, numbered as in the frames of the animations.   Required

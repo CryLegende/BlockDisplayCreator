@@ -300,6 +300,11 @@ public final class DisplayRenderer implements Listener {
          */
         int sentAt = Integer.MIN_VALUE / 2;
         /**
+         * When the parts a frame takes longer than a turn to move get the rest of their way, turned towards him (a turn
+         * leaves them where their frame has them by its end), -1 for never.
+         */
+        int resumeAt = -1;
+        /**
          * Where he stood (the object his position is kept in) and how high his eyes were the last time nothing was
          * left to send him: while they stay the same, nothing is worked out again.
          */
@@ -346,6 +351,12 @@ public final class DisplayRenderer implements Listener {
         boolean rootMoved;
         org.joml.Vector3f rootTarget;
         int carrierGlide = -1;
+        /**
+         * For each part of the model's {@code look-at}, where his client had it when the animation started, unturned
+         * (null for its rest): the turns towards him start from there for the parts it has not moved yet. Null for all
+         * at rest.
+         */
+        org.bukkit.util.Transformation[] lookFrom;
 
         PrivatePlay(PlacedDisplay placed, int animation, int startedAt, boolean approach) {
             this.placed = placed;
@@ -558,26 +569,60 @@ public final class DisplayRenderer implements Listener {
         List<PrivatePlay> plays = this.privatePlays.computeIfAbsent(id, k -> new ArrayList<>(1));
         PrivatePlay play = new PrivatePlay(placed, index, this.tick + 1, approach);
         play.carrierGlide = placed.carrierGlide;
+        Viewer viewer = this.viewers.get(id);
+        boolean seen = viewer != null && viewer.player == player && viewer.shown.contains(placed);
         if (placed.carrierId >= 0) {
             // he gets none of the others' frames from now on: the whole model stays for him where they have it now
-            Viewer viewer = this.viewers.get(id);
             play.rootTarget = placed.rootTarget(this.tick, viewer == null || viewer.player != player ? 0L : skipLoops(viewer, placed));
         }
+        LookAt lookAt = placed.model.lookAt;
+        boolean replaced = false;
         for (Iterator<PrivatePlay> iterator = plays.iterator(); iterator.hasNext(); ) {
             PrivatePlay old = iterator.next();
             if (old.placed == placed) {
                 // started again: the parts the other animation moved go back to rest, the frames take the rest
                 iterator.remove();
-                Viewer viewer = this.viewers.get(id);
-                if (old.animation != index && viewer != null && viewer.player == player && viewer.shown.contains(placed)) {
-                    // gliding: the new one's first frames take the parts they move from wherever they are by then
-                    this.nms.send(player, placed.restPacket(this.nms, old.animation, REPLACE_GLIDE_TICKS));
+                replaced = true;
+                if (lookAt != null) {
+                    // the parts of the look-at are where the other one has them
+                    play.lookFrom = placed.privatePoses(old.animation, old.lastFrame, this.tick - old.startedAt, old.lookFrom, 0).targets();
+                }
+                if (old.animation != index && seen) {
+                    // gliding: the new one's first frames take the parts they move from wherever they are by then; those
+                    // turned towards him go back to rest turned so
+                    boolean turned = lookAt != null && viewer.lookedAtBy(placed);
+                    Object rest = placed.restPacket(this.nms, old.animation, REPLACE_GLIDE_TICKS, turned);
+                    if (rest != null) {
+                        this.nms.send(player, rest);
+                    }
+                    if (lookAt != null) {
+                        boolean moved = false;
+                        for (int p = 0; p < lookAt.parts.length; p++) {
+                            if (java.util.Arrays.binarySearch(placed.model.animations.get(old.animation).touched, lookAt.parts[p]) >= 0) {
+                                play.lookFrom[p] = null;
+                                moved = true;
+                            }
+                        }
+                        if (turned && moved) {
+                            Nearby near = viewer.near(placed);
+                            this.nms.send(player, placed.turnPacket(this.nms, near.yaw, near.pitch, REPLACE_GLIDE_TICKS,
+                                    placed.privatePoses(index, -1, 0, play.lookFrom, REPLACE_GLIDE_TICKS)));
+                        }
+                    }
                 }
                 // the whole model stays where the other one took it, and goes back to the others once this one ends
                 play.rootMoved = old.rootMoved;
                 play.rootTarget = old.rootTarget;
                 play.carrierGlide = old.carrierGlide;
             }
+        }
+        if (lookAt != null && seen && !replaced) {
+            // where his client has the parts of the look-at: turned from where the frames that keep them looking have
+            // them, or where all the frames he gets have them
+            long skip = skipLoops(viewer, placed);
+            play.lookFrom = viewer.lookedAtBy(placed) ? placed.model.turnsFromFrames
+                    ? placed.publicPoses(lookAt.parts, this.tick, 0, skip | placed.model.unlookedLoops).targets() : null
+                    : placed.publicPoses(lookAt.parts, this.tick, 0, skip).targets();
         }
         plays.add(play);
         placed.privateFor.add(id);
@@ -602,6 +647,8 @@ public final class DisplayRenderer implements Listener {
         if (players == null) {
             List<DisplayAnimation> animations = placed.model.animations;
             boolean rooted = false;
+            // the parts they moved that a loop moves too: where the loop has them, at once, rather than at rest
+            boolean[] fromLoops = null;
             for (int i = 0; i < animations.size(); i++) {
                 if (animations.get(i).trigger == DisplayAnimation.Trigger.LOOP || placed.lastFrame[i] < 0 && placed.startedAt[i] < 0) {
                     continue;
@@ -609,13 +656,51 @@ public final class DisplayRenderer implements Listener {
                 if (placed.startedAt[i] >= 0) {
                     stopped++;
                 }
+                for (int part : animations.get(i).touched) {
+                    if (placed.model.looped[part]) {
+                        if (fromLoops == null) {
+                            fromLoops = new boolean[placed.entityIds.length];
+                            java.util.Arrays.fill(fromLoops, true);
+                        }
+                        fromLoops[part] = false;
+                    }
+                }
                 rooted |= animations.get(i).rooted && placed.lastFrame[i] >= 0;
                 placed.startedAt[i] = -1;
                 placed.lastFrame[i] = -1;
                 Object packet = placed.restPacket(this.nms, i);
                 for (Viewer viewer : placed.viewers) {
-                    if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
-                        this.nms.send(viewer.player, packet);
+                    if (placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        continue;
+                    }
+                    if (placed.model.lookAt != null && viewer.lookedAtBy(placed) && placed.model.movesLook[i]) {
+                        // the parts turned towards him go back at once where the others' frames now have them, turned so
+                        Object rest = placed.restPacket(this.nms, i, 0, true);
+                        if (rest != null) {
+                            this.nms.send(viewer.player, rest);
+                        }
+                        Nearby near = viewer.near(placed);
+                        this.nms.send(viewer.player, placed.turnPacket(this.nms, near.yaw, near.pitch, 0, this.tick, skipLoops(viewer, placed)));
+                        continue;
+                    }
+                    this.nms.send(viewer.player, packet);
+                }
+            }
+            if (fromLoops != null && placed.loops()) {
+                for (Viewer viewer : placed.viewers) {
+                    if (placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        continue;
+                    }
+                    boolean unturned = placed.model.lookAt != null && viewer.lookedAtBy(placed);
+                    for (int i = 0; i < animations.size(); i++) {
+                        DisplayAnimation loop = animations.get(i);
+                        if (loop.trigger != DisplayAnimation.Trigger.LOOP || loop.distance > 0 && !plays(viewer, placed, i)) {
+                            continue;
+                        }
+                        Object packet = placed.rejoinPacket(this.nms, i, this.tick % loop.duration, this.tick >= loop.duration, 0, unturned, fromLoops);
+                        if (packet != null) {
+                            this.nms.send(viewer.player, packet);
+                        }
                     }
                 }
             }
@@ -656,9 +741,15 @@ public final class DisplayRenderer implements Listener {
             return null;
         }
         List<String> names = new ArrayList<>();
-        for (DisplayAnimation animation : placed.model.animations) {
+        for (int i = 0; i < placed.model.animations.size(); i++) {
+            DisplayAnimation animation = placed.model.animations.get(i);
+            // with a look-at, for one moving its parts: whether they keep looking at the player while it plays, leave him
+            // for its time, or (a loop) stay at rest for him
+            String look = placed.model.lookAt == null || !placed.model.movesLook[i] ? ""
+                    : placed.model.composesLook[i] ? ", keeps the look"
+                    : animation.trigger == DisplayAnimation.Trigger.LOOP ? ", look parts at rest" : ", stops the look";
             names.add(animation.name + " (" + animation.trigger.name().toLowerCase(java.util.Locale.ROOT) + ", " + animation.duration + " ticks"
-                    + (animation.eased > 0 ? ", eased: " + animation.eased + " more frames" : "") + ")");
+                    + (animation.eased > 0 ? ", eased: " + animation.eased + " more frames" : "") + look + ")");
         }
         return Map.entry(placed.modelName, names);
     }
@@ -710,11 +801,29 @@ public final class DisplayRenderer implements Listener {
                 withhold(viewer, placed);
                 return;
             }
+            LookAt lookAt = placed.model.lookAt;
+            // the parts turned towards him (the animation kept them looking at him) stay so, and go where the others'
+            // frames have them, turned
+            boolean turned = lookAt != null && viewer.lookedAtBy(placed);
+            int[] touched = placed.model.animations.get(play.animation).touched;
             if (glide) {
-                this.nms.send(viewer.player, placed.publicPacket(this.nms, placed.model.animations.get(play.animation).touched, this.tick, REJOIN_TICKS,
-                        skipLoops(viewer, placed)));
+                int[] parts = turned ? java.util.Arrays.stream(touched).filter(part -> !lookAt.turns(part)).toArray() : touched;
+                if (parts.length > 0) {
+                    this.nms.send(viewer.player, placed.publicPacket(this.nms, parts, this.tick, REJOIN_TICKS, skipLoops(viewer, placed)));
+                }
             } else {
-                this.nms.send(viewer.player, placed.restPacket(this.nms, play.animation));
+                Object rest = placed.restPacket(this.nms, play.animation, 0, turned);
+                if (rest != null) {
+                    this.nms.send(viewer.player, rest);
+                }
+            }
+            if (turned && (placed.model.movesLook[play.animation] || placed.model.lookingLoops != 0)) {
+                PlacedDisplay.PublicPoses after = placed.lookPoses(this.tick, REJOIN_TICKS, skipLoops(viewer, placed));
+                if (glide || !placed.samePlace(privateLook(play, 0), after)) {
+                    // nothing is sent when the animation left them where the others' frames have them (back at rest)
+                    Nearby near = viewer.near(placed);
+                    this.nms.send(viewer.player, placed.turnPacket(this.nms, near.yaw, near.pitch, REJOIN_TICKS, after));
+                }
             }
             catchUp(viewer, placed, true);
             if (play.rootMoved && placed.model.hasCarrier()) {
@@ -728,6 +837,13 @@ public final class DisplayRenderer implements Listener {
      * with a distance only within it); the players watching an animation played for them alone keep theirs.
      */
     private void carrierToLoops(PlacedDisplay placed) {
+        carrierToLoops(placed, 0);
+    }
+
+    /**
+     * @param ticks the time it takes to get there, 0 for at once
+     */
+    private void carrierToLoops(PlacedDisplay placed, int ticks) {
         Object shared = null;
         for (Viewer viewer : placed.viewers) {
             if (placed.privateFor.contains(viewer.player.getUniqueId())) {
@@ -735,7 +851,7 @@ public final class DisplayRenderer implements Listener {
             }
             long skip = skipLoops(viewer, placed) & placed.model.distanceRooted;
             Object packet = skip == 0 && shared != null ? shared
-                    : placed.carrierMove(this.nms, placed.rootTarget(this.tick, skip), 0, placed.carrierGlide, placed.carrierGlide);
+                    : placed.carrierMove(this.nms, placed.rootTarget(this.tick, skip), ticks, placed.carrierGlide, placed.carrierGlide);
             if (skip == 0) {
                 shared = packet;
             }
@@ -1642,13 +1758,15 @@ public final class DisplayRenderer implements Listener {
                 this.looping.remove(placed);
                 this.spinning.remove(placed);
                 List<DisplayAnimation> animations = placed.model.animations;
+                // the parts an animation everyone sees plays stay with it
+                boolean[] busy = this.playing.contains(placed) ? placed.busyParts(this.tick) : null;
                 for (int i = 0; i < animations.size(); i++) {
                     if (animations.get(i).trigger != DisplayAnimation.Trigger.LOOP) {
                         continue;
                     }
-                    Object packet = placed.restPacket(this.nms, i);
+                    Object packet = placed.restPacket(this.nms, i, 0, false, busy);
                     for (Viewer viewer : placed.viewers) {
-                        if (!placed.privateFor.contains(viewer.player.getUniqueId())) {
+                        if (packet != null && !placed.privateFor.contains(viewer.player.getUniqueId())) {
                             this.nms.send(viewer.player, packet);
                             Nearby near = viewer.near(placed);
                             if (near != null) {
@@ -2935,10 +3053,11 @@ public final class DisplayRenderer implements Listener {
             this.nms.send(viewer.player, glidePacket(placed));
         }
         if (own != null) {
-            // where the animation played for this player has taken the block
+            // where the animation played for this player has taken the block; the parts it has not moved are at rest
             if (own.lastFrame >= 0) {
                 this.nms.send(viewer.player, placed.catchUpPacket(this.nms, own.animation, own.lastFrame));
             }
+            own.lookFrom = null;
         } else {
             catchUp(viewer, placed);
         }
@@ -2981,6 +3100,23 @@ public final class DisplayRenderer implements Listener {
         List<DisplayAnimation> animations = placed.model.animations;
         // the parts turned towards him stay so
         boolean unturned = viewer.lookedAtBy(placed);
+        // the parts an animation everyone sees moves while it plays have its pose, not that of the loops; once it has
+        // ended, those a loop he gets moves have the loop's
+        boolean[] busy = this.playing.contains(placed) ? placed.busyParts(this.tick) : null;
+        boolean[] looped = null;
+        if (placed.loops() && placed.model.loops) {
+            for (int i = 0; i < animations.size(); i++) {
+                DisplayAnimation loop = animations.get(i);
+                if (loop.trigger == DisplayAnimation.Trigger.LOOP && (loop.distance <= 0 || plays(viewer, placed, i))) {
+                    if (looped == null) {
+                        looped = new boolean[placed.entityIds.length];
+                    }
+                    for (int part : loop.touched) {
+                        looped[part] = true;
+                    }
+                }
+            }
+        }
         for (int i = 0; i < animations.size(); i++) {
             DisplayAnimation animation = animations.get(i);
             int last = placed.lastFrame[i];
@@ -2989,7 +3125,7 @@ public final class DisplayRenderer implements Listener {
                 continue;
             }
             if (animation.trigger == DisplayAnimation.Trigger.LOOP && rejoin) {
-                Object packet = placed.rejoinPacket(this.nms, i, this.tick % animation.duration, this.tick >= animation.duration, REJOIN_TICKS, unturned);
+                Object packet = placed.rejoinPacket(this.nms, i, this.tick % animation.duration, this.tick >= animation.duration, REJOIN_TICKS, unturned, busy);
                 if (packet != null) {
                     this.nms.send(viewer.player, packet);
                 }
@@ -3006,7 +3142,9 @@ public final class DisplayRenderer implements Listener {
                     last = animation.frames.length - 1;
                 }
             }
-            Object packet = last < 0 ? null : placed.catchUpPacket(this.nms, i, last, unturned);
+            boolean[] skip = animation.trigger == DisplayAnimation.Trigger.LOOP ? busy
+                    : placed.startedAt[i] >= 0 && placed.startedAt[i] <= this.tick ? null : looped;
+            Object packet = last < 0 ? null : placed.catchUpPacket(this.nms, i, last, unturned, skip);
             if (packet != null) {
                 this.nms.send(viewer.player, packet);
             }
@@ -3183,7 +3321,8 @@ public final class DisplayRenderer implements Listener {
                 near.looking = false;
             }
             if (near != null && near.looking && position != null && position == near.settledAt && eyes == near.settledEyes) {
-                // he has not moved since he was last turned to
+                // he has not moved since he was last turned to; a slow frame goes on once the turn is done
+                resume(placed, viewer, near);
                 return;
             }
             double[] centre = placed.model.hasCarrier() ? placed.lookCentre(this.tick, skipLoops(viewer, placed), this.centre) : placed.lookCentre();
@@ -3196,9 +3335,12 @@ public final class DisplayRenderer implements Listener {
                 if (was) {
                     near.gazing = false;
                     if (near.looking) {
-                        // back, gliding, to where the others see the parts
+                        // back, gliding, to where the others see the parts, or where an animation played for him alone
+                        // has them
                         near.looking = false;
-                        this.nms.send(player, placed.publicPacket(this.nms, lookAt.parts, this.tick, lookAt.over, skipLoops(viewer, placed)));
+                        PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(player.getUniqueId(), placed);
+                        this.nms.send(player, own != null ? placed.posesPacket(this.nms, lookAt.parts, privateLook(own, lookAt.over))
+                                : placed.publicPacket(this.nms, lookAt.parts, this.tick, lookAt.over, skipLoops(viewer, placed)));
                     }
                 }
             } else {
@@ -3207,6 +3349,7 @@ public final class DisplayRenderer implements Listener {
                 }
                 near.gazing = true;
                 gaze(placed, viewer, near, lookAt, position, eyes, dx, dy, dz);
+                resume(placed, viewer, near);
             }
         }
         if (near != null && near.idle()) {
@@ -3249,7 +3392,9 @@ public final class DisplayRenderer implements Listener {
         boolean unturned = viewer.lookedAtBy(placed);
         Object packet;
         if (in) {
-            packet = placed.rejoinPacket(this.nms, index, this.tick % animation.duration, this.tick >= animation.duration, REJOIN_TICKS, unturned);
+            // the parts an animation everyone sees plays stay with it
+            packet = placed.rejoinPacket(this.nms, index, this.tick % animation.duration, this.tick >= animation.duration, REJOIN_TICKS, unturned,
+                    this.playing.contains(placed) ? placed.busyParts(this.tick) : null);
         } else {
             int[] parts = animation.touched;
             if (unturned) {
@@ -3264,7 +3409,7 @@ public final class DisplayRenderer implements Listener {
             this.nms.send(viewer.player, placed.carrierMove(this.nms, placed.rootTarget(this.tick, skipLoops(viewer, placed)), REJOIN_TICKS,
                     placed.carrierGlide, placed.carrierGlide));
         }
-        if (unturned && lookAt.keepsLoop && animation.moves(lookAt.parts)) {
+        if (unturned && placed.model.composesLook[index]) {
             // turned to him again from where this loop now has them
             near.looking = false;
         }
@@ -3280,8 +3425,9 @@ public final class DisplayRenderer implements Listener {
     /**
      * Turns the parts of the {@code look-at} of a block towards a player within its radius, when the direction he is
      * in changed by its {@code step} since they were last turned, at most once every {@code over} ticks. An animation
-     * moving them (one everyone sees, other than a loop, or one played for him alone) goes first: they turn to him
-     * again once it ends.
+     * moving them (one everyone sees, other than a loop, or one played for him alone) goes first, unless it keeps them
+     * looking at him ({@code look-at: true}, see {@link DisplayModel#composesLook}): they turn to him again once it
+     * ends.
      *
      * @param dx where his eyes are from the pivot, in the world
      */
@@ -3310,30 +3456,65 @@ public final class DisplayRenderer implements Listener {
             // too soon after the last turn: looked at again at the next tick
             return;
         }
-        // from where the loops have the parts when they keep moving them, else from their rest
-        this.nms.send(viewer.player, placed.turnPacket(this.nms, yaw, pitch, lookAt.over, this.tick, skipLoops(viewer, placed)));
+        // from where the frames that keep them looking have the parts (an animation played for him alone, the loops
+        // with loop: true), else from their rest: facing him in the time of a turn, however slow a frame moving them
+        PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(viewer.player.getUniqueId(), placed);
+        PlacedDisplay.PublicPoses from = own != null ? privateLook(own, lookAt.over) : placed.lookPoses(this.tick, lookAt.over, skipLoops(viewer, placed));
+        this.nms.send(viewer.player, placed.turnPacket(this.nms, yaw, pitch, lookAt.over, from, true));
         near.looking = true;
         near.yaw = yaw;
         near.pitch = pitch;
         near.sentAt = this.tick;
         near.settledAt = position;
         near.settledEyes = eyes;
+        // a frame on its way for longer: the rest of it once the turn is done
+        near.resumeAt = placed.lasting(from, lookAt.over) ? this.tick + lookAt.over : -1;
     }
 
     /**
-     * Whether an animation moving the parts of the {@code look-at} of a block plays for a player: one everyone sees,
-     * other than a loop, or one played for him alone.
+     * Sends a player the rest of the way of the parts of the {@code look-at} a quick turn left short of the pose of
+     * their frame (see {@link Nearby#resumeAt}), once the turn is done and no other has been sent since.
+     */
+    private void resume(PlacedDisplay placed, Viewer viewer, Nearby near) {
+        if (near.resumeAt < 0 || this.tick < near.resumeAt) {
+            return;
+        }
+        near.resumeAt = -1;
+        if (!near.looking || near.sentAt == this.tick) {
+            // left, or turned again at this tick: that turn has its own
+            return;
+        }
+        PrivatePlay own = placed.privateFor.isEmpty() ? null : privatePlay(viewer.player.getUniqueId(), placed);
+        PlacedDisplay.PublicPoses from = own != null ? privateLook(own, 0) : placed.lookPoses(this.tick, 0, skipLoops(viewer, placed));
+        Object packet = from == null ? null : placed.followPacket(this.nms, near.yaw, near.pitch, from, placed.model.lookAt.over);
+        if (packet != null) {
+            this.nms.send(viewer.player, packet);
+        }
+    }
+
+    /**
+     * Where the parts of the {@code look-at} of a block are, unturned, for a player an animation is played for alone.
+     */
+    private PlacedDisplay.PublicPoses privateLook(PrivatePlay play, int minimum) {
+        return play.placed.privatePoses(play.animation, play.lastFrame, this.tick - play.startedAt, play.lookFrom, minimum);
+    }
+
+    /**
+     * Whether an animation that takes the parts of the {@code look-at} of a block away from a player plays for him: one
+     * everyone sees, other than a loop, or one played for him alone, that moves them without keeping them looking at
+     * him (see {@link DisplayModel#composesLook}).
      */
     private boolean suspends(PlacedDisplay placed, Viewer viewer) {
         boolean[] moves = placed.model.movesLook;
+        boolean[] keeps = placed.model.composesLook;
         for (int i = 0; i < moves.length && i < placed.startedAt.length; i++) {
-            if (moves[i] && placed.startedAt[i] >= 0 && placed.startedAt[i] <= this.tick) {
+            if (moves[i] && !keeps[i] && placed.startedAt[i] >= 0 && placed.startedAt[i] <= this.tick) {
                 return true;
             }
         }
         if (!placed.privateFor.isEmpty() && placed.privateFor.contains(viewer.player.getUniqueId())) {
             PrivatePlay play = privatePlay(viewer.player.getUniqueId(), placed);
-            return play != null && play.startedAt <= this.tick && play.animation < moves.length && moves[play.animation];
+            return play != null && play.startedAt <= this.tick && play.animation < moves.length && moves[play.animation] && !keeps[play.animation];
         }
         return false;
     }
@@ -3398,12 +3579,77 @@ public final class DisplayRenderer implements Listener {
                 }
                 if (elapsed >= animation.duration) {
                     placed.startedAt[i] = -1;
+                    // the parts it took from the loops go back to them
+                    rejoinLoops(placed, i);
                 } else {
                     active = true;
                 }
             }
             if (!active) {
                 iterator.remove();
+            }
+        }
+    }
+
+    /**
+     * An animation everyone sees (a click, a command played for all) has ended: the parts it moved that a loop moves
+     * too, whose frames the loops kept from everyone while it played, glide back to where the loops have them (or with
+     * their frame when it is still on its way), for each player who sees the block and gets its frames, as they do for a
+     * player once an animation played for him alone ends. Those another one still plays stay with it; those turned
+     * towards a player stay so. The whole model as well, when it and a loop both move it.
+     */
+    private void rejoinLoops(PlacedDisplay placed, int index) {
+        if (!placed.loops() || placed.viewers.isEmpty()) {
+            return;
+        }
+        if (placed.model.animations.get(index).rooted && placed.carrierId >= 0 && !placed.rootBusy(this.tick)
+                && placed.model.animations.stream().anyMatch(loop -> loop.rooted && loop.trigger == DisplayAnimation.Trigger.LOOP)) {
+            carrierToLoops(placed, REJOIN_TICKS);
+        }
+        boolean[] looped = placed.model.looped;
+        boolean[] busy = placed.busyParts(this.tick);
+        // the parts not given back: all but those it moved that a loop moves too, and no other animation plays
+        boolean[] skip = null;
+        for (int part : placed.model.animations.get(index).touched) {
+            if (looped[part] && (busy == null || !busy[part])) {
+                if (skip == null) {
+                    skip = new boolean[placed.entityIds.length];
+                    java.util.Arrays.fill(skip, true);
+                }
+                skip[part] = false;
+            }
+        }
+        if (skip == null) {
+            return;
+        }
+        LookAt lookAt = placed.model.lookAt;
+        boolean look = false;
+        for (int p = 0; lookAt != null && p < lookAt.parts.length; p++) {
+            look |= !skip[lookAt.parts[p]];
+        }
+        List<DisplayAnimation> animations = placed.model.animations;
+        for (Viewer viewer : placed.viewers) {
+            if (!placed.privateFor.isEmpty() && placed.privateFor.contains(viewer.player.getUniqueId())) {
+                // he gets the loops once the animation played for him ends
+                continue;
+            }
+            Nearby near = lookAt == null ? null : viewer.near(placed);
+            boolean looking = near != null && near.looking;
+            // within the radius with his look taken by the animation: turned to him again at the next tick, from the loop
+            boolean unturned = looking || near != null && near.gazing;
+            for (int i = 0; i < animations.size(); i++) {
+                DisplayAnimation loop = animations.get(i);
+                if (loop.trigger != DisplayAnimation.Trigger.LOOP || loop.distance > 0 && !plays(viewer, placed, i)) {
+                    continue;
+                }
+                Object packet = placed.rejoinPacket(this.nms, i, this.tick % loop.duration, this.tick >= loop.duration, REJOIN_TICKS, unturned, skip);
+                if (packet != null) {
+                    this.nms.send(viewer.player, packet);
+                }
+            }
+            if (looking && look && placed.model.turnsFromFrames) {
+                // turned towards him, where the loops that keep them looking have them now
+                this.nms.send(viewer.player, placed.turnPacket(this.nms, near.yaw, near.pitch, REJOIN_TICKS, this.tick, skipLoops(viewer, placed)));
             }
         }
     }
@@ -3427,11 +3673,20 @@ public final class DisplayRenderer implements Listener {
                     boolean hears = player != null && player.getWorld() == play.placed.world && (sees || !play.placed.model.conditional())
                             && (animation.soundRange <= 0 || play.placed.heardBy(player, animation.soundRange));
                     int[] starting = animation.startingAt[elapsed];
+                    // an animation that keeps the parts of the look-at looking at him: its frames reach them turned
+                    Nearby turned = sees && play.placed.model.lookAt != null && play.placed.model.composesLook[play.animation] && viewer.lookedAtBy(play.placed)
+                            ? viewer.near(play.placed) : null;
                     if (starting != null) {
                         for (int frame : starting) {
-                            Object packet = sees ? play.placed.framePacket(this.nms, play.animation, frame) : null;
+                            Object packet = sees ? play.placed.framePacket(this.nms, play.animation, frame, turned != null) : null;
                             if (packet != null) {
                                 this.nms.send(viewer.player, packet);
+                            }
+                            if (turned != null) {
+                                Object look = play.placed.turnedFramePacket(this.nms, play.animation, frame, turned.yaw, turned.pitch);
+                                if (look != null) {
+                                    this.nms.send(viewer.player, look);
+                                }
                             }
                             DisplayAnimation.Frame played = animation.frames[frame];
                             if (played.root() != null && play.placed.carrierId >= 0) {
@@ -3531,8 +3786,13 @@ public final class DisplayRenderer implements Listener {
         if (starting == null) {
             return;
         }
+        // a loop leaves to an animation everyone sees that plays (a click) the parts it moves: none of its frames go
+        // for them until it ends, then they come back to the loop gliding (see rejoinLoops)
+        boolean[] busy = animation.trigger == DisplayAnimation.Trigger.LOOP && this.playing.contains(placed) ? placed.busyParts(this.tick) : null;
+        // the whole model too, when it moves it
+        boolean rootHeld = busy != null && animation.rooted && placed.rootBusy(this.tick);
         for (int frame : starting) {
-            Object packet = placed.viewers.isEmpty() ? null : placed.framePacket(this.nms, index, frame);
+            Object packet = placed.viewers.isEmpty() ? null : placed.framePacket(this.nms, index, frame, false, busy);
             if (packet != null) {
                 Object unturned = null;
                 for (Viewer viewer : placed.viewers) {
@@ -3548,7 +3808,7 @@ public final class DisplayRenderer implements Listener {
                         // the parts turned towards him stay so: he gets the frame of the others (an animation that moves
                         // them has made them turn back to it, see attend)
                         if (unturned == null) {
-                            unturned = placed.framePacket(this.nms, index, frame, true);
+                            unturned = placed.framePacket(this.nms, index, frame, true, busy);
                             if (unturned == null) {
                                 unturned = Boolean.FALSE;
                             }
@@ -3556,10 +3816,10 @@ public final class DisplayRenderer implements Listener {
                         if (unturned != Boolean.FALSE) {
                             this.nms.send(viewer.player, unturned);
                         }
-                        if (placed.model.lookAt.keepsLoop) {
-                            // the loops keep moving them for him: the frame, turned towards him
+                        if (placed.model.composesLook[index]) {
+                            // the animation keeps them looking at him: the frame, turned towards him
                             Nearby near = viewer.near(placed);
-                            Object turned = placed.turnedFramePacket(this.nms, index, frame, near.yaw, near.pitch);
+                            Object turned = placed.turnedFramePacket(this.nms, index, frame, near.yaw, near.pitch, busy);
                             if (turned != null) {
                                 this.nms.send(viewer.player, turned);
                             }
@@ -3570,7 +3830,7 @@ public final class DisplayRenderer implements Listener {
                 }
             }
             DisplayAnimation.Frame played = animation.frames[frame];
-            if (played.root() != null && placed.carrierId >= 0 && !placed.viewers.isEmpty()) {
+            if (played.root() != null && placed.carrierId >= 0 && !placed.viewers.isEmpty() && !rootHeld) {
                 moveCarrier(placed, index, frame, played);
             }
             if (played.sound() != null) {

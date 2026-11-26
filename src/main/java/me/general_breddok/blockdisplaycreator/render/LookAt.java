@@ -32,6 +32,11 @@ import java.util.List;
  * out from the rest pose of each part, as a frame turning them around the pivot would be. With {@code loop: true}
  * they are worked out from the pose the loops give the parts instead, and each frame of a loop that moves them goes to
  * him turned the same way.
+ * <p>
+ * An animation with {@code look-at: true} (any trigger, played for everyone or for him alone) does the same: each of
+ * its frames moving the parts reaches him turned towards him (a blink, a breath, a look that drifts), and the turns
+ * start from where it has them. So does by default one that only shows, hides or sizes them. Any other animation
+ * moving them goes first: they leave him for its time and look at him again once it ends.
  */
 final class LookAt {
 

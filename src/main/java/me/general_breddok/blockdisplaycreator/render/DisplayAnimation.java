@@ -40,6 +40,10 @@ import java.util.TreeSet;
  *     sound-range: 3          # blocks from which its sounds are heard; by def those of the game
  *     ease: false             # its frames as written; by def (animation-easing in config.yml) a part that starts or
  *                             # stops moving does so smoothly, see Easing
+ *     look-at: true           # with a look-at in the file: the parts that look at a player keep doing so while it plays,
+ *                             # each frame moving them reaching him turned towards him (a blink, a breath, a look that
+ *                             # drifts). false: they leave him while it plays (a loop: he sees them at rest). By def true
+ *                             # for one that only shows, hides or sizes them and for the loops with look-at.loop: true
  *     particles:              # particles of the game, seen by those who see the animation
  *       - at: 12
  *         particle: enchant
@@ -141,6 +145,12 @@ final class DisplayAnimation {
      */
     final boolean ease;
     /**
+     * Its {@code look-at}, null when its file does not say: whether the parts of the model's {@code look-at} keep
+     * looking at a player while it plays, its frames reaching him turned towards him, rather than leaving him for its
+     * time (see {@link DisplayModel#composesLook}).
+     */
+    final Boolean lookAt;
+    /**
      * The frames read from 16 numbers (bdengine exports, already timed), which are never eased. Only kept until the
      * animation is finished reading.
      */
@@ -207,9 +217,10 @@ final class DisplayAnimation {
     }
 
     private DisplayAnimation(String name, Trigger trigger, String interaction, int duration, Frame[] frames, Note[] notes, Spark[] sparks, boolean optimisable,
-                             double soundRange, double radius, long cooldown, double distance, boolean ease, Set<Frame> absolute) {
+                             double soundRange, double radius, long cooldown, double distance, boolean ease, Boolean lookAt, Set<Frame> absolute) {
         this.distance = distance;
         this.ease = ease;
+        this.lookAt = lookAt;
         this.absolute = absolute;
         this.name = name;
         this.optimisable = optimisable;
@@ -356,7 +367,7 @@ final class DisplayAnimation {
             return this;
         }
         DisplayAnimation finished = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, done.toArray(Frame[]::new), this.notes,
-                this.sparks, this.optimisable, this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
+                this.sparks, this.optimisable, this.soundRange, this.radius, this.cooldown, this.distance, this.ease, this.lookAt, Set.of());
         finished.eased = eased.size() - frames.size();
         return finished;
     }
@@ -458,10 +469,14 @@ final class DisplayAnimation {
         for (Spark spark : sparks) {
             duration = Math.max(duration, spark.at() + 1);
         }
+        Object look = section.get("look-at");
+        if (look != null && !(look instanceof Boolean)) {
+            throw new IllegalArgumentException("look-at must be true or false, not " + look);
+        }
         return new DisplayAnimation(name, trigger, section.getString("interaction"), duration, frames.toArray(Frame[]::new), notes.toArray(Note[]::new),
                 sparks.toArray(Spark[]::new),
                 section.getBoolean("optimise", true), soundRange(section.get("sound-range")), radius, cooldown, loopDistance(trigger, section.get("distance")),
-                ease(section.get("ease")), absolute);
+                ease(section.get("ease")), (Boolean) look, absolute);
     }
 
     /**
@@ -633,7 +648,7 @@ final class DisplayAnimation {
         }
         java.util.Arrays.sort(out, Comparator.comparingInt(Frame::at));
         DisplayAnimation lighter = new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, out, this.notes, this.sparks, this.optimisable,
-                this.soundRange, this.radius, this.cooldown, this.distance, this.ease, Set.of());
+                this.soundRange, this.radius, this.cooldown, this.distance, this.ease, this.lookAt, Set.of());
         lighter.eased = this.eased;
         return lighter;
     }
@@ -651,7 +666,7 @@ final class DisplayAnimation {
             kept = new Frame[]{new Frame(0, 0, new int[0], new List<?>[0], new List<?>[0], new Transformation[0], null, 1f, 1f, null)};
         }
         return new DisplayAnimation(this.name, this.trigger, this.interaction, this.duration, kept, this.notes, this.sparks, this.optimisable, this.soundRange,
-                this.radius, this.cooldown, this.distance, this.ease, Set.of());
+                this.radius, this.cooldown, this.distance, this.ease, this.lookAt, Set.of());
     }
 
     /**

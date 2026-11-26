@@ -46,6 +46,10 @@ final class DisplayModel {
      */
     final boolean loops;
     /**
+     * For each entity, whether a loop moves it.
+     */
+    final boolean[] looped;
+    /**
      * Whether one of its entities stands lower than the block when it stands on its block (see {@link Element#sink()}).
      */
     final boolean sinks;
@@ -82,10 +86,36 @@ final class DisplayModel {
      */
     final int[] approaches;
     /**
-     * For each animation, whether it moves one of the parts of {@link #lookAt}: it then goes first, and the parts look
-     * at the player again once it ends. Null without a {@code look-at}.
+     * For each animation, whether it moves one of the parts of {@link #lookAt}: unless it keeps them looking at the
+     * player ({@link #composesLook}), it then goes first, and the parts look at him again once it ends. Null without a
+     * {@code look-at}.
      */
     final boolean[] movesLook;
+    /**
+     * For each animation moving parts of {@link #lookAt}, whether they keep looking at a player while it plays (see
+     * {@link #composesLook(List, LookAt, List)}): a player they look at gets each frame moving them turned towards him,
+     * and a turn starts from where its frames have them. Worked out on the animations as written. Null without a
+     * {@code look-at}.
+     */
+    final boolean[] composesLook;
+    /**
+     * The loops (bit i for the animation i) that keep the parts of the {@code look-at} looking at a player, and those
+     * that move them without: a player they look at gets none of the frames of the latter for them.
+     */
+    final long lookingLoops;
+    final long unlookedLoops;
+    /**
+     * Whether a frame of some animation reaches the parts of the {@code look-at} of a player they look at: a turn then
+     * starts from where the frames have them, else from their rest.
+     */
+    final boolean turnsFromFrames;
+    /**
+     * How much higher than the model its carrier stands, in blocks at the model's size, 0 for most models: as much
+     * deeper as its {@code root} frames take it under its floor (a crouch before a jump), with a little more. The
+     * parts riding the carrier are lowered as much in it, so that they are drawn where they would be: a client lights
+     * an entity by the block it stands in, and those standing in the ground would be drawn black.
+     */
+    final float lift;
     /**
      * How many chunks away from the block a player may be and still be within the radius of its {@code look-at} or of
      * one of its {@code approach} animations, with a chunk to spare for the players moving between two checks of
@@ -134,16 +164,25 @@ final class DisplayModel {
     static final int WHOLE_POSE = TRANSLATION | SCALE | LEFT_ROTATION | RIGHT_ROTATION;
 
     private DisplayModel(AbstractCustomBlock definition, List<Element> elements, List<DisplayAnimation> animations, int viewDistance,
-                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt, boolean[] carried, Object carrierType,
-                         Spin spin) {
+                         int viewAbove, int viewBelow, List<Condition> visibleIf, byte[] varying, LookAt lookAt, boolean[] composesLook, boolean[] carried,
+                         Object carrierType, float lift, Spin spin) {
         this.spin = spin;
         this.varying = varying;
         this.lookAt = lookAt;
         this.carried = carried;
         this.carrierType = carrierType;
+        this.lift = carried == null ? 0f : lift;
         this.carrierGlide = carrierGlide(animations);
         this.approaches = approaches(animations);
         this.movesLook = movesLook(animations, lookAt);
+        this.composesLook = composesLook;
+        this.lookingLoops = lookLoops(animations, this.movesLook, composesLook, true);
+        this.unlookedLoops = lookLoops(animations, this.movesLook, composesLook, false);
+        boolean composes = false;
+        for (int i = 0; composesLook != null && i < composesLook.length; i++) {
+            composes |= composesLook[i];
+        }
+        this.turnsFromFrames = lookAt != null && (lookAt.keepsLoop || composes);
         this.attentionChunks = attentionChunks(animations, this.approaches, lookAt);
         this.distanceLoops = distanceLoops(animations, false);
         this.distanceRooted = distanceLoops(animations, true);
@@ -159,6 +198,7 @@ final class DisplayModel {
         this.elements = elements;
         this.animations = animations;
         this.loops = animations.stream().anyMatch(animation -> animation.trigger == DisplayAnimation.Trigger.LOOP);
+        this.looped = looped(animations, elements.size());
         this.sinks = elements.stream().anyMatch(element -> element.sink() > 0);
 
         GroupSummoner<Display> summoner = definition.getDisplaySummoner();
@@ -184,6 +224,7 @@ final class DisplayModel {
         this.elements = model.elements;
         this.animations = List.copyOf(animations);
         this.loops = model.loops;
+        this.looped = looped(this.animations, model.elements.size());
         this.sinks = model.sinks;
         this.viewDistance = model.viewDistance;
         this.viewAbove = model.viewAbove;
@@ -195,6 +236,12 @@ final class DisplayModel {
         this.lookAt = model.lookAt;
         this.approaches = approaches(this.animations);
         this.movesLook = movesLook(this.animations, this.lookAt);
+        // whether an animation keeps the parts looking stays as worked out on it as written: a lighter one may have left
+        // out the frames that made it otherwise
+        this.composesLook = model.composesLook;
+        this.lookingLoops = model.lookingLoops;
+        this.unlookedLoops = model.unlookedLoops;
+        this.turnsFromFrames = model.turnsFromFrames;
         this.attentionChunks = attentionChunks(this.animations, this.approaches, this.lookAt);
         this.distanceLoops = distanceLoops(this.animations, false);
         this.distanceRooted = distanceLoops(this.animations, true);
@@ -202,6 +249,7 @@ final class DisplayModel {
         this.carried = model.carried;
         this.carrierType = model.carrierType;
         this.carrierGlide = model.carrierGlide;
+        this.lift = model.lift;
         this.spin = model.spin;
     }
 
@@ -263,6 +311,18 @@ final class DisplayModel {
         return loops;
     }
 
+    private static boolean[] looped(List<DisplayAnimation> animations, int parts) {
+        boolean[] looped = new boolean[parts];
+        for (DisplayAnimation animation : animations) {
+            if (animation.trigger == DisplayAnimation.Trigger.LOOP) {
+                for (int part : animation.touched) {
+                    looped[part] = true;
+                }
+            }
+        }
+        return looped;
+    }
+
     private static int[] approaches(List<DisplayAnimation> animations) {
         return java.util.stream.IntStream.range(0, animations.size())
                 .filter(i -> animations.get(i).trigger == DisplayAnimation.Trigger.APPROACH).toArray();
@@ -277,6 +337,104 @@ final class DisplayModel {
             moves[i] = animations.get(i).moves(lookAt.parts);
         }
         return moves;
+    }
+
+    /**
+     * For each animation moving parts of the {@code look-at}, whether they keep looking at the player while it plays:
+     * its {@code look-at}, or else for one that only shows, hides or sizes them (a blink: see {@link #onlySizes}) and for
+     * the loops when the {@code look-at} has {@code loop: true}. The others leave the player while they play: an
+     * animation that turns those parts makes them look elsewhere (a scene: the head looks at a map), and a loop without
+     * {@code loop: true} is not sent for them to a player they look at.
+     *
+     * @return null without a {@code look-at}
+     */
+    static boolean[] composesLook(List<DisplayAnimation> animations, LookAt lookAt, List<Element> elements) {
+        if (lookAt == null) {
+            return null;
+        }
+        boolean[] composes = new boolean[animations.size()];
+        for (int i = 0; i < composes.length; i++) {
+            DisplayAnimation animation = animations.get(i);
+            if (!animation.moves(lookAt.parts)) {
+                continue;
+            }
+            composes[i] = animation.lookAt != null ? animation.lookAt
+                    : animation.trigger == DisplayAnimation.Trigger.LOOP && lookAt.keepsLoop || onlySizes(animation, lookAt, elements);
+        }
+        return composes;
+    }
+
+    /**
+     * Whether the frames of an animation only show, hide or size the parts of the {@code look-at} they move: each pose
+     * keeps the rotations of the part at rest, and its translation unless its size changes too (a part sized around a
+     * point of its own moves with it). A frame taking a part back to rest counts too.
+     */
+    private static boolean onlySizes(DisplayAnimation animation, LookAt lookAt, List<Element> elements) {
+        for (DisplayAnimation.Frame frame : animation.frames) {
+            for (int i = 0; i < frame.parts().length; i++) {
+                int part = frame.parts()[i];
+                if (!lookAt.turns(part)) {
+                    continue;
+                }
+                Transformation target = frame.targets()[i];
+                if (target == null) {
+                    return false;
+                }
+                Transformation rest = elements.get(part).transformation();
+                if (!sameTurn(rest.getLeftRotation(), target.getLeftRotation()) || !sameTurn(rest.getRightRotation(), target.getRightRotation())) {
+                    return false;
+                }
+                if (near(rest.getScale(), target.getScale(), 1.0E-5f) && !near(rest.getTranslation(), target.getTranslation(), 1.0E-4f)) {
+                    // moved, not sized
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether two rotations turn the same way, to a fifth of a degree (a matrix the server split gives back a rotation
+     * a little off, or its opposite quaternion).
+     */
+    private static boolean sameTurn(org.joml.Quaternionfc a, org.joml.Quaternionfc b) {
+        double dot = a.x() * b.x() + a.y() * b.y() + a.z() * b.z() + a.w() * b.w();
+        double norms = Math.sqrt((a.lengthSquared()) * (b.lengthSquared()));
+        return norms > 0 && Math.abs(dot) / norms > 1 - 2.0E-6;
+    }
+
+    private static boolean near(org.joml.Vector3fc a, org.joml.Vector3fc b, float most) {
+        return Math.abs(a.x() - b.x()) <= most && Math.abs(a.y() - b.y()) <= most && Math.abs(a.z() - b.z()) <= most;
+    }
+
+    /**
+     * The loops (bit i for the animation i, the first 64) moving parts of the {@code look-at} that keep them looking, or
+     * those that do not.
+     */
+    private static long lookLoops(List<DisplayAnimation> animations, boolean[] moves, boolean[] composes, boolean looking) {
+        long loops = 0;
+        for (int i = 0; moves != null && composes != null && i < animations.size() && i < 64 && i < composes.length; i++) {
+            if (animations.get(i).trigger == DisplayAnimation.Trigger.LOOP && moves[i] && composes[i] == looking) {
+                loops |= 1L << i;
+            }
+        }
+        return loops;
+    }
+
+    /**
+     * How much higher than the model its carrier stands (see {@link #lift}): the deepest its {@code root} frames take it
+     * under its floor, raised to the next 64th of a block with one more, 0 when none goes under it.
+     */
+    private static float lift(List<DisplayAnimation> animations) {
+        float lowest = 0;
+        for (DisplayAnimation animation : animations) {
+            for (DisplayAnimation.Frame frame : animation.frames) {
+                if (frame.root() != null) {
+                    lowest = Math.min(lowest, frame.root().y);
+                }
+            }
+        }
+        return lowest < 0 ? (float) Math.ceil(-lowest * 64 + 1) / 64f : 0f;
     }
 
     /**
@@ -405,8 +563,10 @@ final class DisplayModel {
         } else if (rootMotion != null) {
             problems.add("root-motion has no use: no frame of its animations has a root");
         }
-        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read, look, carried)), read, viewDistance, viewAbove, viewBelow,
-                visibleIf, varying, look, carried, carrierType, spin(nms, spinSection, elements, problems));
+        boolean[] composes = composesLook(read, look, elements);
+        float lift = carried == null ? 0f : lift(read);
+        return new DisplayModel(definition, List.copyOf(withCullingBox(nms, elements, read, look, composes, carried, lift)), read, viewDistance, viewAbove,
+                viewBelow, visibleIf, varying, look, composes, carried, carrierType, lift, spin(nms, spinSection, elements, problems));
     }
 
     /**
@@ -599,9 +759,14 @@ final class DisplayModel {
      * Texts are boxed by the size their text can take at most, parts turning on themselves to face the player
      * (billboard {@code vertical}) by their cylinder, which they do not leave; parts facing the player on every axis
      * by the sphere they turn in. An entity whose pose cannot be followed keeps being drawn at all times.
+     *
+     * @param composes for each animation, whether it keeps the parts of the {@code look-at} looking at the player: their
+     *                 poses in it are turned too
+     * @param lift     how much higher the carrier stands than the model: the parts riding it are drawn that much lower
+     *                 than their entity
      */
     private static List<Element> withCullingBox(NmsBridge nms, List<Element> elements, List<DisplayAnimation> animations, LookAt lookAt,
-                                                boolean[] carried) {
+                                                boolean[] composes, boolean[] carried, float lift) {
         List<Element> boxed = new ArrayList<>(elements.size());
         for (int part = 0; part < elements.size(); part++) {
             Element element = elements.get(part);
@@ -617,17 +782,15 @@ final class DisplayModel {
                 // the turns towards the players: as far as they go each way, and on the way
                 List<Transformation> bases = new ArrayList<>();
                 bases.add(element.transformation());
-                if (lookAt.keepsLoop) {
-                    // turned from each pose the loops give it too
-                    for (DisplayAnimation animation : animations) {
-                        if (animation.trigger != DisplayAnimation.Trigger.LOOP) {
-                            continue;
-                        }
-                        for (DisplayAnimation.Frame frame : animation.frames) {
-                            int i = java.util.Arrays.binarySearch(frame.parts(), part);
-                            if (i >= 0 && frame.targets()[i] != null) {
-                                bases.add(frame.targets()[i]);
-                            }
+                // turned from each pose the animations that keep it looking give it too
+                for (int a = 0; composes != null && a < animations.size(); a++) {
+                    if (!composes[a]) {
+                        continue;
+                    }
+                    for (DisplayAnimation.Frame frame : animations.get(a).frames) {
+                        int i = java.util.Arrays.binarySearch(frame.parts(), part);
+                        if (i >= 0 && frame.targets()[i] != null) {
+                            bases.add(frame.targets()[i]);
                         }
                     }
                 }
@@ -671,10 +834,15 @@ final class DisplayModel {
                     }
                 }
             }
+            // a part riding the carrier stands where it stands: it cannot be lowered, it is drawn at all times; it is
+            // drawn as much lower than its entity as the carrier stands higher than the model
+            boolean riding = carried != null && carried[part];
+            if (riding && lift > 0) {
+                reach[1] -= lift;
+                reach[2] -= lift;
+            }
             float sink = reach[2] < -0.5f ? (float) Math.ceil((-reach[2] - 0.5f) * 16f + 1f) / 16f : 0f;
             float top = reach[1] + sink;
-            // a part riding the carrier stands where it stands: it cannot be lowered, it is drawn at all times
-            boolean riding = carried != null && carried[part];
             if (!followed || sink > MAX_SINK || top <= 0 || !nms.canAnimate() && sink > 0 || riding && sink > 0) {
                 boxed.add(element);
                 continue;
@@ -763,7 +931,7 @@ final class DisplayModel {
      * A pose on the way from one to another, as a client draws it: translation and scale in a straight line, the
      * rotations along the shortest arc.
      */
-    private static Transformation between(Transformation from, Transformation to, float progress) {
+    static Transformation between(Transformation from, Transformation to, float progress) {
         return new Transformation(
                 new org.joml.Vector3f(from.getTranslation()).lerp(to.getTranslation(), progress),
                 new org.joml.Quaternionf(from.getLeftRotation()).slerp(to.getLeftRotation(), progress),

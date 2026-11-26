@@ -602,6 +602,14 @@ final class NmsBridge {
          * left out (the default one) is given.
          */
         List<?> raised(List<?> values, float height) throws ReflectiveOperationException {
+            return offset(values, 0, height, 0);
+        }
+
+        /**
+         * The synced values of a display entity whose translation is moved, in blocks: a translation left out (the
+         * default one) is given.
+         */
+        List<?> offset(List<?> values, float x, float y, float z) throws ReflectiveOperationException {
             Object translationId = this.accessorId.invoke(this.translationAccessor);
             List<Object> out = new java.util.ArrayList<>(values.size() + 1);
             boolean hasTranslation = false;
@@ -609,13 +617,13 @@ final class NmsBridge {
                 if (this.valueId.invoke(value).equals(translationId)) {
                     hasTranslation = true;
                     out.add(this.createValue.invoke(null, this.translationAccessor,
-                            new Vector3f((org.joml.Vector3fc) this.valueOf.invoke(value)).add(0, height, 0)));
+                            new Vector3f((org.joml.Vector3fc) this.valueOf.invoke(value)).add(x, y, z)));
                 } else {
                     out.add(value);
                 }
             }
             if (!hasTranslation) {
-                out.add(this.createValue.invoke(null, this.translationAccessor, new Vector3f(0, height, 0)));
+                out.add(this.createValue.invoke(null, this.translationAccessor, new Vector3f(x, y, z)));
             }
             return List.copyOf(out);
         }
@@ -773,6 +781,21 @@ final class NmsBridge {
         }
         try {
             return this.poses.raised(values, height);
+        } catch (ReflectiveOperationException e) {
+            return values;
+        }
+    }
+
+    /**
+     * The synced values of a display entity whose translation is moved, in blocks, in the entity's own axes. Returned
+     * unchanged on a server that does not allow it.
+     */
+    List<?> offsetValues(List<?> values, org.joml.Vector3fc offset) {
+        if (this.poses == null || offset == null || offset.x() == 0f && offset.y() == 0f && offset.z() == 0f) {
+            return values;
+        }
+        try {
+            return this.poses.offset(values, offset.x(), offset.y(), offset.z());
         } catch (ReflectiveOperationException e) {
             return values;
         }
