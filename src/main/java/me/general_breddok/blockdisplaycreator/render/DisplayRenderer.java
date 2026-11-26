@@ -1119,7 +1119,8 @@ public final class DisplayRenderer implements Listener {
         if (model != null) {
             return model;
         }
-        if (this.nms.inCommand()) {
+        if (this.nms.inCommand() && !this.nms.canRunCommandsNow()) {
+            // a server where the command running cannot be set aside: read at the next tick
             readSoon(name);
             return null;
         }

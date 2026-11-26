@@ -345,7 +345,9 @@ final class DisplayModel {
         Interaction sender = world.spawn(location, Interaction.class);
         List<Display> displays;
         try {
-            displays = summonTexts == null ? definition.spawnDisplay(location, sender, display -> true) : summon(definition, summonTexts, location, sender);
+            // its summon commands run now, to their end, even from inside another command (a placement, a reload)
+            displays = nms.outsideCommand(() -> summonTexts == null ? definition.spawnDisplay(location, sender, display -> true)
+                    : summon(definition, summonTexts, location, sender));
         } finally {
             sender.remove();
         }

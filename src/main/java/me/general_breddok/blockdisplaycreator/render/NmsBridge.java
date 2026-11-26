@@ -175,6 +175,39 @@ final class NmsBridge {
     }
 
     /**
+     * Whether commands can be run at once on this thread, whatever runs there: no command does, or the one that does
+     * can be set aside for them (see {@link #outsideCommand}).
+     */
+    boolean canRunCommandsNow() {
+        return this.runningCommand != null;
+    }
+
+    /**
+     * Runs something that dispatches commands as if no command were running on this thread: the commands it dispatches
+     * run at once, to their end, as a command of their own, instead of being queued after the command running (they
+     * would then only run once it ends: a model read by its summon commands would find nothing, and the entities they
+     * summon would stay in the world). The command running is set aside meanwhile and given back after, its queue
+     * untouched. On a server where it cannot be told, the thing is run as it is.
+     */
+    <T> T outsideCommand(java.util.function.Supplier<T> action) {
+        if (this.runningCommand == null) {
+            return action.get();
+        }
+        @SuppressWarnings("unchecked")
+        ThreadLocal<Object> context = (ThreadLocal<Object>) this.runningCommand;
+        Object running = context.get();
+        if (running == null) {
+            return action.get();
+        }
+        context.set(null);
+        try {
+            return action.get();
+        } finally {
+            context.set(running);
+        }
+    }
+
+    /**
      * Whether the parts of a model can be turned on and on through the yaw of their entities ({@code spin}).
      */
     boolean canSpin() {
