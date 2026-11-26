@@ -231,6 +231,23 @@ final class PlacedDisplay {
     }
 
     /**
+     * The packet that takes the parts an animation moves back to rest over some ticks (at once for 0).
+     */
+    Object restPacket(NmsBridge nms, int animation, int ticks) {
+        if (ticks <= 0) {
+            return restPacket(nms, animation);
+        }
+        int[] touched = this.model.animations.get(animation).touched;
+        List<Object> parts = new ArrayList<>(touched.length);
+        for (int part : touched) {
+            org.bukkit.util.Transformation rest = this.model.elements.get(part).transformation();
+            List<?> values = nms.poseValues(rest.getTranslation(), rest.getLeftRotation(), rest.getScale(), rest.getRightRotation(), ticks);
+            parts.add(nms.dataPacket(this.entityIds[part], sent(nms, part, values)));
+        }
+        return nms.bundle(parts);
+    }
+
+    /**
      * The packet that puts the parts an animation moves back at rest at once.
      */
     Object restPacket(NmsBridge nms, int animation) {

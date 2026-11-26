@@ -87,6 +87,11 @@ public final class DisplayRenderer implements Listener {
      */
     private static final int GLIDE_TICKS = 2;
     /**
+     * Ticks the parts of an animation played for one player take to glide back to rest when another one played for him
+     * replaces it: a reaction cutting a scene short starts from there, without a jump.
+     */
+    private static final int REPLACE_GLIDE_TICKS = 3;
+    /**
      * Ticks at least a part takes to glide back into a loop after an animation played for one player.
      */
     private static final int REJOIN_TICKS = 8;
@@ -565,7 +570,8 @@ public final class DisplayRenderer implements Listener {
                 iterator.remove();
                 Viewer viewer = this.viewers.get(id);
                 if (old.animation != index && viewer != null && viewer.player == player && viewer.shown.contains(placed)) {
-                    this.nms.send(player, placed.restPacket(this.nms, old.animation));
+                    // gliding: the new one's first frames take the parts they move from wherever they are by then
+                    this.nms.send(player, placed.restPacket(this.nms, old.animation, REPLACE_GLIDE_TICKS));
                 }
                 // the whole model stays where the other one took it, and goes back to the others once this one ends
                 play.rootMoved = old.rootMoved;
