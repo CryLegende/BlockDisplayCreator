@@ -1773,8 +1773,9 @@ public final class DisplayRenderer implements Listener {
      * Gives a block what an administrator set on it: stored with the block, and shown at once to those who see it.
      *
      * @param settings null (or nothing set) for a block that follows its file again
+     * @return false when its hitbox changed but could not be summoned again at once (it is at its next read)
      */
-    synchronized void applySettings(PlacedDisplay placed, @Nullable BlockSettings settings) {
+    synchronized boolean applySettings(PlacedDisplay placed, @Nullable BlockSettings settings) {
         if (settings != null && settings.isDefault()) {
             settings = null;
         }
@@ -1782,7 +1783,7 @@ public final class DisplayRenderer implements Listener {
         int distanceBefore = placed.viewDistance();
         int aboveBefore = placed.viewAbove();
         int belowBefore = placed.viewBelow();
-        double[] boxBefore = placed.settings == null ? null : placed.settings.clickBox;
+        String hitboxBefore = BlockSettings.hitboxKey(placed.settings);
         placed.settings = settings;
 
         CustomBlockData data = new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin);
@@ -1855,12 +1856,55 @@ public final class DisplayRenderer implements Listener {
             }
         }
 
-        double[] boxAfter = settings == null ? null : settings.clickBox;
-        if (!java.util.Arrays.equals(boxBefore, boxAfter)) {
-            // the click boxes are summoned again, with the added one or without it
-            layHitbox(placed, data);
-            guardHitbox(placed, data);
+        return hitboxBefore.equals(BlockSettings.hitboxKey(settings)) || rebuildHitbox(placed, data);
+    }
+
+    /**
+     * Summons the click boxes and collisions of a block again after its hitbox settings changed, where its model
+     * stands. When one of its entities is not loaded, they are summoned again the next time the block is read.
+     *
+     * @return whether they were summoned again at once
+     */
+    synchronized boolean rebuildHitbox(PlacedDisplay placed, CustomBlockData data) {
+        if (!(this.plugin.getCustomBlockService() instanceof BDCCustomBlockService service) || !service.rebuildHitbox(placed.base())) {
+            // the stored description no longer matches: the next read of the block summons them again
+            data.remove(CustomBlockKey.HITBOX);
+            return false;
         }
+        placed.resetHitboxShift();
+        if (placed.isShifted()) {
+            layHitbox(placed, data);
+        }
+        guardHitbox(placed, data);
+        return true;
+    }
+
+    /**
+     * The click boxes and collisions a block has now, as boxes in the world: min x, y, z, max x, y, z, then 1 for a
+     * collision and 0 for a click box. Empty for a block whose entities are not loaded.
+     */
+    synchronized List<double[]> hitboxOf(PlacedDisplay placed) {
+        List<double[]> boxes = new ArrayList<>();
+        CustomBlockData data = new CustomBlockData(placed.world.getBlockAt(placed.x, placed.y, placed.z), this.plugin);
+        for (org.bukkit.NamespacedKey key : List.of(CustomBlockKey.INTERACTION_UUID, CustomBlockKey.COLLISION_UUID)) {
+            UUID[] uuids = data.get(key, PersistentDataTypes.UUID_ARRAY);
+            if (uuids == null) {
+                continue;
+            }
+            for (UUID uuid : uuids) {
+                Entity entity = Bukkit.getEntity(uuid);
+                if (entity == null || !entity.isValid()) {
+                    continue;
+                }
+                org.bukkit.util.BoundingBox box = entity.getBoundingBox();
+                if (box.getVolume() <= 0) {
+                    continue;
+                }
+                boxes.add(new double[]{box.getMinX(), box.getMinY(), box.getMinZ(), box.getMaxX(), box.getMaxY(), box.getMaxZ(),
+                        key == CustomBlockKey.COLLISION_UUID ? 1 : 0});
+            }
+        }
+        return boxes;
     }
 
     /**

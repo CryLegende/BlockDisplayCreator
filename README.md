@@ -95,8 +95,8 @@ Open it with the command block at the left end of the gizmo's strip, or with `/b
 | Click animation | Plays, or not, the click animation of the file. Shown only when the file has one. |
 | Cooldown | Per player, between two clicks that do something. Left click goes to the next of `gizmo.admin-cooldowns`, right click to the one before, Shift + left click to type a duration (`90s`, `5m`, `2h30m`, `1d`). From one minute on, the wait outlives restarts and the player is told how long is left (`cooldown.wait` in `messages.yml`). |
 | Permission | The permission a player needs for his click to do anything (`placed-denied.interact` in `messages.yml` otherwise). |
-| Click box | For a model whose file gives it none (otherwise its click commands could never run): a box with a square base around what it draws. |
-| Copy / Paste | Copies these settings to paste them on another block (the size is not copied; an added click box is made again for the model it is pasted on). |
+| Hitbox | Opens the hitbox page (below). |
+| Copy / Paste | Copies these settings to paste them on another block (the size is not copied; a click box drawn for another model is drawn again around the one it is pasted on). |
 | Reset | Shift + click: the block follows its file again (its place and size stay: the red button of the gizmo puts them back). |
 | Break | Shift + click: removes the block, even unbreakable, and gives its item to you. |
 
@@ -105,6 +105,8 @@ Values to type are written with a command the panel suggests in the chat, on the
 ```
 /bdc settings size <percent|default>
 /bdc settings view-distance <blocks|default>
+/bdc settings hitbox <width> <height> [floor]   /bdc settings hitbox file|model|none
+/bdc settings collision on|off
 /bdc settings command add <command>      /bdc settings command remove <number>      /bdc settings command clear
 /bdc settings cooldown <duration|none>
 /bdc settings permission <permission|none>
@@ -113,3 +115,17 @@ Values to type are written with a command the panel suggests in the chat, on the
 ```
 
 The texts and icons of the panel are in `messages.yml` (`gizmo-admin`), its limits, cooldown steps and sounds in `config.yml` (`gizmo`).
+
+### Hitbox page
+
+The click boxes and the collision of this one block (the other blocks of the same file keep those of their file):
+
+| Icon | What it sets |
+|---|---|
+| Click box of the file | The click boxes its file gives it (none for a file without any). |
+| Custom click box | One box with a square base on the block's axis, in place of those of the file (or for a file without any). It starts around the file's boxes (else around what the model draws), runs what the file's first click box runs (its commands, its click animation) and grows and shrinks with the block. Width, height and floor: left/right click ±0.1 block, Shift ±1; "Around the model", "Around the file's" and "Type the values" set it at once. |
+| No click box | Nothing of it can be clicked nor hit: its panel opens again with `/bdc settings` aiming at what it draws, and its Break button removes it. |
+| Collision | The collisions of its file, or none (players walk through it). Shown only when its file has some. |
+| See the hitbox | Draws its click boxes (white) and collisions (orange) for you alone, while the page is open and `gizmo.hitbox-outline.seconds` more (`config.yml`: particles, colors). |
+
+Values are in blocks as the block stands now (its size included), up to `gizmo.hitbox-max` (32). The entities are summoned again at once; a block one of whose entities is not loaded gets its new hitbox when it is next read.

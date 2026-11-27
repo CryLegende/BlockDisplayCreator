@@ -29,7 +29,7 @@ import java.util.UUID;
 public final class BlockSettings {
 
     /**
-     * The name of the click box added to a block whose file gives it none.
+     * The name of the click box an administrator drew on a block whose file gives it none.
      */
     public static final String CLICK_BOX = "admin-click-box";
 
@@ -68,11 +68,20 @@ public final class BlockSettings {
     @Nullable
     String permission;
     /**
-     * The click box added to a block whose file gives it none: width, height and how high its floor stands above the
-     * block, in blocks of the model at its size from the file. Null for none.
+     * The one click box an administrator drew in place of those of its file (or for a file that gives it none):
+     * width, height and how high its floor stands above the block, in blocks of the model at the size its file gives
+     * (it grows and shrinks with the block). Null for the file's.
      */
     @Nullable
     double[] clickBox;
+    /**
+     * Whether its click boxes are taken away: nothing of it can be clicked nor hit (its panel still breaks it).
+     */
+    boolean noClickBox;
+    /**
+     * Whether the collisions of its file stop players and entities.
+     */
+    boolean collisions = true;
     /**
      * Whether a hit may break it.
      */
@@ -124,7 +133,13 @@ public final class BlockSettings {
         settings.permission = blankToNull(yaml.getString("permission"));
         if (yaml.isConfigurationSection("click-box")) {
             settings.clickBox = new double[]{yaml.getDouble("click-box.width"), yaml.getDouble("click-box.height"), yaml.getDouble("click-box.y")};
+            if (settings.clickBox[0] <= 0 || settings.clickBox[1] <= 0) {
+                settings.clickBox = null;
+            }
+        } else {
+            settings.noClickBox = "none".equalsIgnoreCase(yaml.getString("click-box"));
         }
+        settings.collisions = yaml.getBoolean("collisions", true);
         settings.breakable = yaml.getBoolean("breakable", true);
         settings.locked = yaml.getBoolean("gizmo-admins-only", false);
         settings.loops = yaml.getBoolean("loops", true);
@@ -134,12 +149,44 @@ public final class BlockSettings {
     }
 
     /**
-     * The click box added to a block, from the text stored with it: width, height and height of its floor, or null.
+     * The settings stored with a block, or null for a block that follows its file.
      */
     @Nullable
-    public static double[] clickBoxOf(@Nullable String text) {
-        BlockSettings settings = read(text);
-        return settings == null ? null : settings.clickBox;
+    public static BlockSettings of(@Nullable String text) {
+        return read(text);
+    }
+
+    /**
+     * The one click box drawn in place of those of the file (width, height, height of its floor), or null.
+     */
+    @Nullable
+    public double[] clickBox() {
+        return this.noClickBox ? null : this.clickBox;
+    }
+
+    /**
+     * Whether its click boxes are taken away.
+     */
+    public boolean removesClickBoxes() {
+        return this.noClickBox;
+    }
+
+    /**
+     * Whether the collisions of its file are summoned.
+     */
+    public boolean keepsCollisions() {
+        return this.collisions;
+    }
+
+    /**
+     * What its hitbox entities depend on: when it changes, they are summoned again.
+     */
+    static String hitboxKey(@Nullable BlockSettings settings) {
+        if (settings == null) {
+            return "";
+        }
+        return (settings.noClickBox ? "none" : settings.clickBox == null ? "file" : java.util.Arrays.toString(settings.clickBox))
+                + (settings.collisions ? "" : "/no-collision");
     }
 
     /**
@@ -167,10 +214,15 @@ public final class BlockSettings {
         if (this.permission != null) {
             yaml.set("permission", this.permission);
         }
-        if (this.clickBox != null) {
+        if (this.noClickBox) {
+            yaml.set("click-box", "none");
+        } else if (this.clickBox != null) {
             yaml.set("click-box.width", this.clickBox[0]);
             yaml.set("click-box.height", this.clickBox[1]);
             yaml.set("click-box.y", this.clickBox[2]);
+        }
+        if (!this.collisions) {
+            yaml.set("collisions", false);
         }
         if (!this.breakable) {
             yaml.set("breakable", false);
@@ -195,7 +247,8 @@ public final class BlockSettings {
      */
     boolean isDefault() {
         return this.commands.isEmpty() && this.modelCommands && this.clickAnimation && this.cooldown == 0 && this.permission == null
-                && this.clickBox == null && this.breakable && !this.locked && this.loops && this.viewDistance < 0 && this.note == null;
+                && this.clickBox == null && !this.noClickBox && this.collisions
+                && this.breakable && !this.locked && this.loops && this.viewDistance < 0 && this.note == null;
     }
 
     BlockSettings copy() {

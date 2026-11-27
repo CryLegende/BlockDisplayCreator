@@ -12,8 +12,10 @@ import net.md_5.bungee.api.chat.ClickEvent;
 import net.md_5.bungee.api.chat.HoverEvent;
 import net.md_5.bungee.api.chat.TextComponent;
 import net.md_5.bungee.api.chat.hover.content.Text;
+import me.general_breddok.blockdisplaycreator.custom.block.BDCCustomBlockService;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.command.CommandSender;
@@ -31,6 +33,7 @@ import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -66,12 +69,30 @@ public final class AdminMenu implements Listener {
     private static final int CLICK_ANIMATION = 22;
     private static final int COOLDOWN = 23;
     private static final int PERMISSION = 24;
-    private static final int CLICK_BOX = 25;
+    private static final int HITBOX = 25;
     private static final int COPY = 28;
     private static final int PASTE = 29;
     private static final int RESET = 33;
     private static final int BREAK = 34;
     private static final int BACK = 36;
+    // the hitbox page
+    private static final int H_FILE = 10;
+    private static final int H_CUSTOM = 11;
+    private static final int H_NONE = 12;
+    private static final int H_COLLISION = 14;
+    private static final int H_SHOW = 16;
+    private static final int H_WIDTH = 19;
+    private static final int H_HEIGHT = 20;
+    private static final int H_FLOOR = 21;
+    private static final int H_HINT = 22;
+    private static final int H_FIT_MODEL = 23;
+    private static final int H_FIT_FILE = 24;
+    private static final int H_TYPE = 25;
+    /**
+     * How often the outline of a hitbox is drawn again (ticks), and how many dots it is drawn with at most.
+     */
+    private static final int OUTLINE_PERIOD = 8;
+    private static final int OUTLINE_DOTS = 1200;
     /**
      * How many blocks a click on the view distance adds or takes.
      */
@@ -90,10 +111,15 @@ public final class AdminMenu implements Listener {
 
     private static final class Holder implements InventoryHolder {
         final BlockRef block;
+        /**
+         * Whether it is the page of the block's click boxes and collisions.
+         */
+        final boolean hitbox;
         Inventory inventory;
 
-        Holder(BlockRef block) {
+        Holder(BlockRef block, boolean hitbox) {
             this.block = block;
+            this.hitbox = hitbox;
         }
 
         @Override
@@ -111,6 +137,14 @@ public final class AdminMenu implements Listener {
     private final Map<UUID, BlockRef> editing = new HashMap<>();
     private final Map<UUID, BlockSettings> clipboard = new HashMap<>();
     /**
+     * The model the copied settings come from: a click box drawn for it is drawn again for another model.
+     */
+    private final Map<UUID, String> clipboardModel = new HashMap<>();
+    /**
+     * The outline of a hitbox drawn for each administrator.
+     */
+    private final Map<UUID, BukkitTask> outlines = new HashMap<>();
+    /**
      * The panel each administrator has open: a click in any other inventory is left alone without asking it for its
      * holder (which copies the state of a container block on Paper).
      */
@@ -125,25 +159,41 @@ public final class AdminMenu implements Listener {
     // ---------- Opening and drawing ----------
 
     void open(Player player, PlacedDisplay placed) {
+        open(player, placed, false);
+    }
+
+    private void open(Player player, PlacedDisplay placed, boolean hitbox) {
         BlockRef ref = new BlockRef(placed.world.getUID(), placed.x, placed.y, placed.z);
         this.editing.put(player.getUniqueId(), ref);
-        Holder holder = new Holder(ref);
-        Inventory inventory = this.plugin.getServer().createInventory(holder, SIZE, Texts.get("gizmo-admin.title", "%model%", placed.modelName));
+        Holder holder = new Holder(ref, hitbox);
+        Inventory inventory = this.plugin.getServer().createInventory(holder, SIZE,
+                Texts.get(hitbox ? "gizmo-admin.hitbox-title" : "gizmo-admin.title", "%model%", placed.modelName));
         holder.inventory = inventory;
-        draw(inventory, player, placed);
+        draw(inventory, player, placed, hitbox);
         player.openInventory(inventory);
         this.open.put(player.getUniqueId(), holder);
         sound(player, "open", Sound.UI_TOAST_IN);
+        if (hitbox) {
+            outline(player, ref);
+        }
     }
 
-    private void draw(Inventory inventory, Player player, PlacedDisplay placed) {
-        BlockSettings settings = placed.settings == null ? new BlockSettings() : placed.settings;
+    private void draw(Inventory inventory, Player player, PlacedDisplay placed, boolean hitbox) {
         ItemStack filler = item("filler", false);
         for (int slot = 0; slot < SIZE; slot++) {
             int row = slot / 9;
             int column = slot % 9;
             inventory.setItem(slot, row == 0 || row == 4 || column == 0 || column == 8 ? filler : null);
         }
+        if (hitbox) {
+            drawHitbox(inventory, placed);
+        } else {
+            drawMain(inventory, player, placed);
+        }
+    }
+
+    private void drawMain(Inventory inventory, Player player, PlacedDisplay placed) {
+        BlockSettings settings = placed.settings == null ? new BlockSettings() : placed.settings;
 
         String where = placed.x + " " + placed.y + " " + placed.z + " " + placed.world.getName();
         ItemStack info = item("info", false, "%model%", placed.modelName, "%where%", where,
@@ -187,9 +237,8 @@ public final class AdminMenu implements Listener {
                 : item("click-animation-none", false));
         inventory.setItem(COOLDOWN, item("cooldown", settings.cooldown > 0, "%value%", settings.cooldown > 0 ? duration(settings.cooldown) : Texts.get("gizmo-admin.none")));
         inventory.setItem(PERMISSION, item("permission", settings.permission != null, "%value%", settings.permission == null ? Texts.get("gizmo-admin.none") : settings.permission));
-        inventory.setItem(CLICK_BOX, placed.model.clickable
-                ? item("click-box-model", false)
-                : toggle("click-box", settings.clickBox != null, settings.clickBox != null));
+        inventory.setItem(HITBOX, item("hitbox", settings.noClickBox || settings.clickBox != null || !settings.collisions,
+                "%click%", clickState(placed, settings, definition), "%collision%", collisionState(settings, definition)));
 
         inventory.setItem(COPY, item("copy", false));
         BlockSettings copied = this.clipboard.get(player.getUniqueId());
@@ -206,7 +255,8 @@ public final class AdminMenu implements Listener {
         count += settings.clickAnimation ? 0 : 1;
         count += settings.cooldown > 0 ? 1 : 0;
         count += settings.permission != null ? 1 : 0;
-        count += settings.clickBox != null ? 1 : 0;
+        count += settings.clickBox != null || settings.noClickBox ? 1 : 0;
+        count += settings.collisions ? 0 : 1;
         count += settings.breakable ? 0 : 1;
         count += settings.locked ? 1 : 0;
         count += settings.loops ? 0 : 1;
@@ -248,7 +298,7 @@ public final class AdminMenu implements Listener {
     private void redraw(Player player, PlacedDisplay placed) {
         Holder holder = this.open.get(player.getUniqueId());
         if (holder != null && player.getOpenInventory().getTopInventory() == holder.inventory) {
-            draw(holder.inventory, player, placed);
+            draw(holder.inventory, player, placed, holder.hitbox);
         }
     }
 
@@ -291,6 +341,10 @@ public final class AdminMenu implements Listener {
             return;
         }
         ClickType click = event.getClick();
+        if (holder.hitbox) {
+            hitboxClick(player, placed, holder.block, event.getRawSlot(), click);
+            return;
+        }
         boolean left = click == ClickType.LEFT;
         boolean right = click == ClickType.RIGHT;
         boolean shiftLeft = click == ClickType.SHIFT_LEFT;
@@ -404,22 +458,13 @@ public final class AdminMenu implements Listener {
                     return;
                 }
             }
-            case CLICK_BOX -> {
-                if (placed.model.clickable) {
-                    return;
-                }
-                if (settings.clickBox != null) {
-                    settings.clickBox = null;
-                } else {
-                    settings.clickBox = clickBoxOf(placed);
-                    if (settings.clickBox == null) {
-                        refuse(player);
-                        return;
-                    }
-                }
+            case HITBOX -> {
+                open(player, placed, true);
+                return;
             }
             case COPY -> {
                 this.clipboard.put(player.getUniqueId(), settings.copy());
+                this.clipboardModel.put(player.getUniqueId(), placed.modelName);
                 this.gizmos.say(player, "gizmo-admin.copied", "%model%", placed.modelName);
                 changed = false;
             }
@@ -430,10 +475,17 @@ public final class AdminMenu implements Listener {
                     return;
                 }
                 settings = copied.copy();
-                // the added click box is the one this model needs, or none when its file gives it one
-                settings.clickBox = settings.clickBox == null || placed.model.clickable ? null : clickBoxOf(placed);
+                // a click box drawn for another model is drawn again for this one
+                if (settings.clickBox != null && !placed.modelName.equals(this.clipboardModel.get(player.getUniqueId()))) {
+                    BlockSettings none = new BlockSettings();
+                    settings.clickBox = startBox(placed, none, definition(placed));
+                }
                 if (!placed.model.loops) {
                     settings.loops = true;
+                }
+                AbstractCustomBlock pasted = definition(placed);
+                if (pasted == null || BDCCustomBlockService.expectedCollisions(pasted) == 0) {
+                    settings.collisions = true;
                 }
             }
             case RESET -> {
@@ -462,16 +514,335 @@ public final class AdminMenu implements Listener {
                 return;
             }
         }
-        if (changed) {
-            apply(placed, settings);
+        if (changed && !apply(placed, settings)) {
+            this.gizmos.say(player, "gizmo-admin.hitbox-later");
         }
         sound(player, "click", Sound.UI_BUTTON_CLICK);
         redraw(player, placed);
     }
 
-    private void apply(PlacedDisplay placed, BlockSettings settings) {
-        this.renderer.applySettings(placed, settings);
+    /**
+     * @return false when the hitbox changed but is only summoned again at the block's next read
+     */
+    private boolean apply(PlacedDisplay placed, BlockSettings settings) {
+        boolean now = this.renderer.applySettings(placed, settings);
         this.gizmos.follow(placed);
+        return now;
+    }
+
+    // ---------- The hitbox page ----------
+
+    private void drawHitbox(Inventory inventory, PlacedDisplay placed) {
+        BlockSettings settings = placed.settings == null ? new BlockSettings() : placed.settings;
+        AbstractCustomBlock definition = definition(placed);
+        int fileBoxes = fileBoxes(definition);
+        boolean custom = !settings.noClickBox && settings.clickBox != null;
+        boolean file = !settings.noClickBox && settings.clickBox == null;
+
+        inventory.setItem(INFO, item("hitbox-info", false, "%model%", placed.modelName,
+                "%click%", clickState(placed, settings, definition), "%collision%", collisionState(settings, definition)));
+        inventory.setItem(H_FILE, choice(fileBoxes > 0 ? "hitbox-file" : "hitbox-file-empty", file, "%count%", fileBoxes));
+        inventory.setItem(H_CUSTOM, choice("hitbox-custom", custom));
+        inventory.setItem(H_NONE, choice("hitbox-none", settings.noClickBox));
+        inventory.setItem(H_COLLISION, definition != null && BDCCustomBlockService.expectedCollisions(definition) > 0
+                ? toggle("collision", settings.collisions, !settings.collisions)
+                : item("collision-none", false));
+        inventory.setItem(H_SHOW, item("hitbox-show", false, "%seconds%", outlineSeconds()));
+        if (custom) {
+            double scale = placed.scale();
+            String max = blocks(hitboxMax());
+            inventory.setItem(H_WIDTH, item("hitbox-width", false, "%value%", blocks(settings.clickBox[0] * scale), "%max%", max));
+            inventory.setItem(H_HEIGHT, item("hitbox-height", false, "%value%", blocks(settings.clickBox[1] * scale), "%max%", max));
+            inventory.setItem(H_FLOOR, item("hitbox-floor", false, "%value%", blocks(settings.clickBox[2] * scale), "%max%", max));
+            if (clickBoxOf(placed) != null) {
+                inventory.setItem(H_FIT_MODEL, item("hitbox-fit-model", false));
+            }
+            if (definition != null && BDCCustomBlockService.fileClickBox(definition) != null) {
+                inventory.setItem(H_FIT_FILE, item("hitbox-fit-file", false));
+            }
+            inventory.setItem(H_TYPE, item("hitbox-type", false));
+        } else {
+            inventory.setItem(H_HINT, item("hitbox-size-hint", false));
+        }
+        inventory.setItem(BACK, item("hitbox-back", false));
+    }
+
+    private void hitboxClick(Player player, PlacedDisplay placed, BlockRef ref, int slot, ClickType click) {
+        BlockSettings settings = placed.settings == null ? new BlockSettings() : placed.settings.copy();
+        AbstractCustomBlock definition = definition(placed);
+        boolean custom = !settings.noClickBox && settings.clickBox != null;
+        switch (slot) {
+            case H_FILE -> {
+                if (!settings.noClickBox && settings.clickBox == null) {
+                    refuse(player);
+                    return;
+                }
+                settings.noClickBox = false;
+                settings.clickBox = null;
+            }
+            case H_CUSTOM -> {
+                double[] start = custom ? null : startBox(placed, settings, definition);
+                if (start == null) {
+                    refuse(player);
+                    return;
+                }
+                settings.noClickBox = false;
+                settings.clickBox = start;
+            }
+            case H_NONE -> {
+                if (settings.noClickBox) {
+                    refuse(player);
+                    return;
+                }
+                settings.noClickBox = true;
+                settings.clickBox = null;
+            }
+            case H_COLLISION -> {
+                if (definition == null || BDCCustomBlockService.expectedCollisions(definition) == 0) {
+                    return;
+                }
+                settings.collisions = !settings.collisions;
+            }
+            case H_WIDTH, H_HEIGHT, H_FLOOR -> {
+                double step = click == ClickType.LEFT ? 0.1 : click == ClickType.RIGHT ? -0.1
+                        : click == ClickType.SHIFT_LEFT ? 1 : click == ClickType.SHIFT_RIGHT ? -1 : 0;
+                if (!custom || step == 0) {
+                    return;
+                }
+                int index = slot == H_WIDTH ? 0 : slot == H_HEIGHT ? 1 : 2;
+                double scale = placed.scale();
+                double max = hitboxMax();
+                double real = Math.round((settings.clickBox[index] * scale + step) * 100) / 100.0;
+                real = Math.max(index == 2 ? -max : 0.1, Math.min(max, real));
+                if (Math.abs(real / scale - settings.clickBox[index]) < 1.0E-9) {
+                    refuse(player);
+                    return;
+                }
+                settings.clickBox[index] = real / scale;
+            }
+            case H_FIT_MODEL, H_FIT_FILE -> {
+                double[] box = !custom ? null : slot == H_FIT_MODEL ? clickBoxOf(placed)
+                        : definition == null ? null : BDCCustomBlockService.fileClickBox(definition);
+                if (box == null) {
+                    if (custom) {
+                        refuse(player);
+                    }
+                    return;
+                }
+                settings.clickBox = box;
+            }
+            case H_TYPE -> {
+                if (custom) {
+                    prompt(player, "hitbox");
+                }
+                return;
+            }
+            case H_SHOW -> {
+                player.closeInventory();
+                outline(player, ref);
+                sound(player, "click", Sound.UI_BUTTON_CLICK);
+                return;
+            }
+            case BACK -> {
+                open(player, placed, false);
+                return;
+            }
+            default -> {
+                return;
+            }
+        }
+        if (!apply(placed, settings)) {
+            this.gizmos.say(player, "gizmo-admin.hitbox-later");
+        }
+        sound(player, "click", Sound.UI_BUTTON_CLICK);
+        redraw(player, placed);
+        outline(player, ref);
+    }
+
+    /**
+     * The click box a block starts from when it gets its own: the one it already has, else one around the click
+     * boxes of its file, else one around what it draws (null for a model that draws nothing).
+     */
+    @Nullable
+    private static double[] startBox(PlacedDisplay placed, BlockSettings settings, @Nullable AbstractCustomBlock definition) {
+        if (settings.clickBox != null) {
+            return settings.clickBox.clone();
+        }
+        double[] file = definition == null ? null : BDCCustomBlockService.fileClickBox(definition);
+        return file != null ? file : clickBoxOf(placed);
+    }
+
+    private static int fileBoxes(@Nullable AbstractCustomBlock definition) {
+        int count = 0;
+        if (definition != null) {
+            for (ConfiguredInteraction interaction : definition.getConfiguredInteractions()) {
+                if (!BDCCustomBlockService.isUseless(interaction)) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private String clickState(PlacedDisplay placed, BlockSettings settings, @Nullable AbstractCustomBlock definition) {
+        if (settings.noClickBox) {
+            return Texts.get("gizmo-admin.hitbox-state.none");
+        }
+        if (settings.clickBox != null) {
+            double scale = placed.scale();
+            return Texts.get("gizmo-admin.hitbox-state.custom", "%width%", blocks(settings.clickBox[0] * scale), "%height%", blocks(settings.clickBox[1] * scale));
+        }
+        int count = fileBoxes(definition);
+        return count > 0 ? Texts.get("gizmo-admin.hitbox-state.file", "%count%", count) : Texts.get("gizmo-admin.hitbox-state.file-empty");
+    }
+
+    private String collisionState(BlockSettings settings, @Nullable AbstractCustomBlock definition) {
+        if (definition == null || BDCCustomBlockService.expectedCollisions(definition) == 0) {
+            return Texts.get("gizmo-admin.hitbox-state.collision-empty");
+        }
+        return Texts.get(settings.collisions ? "gizmo-admin.hitbox-state.collision-file" : "gizmo-admin.hitbox-state.collision-none");
+    }
+
+    /**
+     * One of the choices of the hitbox page: it shines and says so when chosen.
+     */
+    private ItemStack choice(String key, boolean chosen, Object... pairs) {
+        Object[] all = java.util.Arrays.copyOf(pairs, pairs.length + 2);
+        all[pairs.length] = "%chosen%";
+        all[pairs.length + 1] = Texts.get(chosen ? "gizmo-admin.chosen" : "gizmo-admin.choose");
+        return item(key, chosen, all);
+    }
+
+    private double hitboxMax() {
+        return Math.max(0.5, this.gizmos.setting("gizmo.hitbox-max", 32));
+    }
+
+    private int outlineSeconds() {
+        return (int) Math.round(this.gizmos.setting("gizmo.hitbox-outline.seconds", 10));
+    }
+
+    /**
+     * {@code 1,25}, {@code 2}: a length in blocks as the panel writes it.
+     */
+    private static String blocks(double value) {
+        double rounded = Math.round(value * 100) / 100.0;
+        if (Math.abs(rounded - Math.rint(rounded)) < 1.0E-9) {
+            return String.valueOf((long) Math.rint(rounded));
+        }
+        String text = String.format(Locale.ROOT, "%.2f", rounded);
+        return (text.endsWith("0") ? text.substring(0, text.length() - 1) : text).replace('.', ',');
+    }
+
+    // ---------- Outline of a hitbox ----------
+
+    private record Dot(Particle particle, @Nullable Object data) {
+    }
+
+    /**
+     * Draws the click boxes (white) and collisions (orange) of a block for its administrator alone, while he has its
+     * hitbox page open and {@code gizmo.hitbox-outline.seconds} more.
+     */
+    private void outline(Player player, BlockRef ref) {
+        UUID id = player.getUniqueId();
+        stopOutline(id);
+        int seconds = outlineSeconds();
+        if (seconds <= 0) {
+            return;
+        }
+        Dot clickDot;
+        Dot collisionDot;
+        try {
+            clickDot = dot("click-box", "#FFFFFF");
+            collisionDot = dot("collision", "#FF9A3C");
+        } catch (LinkageError | RuntimeException e) {
+            return;
+        }
+        int[] left = {Math.max(1, seconds * 20 / OUTLINE_PERIOD)};
+        this.outlines.put(id, this.plugin.getServer().getScheduler().runTaskTimer(this.plugin, () -> {
+            Holder holder = this.open.get(id);
+            boolean viewing = holder != null && holder.hitbox && holder.block.equals(ref);
+            PlacedDisplay placed = player.isOnline() && (viewing || left[0]-- > 0) ? find(ref) : null;
+            if (placed == null || placed.world != player.getWorld()) {
+                stopOutline(id);
+                return;
+            }
+            List<double[]> boxes = this.renderer.hitboxOf(placed);
+            double length = 0;
+            for (double[] box : boxes) {
+                length += 4 * (box[3] - box[0] + box[4] - box[1] + box[5] - box[2]);
+            }
+            double spacing = Math.max(0.25, length / OUTLINE_DOTS);
+            try {
+                for (double[] box : boxes) {
+                    drawBox(player, box[6] > 0 ? collisionDot : clickDot, box, spacing);
+                }
+            } catch (LinkageError | RuntimeException e) {
+                stopOutline(id);
+            }
+        }, 0L, OUTLINE_PERIOD));
+    }
+
+    private void stopOutline(UUID player) {
+        BukkitTask task = this.outlines.remove(player);
+        if (task != null) {
+            task.cancel();
+        }
+    }
+
+    /**
+     * The dot an outline is drawn with, from {@code gizmo.hitbox-outline.<which>-particle} and {@code -color}.
+     */
+    private Dot dot(String which, String color) {
+        Object configured = this.plugin.getYamlConfiguration().get("gizmo.hitbox-outline." + which + "-particle");
+        Particle particle = null;
+        for (Object name : new Object[]{configured, "DUST", "REDSTONE", "END_ROD"}) {
+            if (name == null || String.valueOf(name).isBlank()) {
+                continue;
+            }
+            try {
+                particle = Particle.valueOf(String.valueOf(name).trim().toUpperCase(Locale.ROOT));
+                break;
+            } catch (IllegalArgumentException ignored) {
+                // the next one
+            }
+        }
+        if (particle == null) {
+            particle = Particle.END_ROD;
+        }
+        Class<?> type = particle.getDataType();
+        if (type == Particle.DustOptions.class) {
+            Object configuredColor = this.plugin.getYamlConfiguration().get("gizmo.hitbox-outline." + which + "-color");
+            int rgb;
+            try {
+                rgb = Integer.parseInt(String.valueOf(configuredColor == null ? color : configuredColor).trim().replace("#", ""), 16);
+            } catch (NumberFormatException e) {
+                rgb = Integer.parseInt(color.replace("#", ""), 16);
+            }
+            return new Dot(particle, new Particle.DustOptions(org.bukkit.Color.fromRGB(rgb & 0xFFFFFF), 0.8f));
+        }
+        return type == Void.class ? new Dot(particle, null) : new Dot(Particle.END_ROD, null);
+    }
+
+    private static void drawBox(Player player, Dot dot, double[] box, double spacing) {
+        double[] xs = {box[0], box[3]};
+        double[] ys = {box[1], box[4]};
+        double[] zs = {box[2], box[5]};
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 2; j++) {
+                line(player, dot, xs[0], ys[i], zs[j], xs[1], ys[i], zs[j], spacing);
+                line(player, dot, xs[i], ys[0], zs[j], xs[i], ys[1], zs[j], spacing);
+                line(player, dot, xs[i], ys[j], zs[0], xs[i], ys[j], zs[1], spacing);
+            }
+        }
+    }
+
+    private static void line(Player player, Dot dot, double x1, double y1, double z1, double x2, double y2, double z2, double spacing) {
+        double length = Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) + (z2 - z1) * (z2 - z1));
+        int steps = Math.max(1, (int) Math.ceil(length / spacing));
+        for (int k = 0; k <= steps; k++) {
+            double t = (double) k / steps;
+            player.spawnParticle(dot.particle(), x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, z1 + (z2 - z1) * t, 1, 0, 0, 0, 0, dot.data());
+        }
     }
 
     private void resize(PlacedDisplay placed, double size) {
@@ -510,6 +881,7 @@ public final class AdminMenu implements Listener {
         player.closeInventory();
         String suggested = COMMAND + switch (field) {
             case "command" -> "command add ";
+            case "hitbox" -> "hitbox " + typedBox(player);
             default -> field + " ";
         };
         BaseComponent[] message = TextComponent.fromLegacyText(Texts.get("gizmo-admin.prompt." + field));
@@ -519,6 +891,20 @@ public final class AdminMenu implements Listener {
         }
         player.spigot().sendMessage(message);
         sound(player, "click", Sound.UI_BUTTON_CLICK);
+    }
+
+    /**
+     * The values of the click box the player edits, ready to be changed in the chat.
+     */
+    private String typedBox(Player player) {
+        BlockRef ref = this.editing.get(player.getUniqueId());
+        PlacedDisplay placed = ref == null ? null : find(ref);
+        if (placed == null || placed.settings == null || placed.settings.clickBox == null) {
+            return "";
+        }
+        double scale = placed.scale();
+        double[] box = placed.settings.clickBox;
+        return (blocks(box[0] * scale) + " " + blocks(box[1] * scale) + " " + blocks(box[2] * scale)).replace(',', '.');
     }
 
     private void refuse(Player player) {
@@ -669,13 +1055,15 @@ public final class AdminMenu implements Listener {
     public void onQuit(PlayerQuitEvent event) {
         this.editing.remove(event.getPlayer().getUniqueId());
         this.clipboard.remove(event.getPlayer().getUniqueId());
+        this.clipboardModel.remove(event.getPlayer().getUniqueId());
         this.open.remove(event.getPlayer().getUniqueId());
+        stopOutline(event.getPlayer().getUniqueId());
         BlockSettings.forget(event.getPlayer().getUniqueId());
     }
 
     // ---------- /bdc settings ----------
 
-    private static final List<String> FIELDS = List.of("size", "view-distance", "command", "cooldown", "permission", "note", "list");
+    private static final List<String> FIELDS = List.of("size", "view-distance", "hitbox", "collision", "command", "cooldown", "permission", "note", "list");
 
     /**
      * {@code /bdc settings}: opens the panel of the block the player's gizmo is on, or that he aims at. With a field,
@@ -717,7 +1105,54 @@ public final class AdminMenu implements Listener {
         String value = args.length > 2 ? String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length)).trim() : "";
         BlockSettings settings = placed.settings == null ? new BlockSettings() : placed.settings.copy();
         boolean none = value.equalsIgnoreCase("none") || value.equalsIgnoreCase("default");
+        boolean hitboxPage = field.equals("hitbox") || field.equals("collision");
         switch (field) {
+            case "hitbox" -> {
+                String word = value.toLowerCase(Locale.ROOT);
+                double max = hitboxMax();
+                if (word.equals("file") || word.equals("default")) {
+                    settings.noClickBox = false;
+                    settings.clickBox = null;
+                } else if (word.equals("none")) {
+                    settings.noClickBox = true;
+                    settings.clickBox = null;
+                } else if (word.equals("model")) {
+                    double[] box = clickBoxOf(placed);
+                    if (box == null) {
+                        this.gizmos.say(player, "gizmo-admin.bad-hitbox", "%max%", blocks(max));
+                        return;
+                    }
+                    settings.noClickBox = false;
+                    settings.clickBox = box;
+                } else {
+                    String[] parts = value.split("\\s+");
+                    Double width = parts.length >= 2 ? number(parts[0]) : null;
+                    Double height = parts.length >= 2 ? number(parts[1]) : null;
+                    Double floor = parts.length >= 3 ? number(parts[2]) : Double.valueOf(0);
+                    if (parts.length > 3 || width == null || height == null || floor == null || width < 0.1 || width > max
+                            || height < 0.1 || height > max || floor < -max || floor > max) {
+                        this.gizmos.say(player, "gizmo-admin.bad-hitbox", "%max%", blocks(max));
+                        return;
+                    }
+                    double scale = placed.scale();
+                    settings.noClickBox = false;
+                    settings.clickBox = new double[]{width / scale, height / scale, floor / scale};
+                }
+            }
+            case "collision" -> {
+                AbstractCustomBlock definition = definition(placed);
+                String word = value.toLowerCase(Locale.ROOT);
+                boolean on = List.of("on", "true", "yes", "file", "default").contains(word);
+                if (!on && !List.of("off", "false", "no", "none").contains(word)) {
+                    this.gizmos.say(player, "gizmo-admin.usage");
+                    return;
+                }
+                if (definition == null || BDCCustomBlockService.expectedCollisions(definition) == 0) {
+                    this.gizmos.say(player, "gizmo-admin.no-collision");
+                    return;
+                }
+                settings.collisions = on;
+            }
             case "size" -> {
                 Double percent = number(value.replace("%", "").trim());
                 double min = this.gizmos.setting("gizmo.admin-size-min", 0.1);
@@ -792,9 +1227,12 @@ public final class AdminMenu implements Listener {
                 return;
             }
         }
-        apply(placed, settings);
-        this.gizmos.say(player, "gizmo-admin.saved", "%model%", placed.modelName);
-        open(player, placed);
+        if (apply(placed, settings)) {
+            this.gizmos.say(player, "gizmo-admin.saved", "%model%", placed.modelName);
+        } else {
+            this.gizmos.say(player, "gizmo-admin.hitbox-later");
+        }
+        open(player, placed, hitboxPage);
     }
 
     private void list(Player player, @Nullable String radius) {
@@ -842,6 +1280,8 @@ public final class AdminMenu implements Listener {
             switch (args[1].toLowerCase(Locale.ROOT)) {
                 case "size" -> StringUtil.copyPartialMatches(typed, List.of("50", "100", "150", "200", "300", "500", "default"), result);
                 case "view-distance" -> StringUtil.copyPartialMatches(typed, List.of("16", "32", "48", "64", "96", "128", "default"), result);
+                case "hitbox" -> StringUtil.copyPartialMatches(typed, List.of("file", "model", "none", "1", "2"), result);
+                case "collision" -> StringUtil.copyPartialMatches(typed, List.of("on", "off"), result);
                 case "command" -> StringUtil.copyPartialMatches(typed, List.of("add", "remove", "clear"), result);
                 case "cooldown" -> StringUtil.copyPartialMatches(typed, List.of("1s", "5s", "30s", "1m", "5m", "1h", "24h", "none"), result);
                 case "permission", "note" -> StringUtil.copyPartialMatches(typed, List.of("none"), result);

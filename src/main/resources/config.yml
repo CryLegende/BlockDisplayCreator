@@ -55,6 +55,16 @@ gizmo:
   - 5m
   - 1h
   - 24h
+  #The largest click box the hitbox page of the admin panel draws, in blocks (width and height).   By def 32
+  hitbox-max: 32
+  #The outline the hitbox page draws for its administrator alone, while it is open and that many seconds more
+  #(0: none). Particles from https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Particle.html; a DUST takes its color.
+  hitbox-outline:
+    seconds: 10
+    click-box-particle: DUST
+    click-box-color: '#FFFFFF'
+    collision-particle: DUST
+    collision-color: '#FF9A3C'
   #Sounds of the admin panel (names from https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Sound.html).
   admin-sounds:
     open: UI_TOAST_IN
