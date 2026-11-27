@@ -373,6 +373,16 @@ final class PlacedDisplay {
     /**
      * Whether an operator moved the block.
      */
+    /**
+     * Whether the block has a click box: its file's, or one an administrator drew, unless he took them away.
+     */
+    boolean clickable() {
+        if (this.settings != null && this.settings.noClickBox) {
+            return false;
+        }
+        return this.settings != null && this.settings.clickBox != null || this.model != null && this.model.clickable;
+    }
+
     boolean isShifted() {
         for (int i = 0; i < 5; i++) {
             if (Math.abs(this.shift[i]) > 1.0E-6) {

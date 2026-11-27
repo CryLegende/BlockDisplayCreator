@@ -149,6 +149,18 @@ gizmo:
 #Each icon has a material, a name and a lore; a lore line holding %list% gives one line per command.
 gizmo-admin:
   title: "&8&lRéglages &8| %model%"
+  hitbox-title: "&8&lHitbox &8| %model%"
+  chosen: "&a✔ Choisie"
+  choose: "&8Clic &7: &fchoisir"
+  #What the hitbox icons say of the block (%count% = its file's click boxes, %width% and %height% in blocks)
+  hitbox-state:
+    file: "&fcelle du fichier &8(%count%)"
+    file-empty: "&8aucune dans son fichier"
+    custom: "&bsur mesure &8(&f%width% &8× &f%height%&8)"
+    none: "&cretirée"
+    collision-file: "&fcelle du fichier"
+    collision-none: "&cretirée"
+    collision-empty: "&8aucune dans son fichier"
   none: "&8aucun"
   no-command: "&8aucune commande"
   command-line: "&8%n%. &f/%command%"
@@ -306,22 +318,145 @@ gizmo-admin:
         - ""
         - "&8Clic &7: &fécrire"
         - "&8Clic droit &7: &fretirer"
-    click-box:
-      material: STONE_BUTTON
-      name: "&eZone cliquable &8: %state%"
-      state-on: "&aajoutée"
-      state-off: "&caucune"
+    hitbox:
+      material: TARGET
+      name: "&eHitbox"
       lore:
-        - "&7Ce modèle n'en a pas : sans elle, ses"
-        - "&7commandes au clic ne se lancent jamais."
-        - "&7Elle prend la place de ce qu'il dessine."
+        - "&7Zone cliquable &8: %click%"
+        - "&7Collision &8: %collision%"
+        - ""
+        - "&7La retirer, la changer, la voir."
+        - ""
+        - "&8Clic &7: &fouvrir"
+    #The hitbox page
+    hitbox-info:
+      material: TARGET
+      name: "&e&lHitbox de %model%"
+      lore:
+        - "&7Zone cliquable &8: %click%"
+        - "&7Collision &8: %collision%"
+        - ""
+        - "&7Pour &ece bloc&7 seulement : les autres"
+        - "&f%model% &7gardent celle de leur fichier."
+        - "&7Contours visibles avec &fF3 + B&7 (zone cliquable)."
+    hitbox-file:
+      material: OAK_SIGN
+      name: "&eZone cliquable du fichier"
+      lore:
+        - "&7Les &f%count% &7zone(s) que le fichier"
+        - "&7de ce modèle lui donne."
+        - ""
+        - "%chosen%"
+    hitbox-file-empty:
+      material: OAK_SIGN
+      name: "&eZone cliquable du fichier"
+      lore:
+        - "&7Le fichier de ce modèle n'en a pas :"
+        - "&7rien ne se clique sur lui."
+        - ""
+        - "%chosen%"
+    hitbox-custom:
+      material: SLIME_BLOCK
+      name: "&eZone cliquable sur mesure"
+      lore:
+        - "&7Une seule zone, centrée sur le bloc,"
+        - "&7à la place de celles du fichier. Elle"
+        - "&7lance ce que lance la zone du fichier"
+        - "&7et grandit avec le bloc."
+        - ""
+        - "%chosen%"
+    hitbox-none:
+      material: STRUCTURE_VOID
+      name: "&eAucune zone cliquable"
+      lore:
+        - "&7Rien ne se clique ni ne se casse au coup."
+        - "&7Pour revenir ici &8: &f/bdc settings &7en le"
+        - "&7visant ; le bouton &cCasser &7le retire."
+        - ""
+        - "%chosen%"
+    collision:
+      material: SHULKER_SHELL
+      name: "&eCollision &8: %state%"
+      state-on: "&acelle du fichier"
+      state-off: "&cretirée, on passe au travers"
+      lore:
+        - "&7Ce qui empêche de traverser le modèle."
         - ""
         - "&8Clic &7: &fchanger"
-    click-box-model:
-      material: OAK_BUTTON
-      name: "&eZone cliquable &8: &acelle du fichier"
+    collision-none:
+      material: GRAY_DYE
+      name: "&8Collision"
       lore:
-        - "&7Ce modèle a déjà la sienne."
+        - "&7Le fichier de ce modèle n'en a pas"
+        - "&7(un bloc plein reste solide)."
+    hitbox-show:
+      material: ENDER_EYE
+      name: "&eVoir la hitbox"
+      lore:
+        - "&7Ferme ce menu et dessine ses contours"
+        - "&7pendant &f%seconds% s &8: &fblanc &7la zone"
+        - "&7cliquable, &6orange &7la collision."
+    hitbox-width:
+      material: SCAFFOLDING
+      name: "&eLargeur &8: &f%value% blocs"
+      lore:
+        - "&7Le côté de sa base carrée (jusqu'à %max%)."
+        - ""
+        - "&8Clic gauche &7: &f+0,1"
+        - "&8Clic droit &7: &f-0,1"
+        - "&8Shift + clic gauche &7: &f+1"
+        - "&8Shift + clic droit &7: &f-1"
+    hitbox-height:
+      material: LADDER
+      name: "&eHauteur &8: &f%value% blocs"
+      lore:
+        - "&7Jusqu'à %max% blocs."
+        - ""
+        - "&8Clic gauche &7: &f+0,1"
+        - "&8Clic droit &7: &f-0,1"
+        - "&8Shift + clic gauche &7: &f+1"
+        - "&8Shift + clic droit &7: &f-1"
+    hitbox-floor:
+      material: PISTON
+      name: "&eBas de la zone &8: &f%value% blocs"
+      lore:
+        - "&7De combien elle part au-dessus du bloc"
+        - "&7(en dessous si négatif)."
+        - ""
+        - "&8Clic gauche &7: &f+0,1"
+        - "&8Clic droit &7: &f-0,1"
+        - "&8Shift + clic gauche &7: &f+1"
+        - "&8Shift + clic droit &7: &f-1"
+    hitbox-fit-model:
+      material: ARMOR_STAND
+      name: "&eAutour du modèle"
+      lore:
+        - "&7Une zone qui prend tout ce qu'il dessine."
+        - ""
+        - "&8Clic &7: &fappliquer"
+    hitbox-fit-file:
+      material: BOOK
+      name: "&eAutour de celle du fichier"
+      lore:
+        - "&7Repart des zones de son fichier."
+        - ""
+        - "&8Clic &7: &fappliquer"
+    hitbox-type:
+      material: WRITABLE_BOOK
+      name: "&eÉcrire les valeurs"
+      lore:
+        - "&7Largeur, hauteur et bas, en blocs."
+        - ""
+        - "&8Clic &7: &fécrire"
+    hitbox-size-hint:
+      material: GRAY_DYE
+      name: "&8Taille de la zone"
+      lore:
+        - "&7Choisis &fZone cliquable sur mesure"
+        - "&7pour régler sa taille."
+    hitbox-back:
+      material: PAPER
+      name: "&7Retour aux réglages"
     copy:
       material: MAP
       name: "&eCopier ces réglages"
@@ -368,6 +503,7 @@ gizmo-admin:
     cooldown: "&8&l« &e&lSH &8&l» &7Écris le délai (ex. &e60s&7, &e5m&7, &e24h&7) : &e&nclique ici"
     permission: "&8&l« &e&lSH &8&l» &7Écris la permission (ex. &eskyhand.vip&7) : &e&nclique ici"
     note: "&8&l« &e&lSH &8&l» &7Écris la note : &e&nclique ici"
+    hitbox: "&8&l« &e&lSH &8&l» &7Écris largeur, hauteur et bas en blocs (ex. &e2 3 0&7) : &e&nclique ici"
   saved: "&8&l« &a&lSH &8&l» &7Réglage de &a%model%&7 enregistré."
   copied: "&8&l« &a&lSH &8&l» &7Réglages de &a%model%&7 copiés."
   broken: "&8&l« &a&lSH &8&l» &a%model%&7 cassé, son objet est dans ton inventaire."
@@ -378,7 +514,10 @@ gizmo-admin:
   open-first: "&8&l« &c&lSH &8&l» &7Ouvre d'abord les réglages d'un bloc : bloc de commande de son gizmo, ou &c/bdc settings&7 en le visant."
   no-permission: "&8&l« &c&lSH &8&l» &7Tu n'as &cpas la permission&7."
   players-only: "&cOnly a player can set a block from its panel."
-  usage: "&8&l« &c&lSH &8&l» &7/bdc settings &8[&7size <%>&8 | &7view-distance <blocs>&8 | &7command add|remove|clear&8 | &7cooldown <durée>&8 | &7permission <perm>&8 | &7note <texte>&8 | &7list [rayon]&8]"
+  usage: "&8&l« &c&lSH &8&l» &7/bdc settings &8[&7size <%>&8 | &7view-distance <blocs>&8 | &7hitbox <largeur> <hauteur> [bas]|file|model|none&8 | &7collision on|off&8 | &7command add|remove|clear&8 | &7cooldown <durée>&8 | &7permission <perm>&8 | &7note <texte>&8 | &7list [rayon]&8]"
+  bad-hitbox: "&8&l« &c&lSH &8&l» &7Écris &c<largeur> <hauteur> [bas]&7 en blocs (de 0,1 à %max%), ou &cfile&7, &cmodel&7, &cnone&7."
+  no-collision: "&8&l« &c&lSH &8&l» &7Le fichier de ce modèle n'a &cpas de collision&7."
+  hitbox-later: "&8&l« &6&lSH &8&l» &7Enregistré : sa hitbox change dès que le bloc est rechargé (une partie n'est pas chargée)."
   bad-size: "&8&l« &c&lSH &8&l» &7La taille va de &c%min%&7 à &c%max%&7."
   bad-view-distance: "&8&l« &c&lSH &8&l» &7La distance va de &c1&7 à &c%max%&7 blocs (ou &cdefault&7)."
   bad-command: "&8&l« &c&lSH &8&l» &7Ce n'est &cpas une commande&7."

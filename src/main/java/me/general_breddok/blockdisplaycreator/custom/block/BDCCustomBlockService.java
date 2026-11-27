@@ -659,6 +659,21 @@ public class BDCCustomBlockService implements CustomBlockService {
      * @return true if the hitbox entities were replaced
      */
     public boolean refreshHitbox(@NotNull Location location) {
+        return refreshHitbox(location, false);
+    }
+
+    /**
+     * Summons the interaction and collision entities of a placed custom block again, as its file and what an
+     * administrator set on it describe them: called once its hitbox settings changed. Nothing happens while one of
+     * the entities to replace is not loaded.
+     *
+     * @return true if the hitbox entities were replaced
+     */
+    public boolean rebuildHitbox(@NotNull Location location) {
+        return refreshHitbox(location, true);
+    }
+
+    private boolean refreshHitbox(@NotNull Location location, boolean always) {
         CustomBlockData customBlockData = new CustomBlockData(location.getBlock(), BlockDisplayCreator.getInstance());
         if (!customBlockData.has(CustomBlockKey.NAME) || !customBlockData.has(CustomBlockKey.BLOCK_ROTATION)) {
             return false;
@@ -668,7 +683,7 @@ public class BDCCustomBlockService implements CustomBlockService {
             return false;
         }
         String signature = hitboxSignature(abstractCustomBlock);
-        if (signature.equals(customBlockData.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
+        if (!always && signature.equals(customBlockData.get(CustomBlockKey.HITBOX, PersistentDataType.STRING))
                 && !hasLostCollision(customBlockData, abstractCustomBlock, location)) {
             return false;
         }
@@ -693,16 +708,17 @@ public class BDCCustomBlockService implements CustomBlockService {
         CustomBlockRotation rotation = customBlockData.get(CustomBlockKey.BLOCK_ROTATION, PersistentDataTypes.CUSTOM_BLOCK_ROTATION);
 
         // the new entities first: when one is refused, the block keeps the ones it has
-        List<Interaction> interactions = summonInteractions(abstractCustomBlock, location, rotation);
-        ConfiguredInteraction added = addedClickBox(customBlockData);
-        if (added != null) {
-            Interaction box = summonInteraction(abstractCustomBlock, added, location, rotation);
+        me.general_breddok.blockdisplaycreator.render.BlockSettings settings = settingsOf(customBlockData);
+        List<Interaction> interactions = new ArrayList<>();
+        for (ConfiguredInteraction configured : interactionsFor(abstractCustomBlock, settings)) {
+            Interaction box = summonInteraction(abstractCustomBlock, configured, location, rotation);
             if (box != null) {
                 interactions.add(box);
             }
         }
-        List<Shulker> collisions = summonCollisions(abstractCustomBlock, location, rotation);
-        if (collisions.size() < expectedCollisions(abstractCustomBlock) || !interactions.stream().allMatch(Entity::isValid)) {
+        boolean collide = settings == null || settings.keepsCollisions();
+        List<Shulker> collisions = collide ? summonCollisions(abstractCustomBlock, location, rotation) : new ArrayList<>();
+        if (collisions.size() < (collide ? expectedCollisions(abstractCustomBlock) : 0) || !interactions.stream().allMatch(Entity::isValid)) {
             // another plugin refused the summon (SuperiorSkyblock2 stops every spawn on an island nobody is active
             // on): tried again at a later load
             interactions.forEach(Entity::remove);
@@ -726,7 +742,8 @@ public class BDCCustomBlockService implements CustomBlockService {
      * Players would walk through it.
      */
     public boolean hasLostCollision(@NotNull CustomBlockData customBlockData, @NotNull AbstractCustomBlock abstractCustomBlock, @NotNull Location location) {
-        int expected = expectedCollisions(abstractCustomBlock);
+        me.general_breddok.blockdisplaycreator.render.BlockSettings settings = settingsOf(customBlockData);
+        int expected = settings == null || settings.keepsCollisions() ? expectedCollisions(abstractCustomBlock) : 0;
         if (expected == 0) {
             return false;
         }
@@ -756,7 +773,10 @@ public class BDCCustomBlockService implements CustomBlockService {
         return abstractCustomBlock != null && hasLostCollision(customBlockData, abstractCustomBlock, location);
     }
 
-    private static int expectedCollisions(AbstractCustomBlock abstractCustomBlock) {
+    /**
+     * How many collision entities its file gives a placed block of this model.
+     */
+    public static int expectedCollisions(AbstractCustomBlock abstractCustomBlock) {
         int expected = 0;
         for (ConfiguredCollision collision : abstractCustomBlock.getConfiguredCollisions()) {
             if (!isUseless(collision, abstractCustomBlock)) {
@@ -850,12 +870,7 @@ public class BDCCustomBlockService implements CustomBlockService {
         // what is left of the turn once the yaw is taken out: the model tipped over in its own axes
         org.joml.Quaterniond tilt = new org.joml.Quaterniond(yawTo).invert().mul(turn).mul(yawFrom);
         List<UUID> uuids = new ArrayList<>();
-        List<ConfiguredInteraction> configuredInteractions = new ArrayList<>(abstractCustomBlock.getConfiguredInteractions());
-        ConfiguredInteraction added = addedClickBox(data);
-        if (added != null) {
-            configuredInteractions.add(added);
-        }
-        for (ConfiguredInteraction configured : configuredInteractions) {
+        for (ConfiguredInteraction configured : interactionsFor(abstractCustomBlock, settingsOf(data))) {
             if (isUseless(configured)) {
                 continue;
             }
@@ -882,19 +897,66 @@ public class BDCCustomBlockService implements CustomBlockService {
         return true;
     }
 
+    @Nullable
+    private static me.general_breddok.blockdisplaycreator.render.BlockSettings settingsOf(CustomBlockData data) {
+        return me.general_breddok.blockdisplaycreator.render.BlockSettings.of(data.get(CustomBlockKey.SETTINGS, PersistentDataType.STRING));
+    }
+
     /**
-     * The click box an administrator added to a placed block whose file gives it none, described as a file would
-     * describe it (a box with a square base standing on the block's axis), or null for none.
+     * The click boxes a placed block has: those of its file, none when an administrator took them away, or the one
+     * he drew in their place.
+     */
+    private static List<ConfiguredInteraction> interactionsFor(AbstractCustomBlock abstractCustomBlock,
+                                                               @Nullable me.general_breddok.blockdisplaycreator.render.BlockSettings settings) {
+        List<ConfiguredInteraction> interactions = new ArrayList<>();
+        if (settings != null && settings.removesClickBoxes()) {
+            return interactions;
+        }
+        double[] box = settings == null ? null : settings.clickBox();
+        if (box == null) {
+            for (ConfiguredInteraction interaction : abstractCustomBlock.getConfiguredInteractions()) {
+                if (!isUseless(interaction)) {
+                    interactions.add(interaction);
+                }
+            }
+            return interactions;
+        }
+        // the drawn box takes the clicks as the file's first click box would (its commands, its click animation)
+        ConfiguredInteraction template = null;
+        for (ConfiguredInteraction interaction : abstractCustomBlock.getConfiguredInteractions()) {
+            if (!isUseless(interaction) && (template == null || template.getInteractionHandler() == null && interaction.getInteractionHandler() != null)) {
+                template = interaction;
+            }
+        }
+        Boolean responsive = template != null && template.getSummoner() instanceof InteractionSummoner summoner ? summoner.getResponsive() : null;
+        interactions.add(new me.general_breddok.blockdisplaycreator.custom.ConfiguredInteractionDta(
+                new InteractionSummoner((float) box[0], (float) box[1], responsive),
+                template == null ? me.general_breddok.blockdisplaycreator.render.BlockSettings.CLICK_BOX : template.getIdentifier(),
+                new org.bukkit.util.Vector(0, box[2], 0), template == null ? null : template.getInteractionHandler()));
+        return interactions;
+    }
+
+    /**
+     * One box with a square base on the block's axis around every click box of a file (width, height, height of its
+     * floor, at the size the file gives), or null for a file without any.
      */
     @Nullable
-    private static ConfiguredInteraction addedClickBox(CustomBlockData data) {
-        double[] box = me.general_breddok.blockdisplaycreator.render.BlockSettings.clickBoxOf(data.get(CustomBlockKey.SETTINGS, PersistentDataType.STRING));
-        if (box == null || box[0] <= 0 || box[1] <= 0) {
-            return null;
+    public static double[] fileClickBox(AbstractCustomBlock abstractCustomBlock) {
+        double half = 0;
+        double floor = Double.MAX_VALUE;
+        double top = -Double.MAX_VALUE;
+        for (ConfiguredInteraction interaction : abstractCustomBlock.getConfiguredInteractions()) {
+            if (isUseless(interaction) || !(interaction.getSummoner() instanceof InteractionSummoner summoner)) {
+                continue;
+            }
+            org.bukkit.util.Vector offset = interaction.getOffset() == null ? new org.bukkit.util.Vector() : interaction.getOffset();
+            double width = summoner.getInteractionWidth() == null ? 0 : summoner.getInteractionWidth();
+            double height = summoner.getInteractionHeight() == null ? 0 : summoner.getInteractionHeight();
+            half = Math.max(half, Math.max(Math.abs(offset.getX()), Math.abs(offset.getZ())) + width / 2);
+            floor = Math.min(floor, offset.getY());
+            top = Math.max(top, offset.getY() + height);
         }
-        return new me.general_breddok.blockdisplaycreator.custom.ConfiguredInteractionDta(
-                new me.general_breddok.blockdisplaycreator.entity.interaction.InteractionSummoner((float) box[0], (float) box[1]),
-                me.general_breddok.blockdisplaycreator.render.BlockSettings.CLICK_BOX, new org.bukkit.util.Vector(0, box[2], 0));
+        return half <= 0 || top <= floor ? null : new double[]{2 * half, top - floor, floor};
     }
 
     /**

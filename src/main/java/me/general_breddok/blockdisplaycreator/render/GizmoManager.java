@@ -339,7 +339,7 @@ public final class GizmoManager implements Listener {
             // a decoration without a click box: the one whose drawing the line of sight goes through before the block
             // clicked (a click in the air only reaches the server with something in hand)
             if (placed == null && (emptyHand || event.getAction() == Action.RIGHT_CLICK_AIR)) {
-                placed = aimedDrawn(player, block == null ? Double.MAX_VALUE : distanceToBlock(player));
+                placed = aimedDrawn(player, block == null ? Double.MAX_VALUE : distanceToBlock(player), false);
             }
             if (placed != null && opens(player, placed)) {
                 event.setCancelled(true);
@@ -376,7 +376,7 @@ public final class GizmoManager implements Listener {
         if (player.isSneaking() || this.sneaking.contains(player.getUniqueId())) {
             PlacedDisplay other = clicked != null ? clicked : aimed(player);
             if (other == null) {
-                other = aimedDrawn(player, distanceToBlock(player));
+                other = aimedDrawn(player, distanceToBlock(player), false);
             }
             toggle(player, other != null && other != gizmo.target() && player.hasPermission(PERMISSION) && opens(player, other) ? other : gizmo.target());
             return;
@@ -398,7 +398,8 @@ public final class GizmoManager implements Listener {
             }
         }
         if (placed == null) {
-            placed = aimedDrawn(player, distanceToBlock(player));
+            // what it draws, even where its click box does not reach (one drawn above it, or none)
+            placed = aimedDrawn(player, distanceToBlock(player), true);
         }
         Gizmo gizmo = this.sessions.get(player.getUniqueId());
         return placed == null && gizmo != null ? gizmo.target() : placed;
@@ -422,8 +423,10 @@ public final class GizmoManager implements Listener {
     /**
      * The decoration without a click box whose drawing the player aims at: the nearest one his line of sight enters,
      * closer than a distance (the block he clicked) and within {@link #DRAWN_REACH}.
+     *
+     * @param any whether a decoration with a click box counts too
      */
-    private PlacedDisplay aimedDrawn(Player player, double before) {
+    private PlacedDisplay aimedDrawn(Player player, double before, boolean any) {
         Location eye = player.getEyeLocation();
         org.bukkit.util.Vector look = eye.getDirection();
         org.joml.Vector3d from = new org.joml.Vector3d(eye.getX(), eye.getY(), eye.getZ());
@@ -431,7 +434,7 @@ public final class GizmoManager implements Listener {
         PlacedDisplay best = null;
         double nearest = Math.min(before, DRAWN_REACH);
         for (PlacedDisplay placed : this.renderer.shownTo(player)) {
-            if (placed.model == null || placed.model.clickable || placed.world != player.getWorld()) {
+            if (placed.model == null || !any && placed.clickable() || placed.world != player.getWorld()) {
                 continue;
             }
             double at = placed.reach(from, direction);
