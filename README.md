@@ -68,12 +68,35 @@ A collision of a custom block is an invisible shulker that often stands in front
 
 The same holds for one placed block made unbreakable from its admin panel (below), and for the central block of a full block (`BLOCK_` models): hitting the central block no longer breaks a block its file or its panel protects.
 
+## Breaking a model and taking its item by aiming at it
+
+Those with `admin-aim.permission` (`config.yml`, `bdc.gizmo.admin` by default) act on a placed model by aiming at what it draws, the way the gizmo picks it, whether it has a click box or not (a decoration given none so that it never takes the clicks of a PvP arena):
+
+- A swing (left click) breaks it as a hit on its click box would: its item drops unless in creative mode, its break sound plays, a file with `breakable: false` or a block made unbreakable from its panel is refused with `protected.break`, and the regions, islands and permissions of the file still decide.
+- A middle click puts its item in the hand, as a middle click on its click box does (the one in the inventory, a new one in creative mode).
+
+The model counts when the line of sight meets one of its parts (what each part really draws at rest, not the box around the whole model) within `admin-aim.reach` blocks (5), closer than the block or the entity the crosshair is on. A swing that hits a player or a mob stays a hit on him; a click on a block standing in front of the model stays on the block, and when the client starts breaking a block behind the model, the model is hit and the block is not damaged. While a gizmo is open its clicks are the gizmo's. A button held down breaks one model every `admin-aim.break-delay` ticks (5).
+
+`admin-aim.break` and `admin-aim.pick` turn either off, `admin-aim.break-game-modes` lists the game modes a swing breaks in (survival and creative). The game client only tells the server of a middle click when its crosshair is on a block or an entity: in the air, use the copy button of the gizmo (below).
+
+Nothing of it runs on any tick. A swing or a click of a player without the permission costs a lookup (whether a player has it is asked once a second); an administrator's swing or middle click looks only at the models he is sent close to him.
+
 ## The gizmo
 
 Shift + right click on a custom block shown through packets, where the player may place and break custom blocks, opens its gizmo: arrows and squares move it, arcs turn and tip it, the white knob sets its size, the red button puts it back where it was placed. Its texts are in `messages.yml` (`gizmo`).
 
 - The tool is drawn after what the model really draws, at the size the block has: a flat item (a flower, a stick, a torch) counts one pixel thick however stretched, a head half a block. A small model gets a small tool (1 at least, 6 at most).
 - The size bar goes from `gizmo.size-min` to `gizmo.size-max` of the file's size (`config.yml`, 75 % to 125 %), from `gizmo.admin-size-min` to `gizmo.admin-size-max` for those with `bdc.gizmo.admin` (10 % to 1000 %, logarithmic: 100 % in the middle). A block standing upright grows from its floor: it neither sinks into the ground nor floats. A tipped block grows around its middle.
+- For those with `bdc.gizmo.admin`, the strip also has, from left to right: a cartography table that puts the block's item in their hand (the one in the inventory, else a new one, in any game mode), the command block of the admin panel (below), and at the right end a target that puts the tool on the block's click box.
+
+### The gizmo of the click box
+
+The target of the strip switches the tool between the model and its click box (its plate turns light blue); the hitbox page of the panel opens it there too ("Set with the gizmo"). On the click box the tool stands in the middle of the box and draws its outline, for its administrator alone:
+
+- The arrows and squares move the box, by the same steps as the model (scroll while holding: 1/16 to 1 block; Shift + F: free; F: the model's axes or the world's).
+- The white cubes on its sides set its width (its base stays square, around its middle), the one on its top its height (its floor stays). Their steps are the arrows'.
+- A right click on a part puts back what it changes as the click box of the file has it (or the one around the model, for a file without any); the red button gives the block the click boxes of its file back.
+- Each part dropped gives the block that click box: its hitbox is summoned again at once, as from the hitbox page. The box is the custom click box of the hitbox page (one box with a square base), now with an offset on x and z in the model's axes: it turns, grows and shrinks with the model.
 
 ## Settings of one placed block (admin panel)
 
@@ -105,7 +128,7 @@ Values to type are written with a command the panel suggests in the chat, on the
 ```
 /bdc settings size <percent|default>
 /bdc settings view-distance <blocks|default>
-/bdc settings hitbox <width> <height> [floor]   /bdc settings hitbox file|model|none
+/bdc settings hitbox <width> <height> [floor] [x] [z]   /bdc settings hitbox file|model|none
 /bdc settings collision on|off
 /bdc settings command add <command>      /bdc settings command remove <number>      /bdc settings command clear
 /bdc settings cooldown <duration|none>
@@ -123,9 +146,10 @@ The click boxes and the collision of this one block (the other blocks of the sam
 | Icon | What it sets |
 |---|---|
 | Click box of the file | The click boxes its file gives it (none for a file without any). |
-| Custom click box | One box with a square base on the block's axis, in place of those of the file (or for a file without any). It starts around the file's boxes (else around what the model draws), runs what the file's first click box runs (its commands, its click animation) and grows and shrinks with the block. Width, height and floor: left/right click ±0.1 block, Shift ±1; "Around the model", "Around the file's" and "Type the values" set it at once. |
-| No click box | Nothing of it can be clicked nor hit: its panel opens again with `/bdc settings` aiming at what it draws, and its Break button removes it. |
+| Custom click box | One box with a square base, in place of those of the file (or for a file without any). It starts as the file's box (around the file's boxes when it has several, else around what the model draws), runs what the file's first click box runs (its commands, its click animation) and grows, shrinks and turns with the block. Width, height, floor, offset X and offset Z (along the red and blue arrows of the gizmo, in the model's axes): left/right click ±0.1 block, Shift ±1; "Around the model", "Around the file's" and "Type the values" set it at once. |
+| No click box | Nothing of it can be clicked nor hit by players: its panel opens again with `/bdc settings` aiming at what it draws, and its Break button removes it (or a swing of an administrator aiming at it). |
 | Collision | The collisions of its file, or none (players walk through it). Shown only when its file has some. |
 | See the hitbox | Draws its click boxes (white) and collisions (orange) for you alone, while the page is open and `gizmo.hitbox-outline.seconds` more (`config.yml`: particles, colors). |
+| Set with the gizmo | Closes the page and opens the gizmo of the click box on this block (above). |
 
 Values are in blocks as the block stands now (its size included), up to `gizmo.hitbox-max` (32). The entities are summoned again at once; a block one of whose entities is not loaded gets its new hitbox when it is next read.

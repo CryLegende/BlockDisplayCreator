@@ -932,17 +932,28 @@ public class BDCCustomBlockService implements CustomBlockService {
         interactions.add(new me.general_breddok.blockdisplaycreator.custom.ConfiguredInteractionDta(
                 new InteractionSummoner((float) box[0], (float) box[1], responsive),
                 template == null ? me.general_breddok.blockdisplaycreator.render.BlockSettings.CLICK_BOX : template.getIdentifier(),
-                new org.bukkit.util.Vector(0, box[2], 0), template == null ? null : template.getInteractionHandler()));
+                customOffset(box), template == null ? null : template.getInteractionHandler()));
         return interactions;
     }
 
     /**
-     * One box with a square base on the block's axis around every click box of a file (width, height, height of its
-     * floor, at the size the file gives), or null for a file without any.
+     * Where a click box drawn by an administrator stands from its block, as the offset of a file's click box: x and z
+     * of its middle, height of its floor.
+     */
+    private static org.bukkit.util.Vector customOffset(double[] box) {
+        return new org.bukkit.util.Vector(box.length > 3 ? box[3] : 0, box[2], box.length > 4 ? box[4] : 0);
+    }
+
+    /**
+     * One box with a square base around every click box of a file (width, height, height of its floor, then x and z of
+     * its middle, at the size the file gives): the file's own box when it has one. Null for a file without any.
      */
     @Nullable
     public static double[] fileClickBox(AbstractCustomBlock abstractCustomBlock) {
-        double half = 0;
+        double minX = Double.MAX_VALUE;
+        double minZ = Double.MAX_VALUE;
+        double maxX = -Double.MAX_VALUE;
+        double maxZ = -Double.MAX_VALUE;
         double floor = Double.MAX_VALUE;
         double top = -Double.MAX_VALUE;
         for (ConfiguredInteraction interaction : abstractCustomBlock.getConfiguredInteractions()) {
@@ -952,11 +963,38 @@ public class BDCCustomBlockService implements CustomBlockService {
             org.bukkit.util.Vector offset = interaction.getOffset() == null ? new org.bukkit.util.Vector() : interaction.getOffset();
             double width = summoner.getInteractionWidth() == null ? 0 : summoner.getInteractionWidth();
             double height = summoner.getInteractionHeight() == null ? 0 : summoner.getInteractionHeight();
-            half = Math.max(half, Math.max(Math.abs(offset.getX()), Math.abs(offset.getZ())) + width / 2);
+            minX = Math.min(minX, offset.getX() - width / 2);
+            maxX = Math.max(maxX, offset.getX() + width / 2);
+            minZ = Math.min(minZ, offset.getZ() - width / 2);
+            maxZ = Math.max(maxZ, offset.getZ() + width / 2);
             floor = Math.min(floor, offset.getY());
             top = Math.max(top, offset.getY() + height);
         }
-        return half <= 0 || top <= floor ? null : new double[]{2 * half, top - floor, floor};
+        double side = Math.max(maxX - minX, maxZ - minZ);
+        return side <= 0 || top <= floor ? null : new double[]{side, top - floor, floor, (minX + maxX) / 2, (minZ + maxZ) / 2};
+    }
+
+    /**
+     * Where a click box drawn by an administrator stands in the world once summoned for a placed block and laid out
+     * where its model was moved, as {@link #rebuildHitbox} and {@link #layHitbox} put it: for each box it becomes, x, y,
+     * z of the middle of its floor, then its width and height. Worked out without summoning anything.
+     *
+     * @param location where the block was placed, as stored on its entities
+     * @param base     the position, yaw and pitch of the model before any shift
+     * @param shift    the shift of the model (x, y, z, yaw, pitch, size factor)
+     * @param box      width, height, floor, x and z of the click box, at the size the file gives
+     */
+    public static List<double[]> customClickBoxes(CustomBlockRotation rotation, int sidesCount, Location location, double[] base, double[] shift,
+                                                  double[] box) {
+        org.bukkit.util.Vector offset = customOffset(box);
+        org.bukkit.util.Vector placed = rotation instanceof BDCCustomBlockRotation bdc
+                ? bdc.calculateOffset(box[0] / 2, box[1] / 2, offset, sidesCount) : offset;
+        org.joml.Quaterniond yawFrom = new org.joml.Quaterniond().rotationY(-Math.toRadians(base[3]));
+        org.joml.Quaterniond yawTo = new org.joml.Quaterniond().rotationY(-Math.toRadians(base[3] + shift[3]));
+        org.joml.Quaterniond turn = poseOrientation(base, shift).mul(poseOrientation(base, NO_SHIFT).invert());
+        org.joml.Quaterniond tilt = new org.joml.Quaterniond(yawTo).invert().mul(turn).mul(yawFrom);
+        return clickBoxes(location.getX() + placed.getX(), location.getY() + placed.getY(), location.getZ() + placed.getZ(),
+                box[0], box[1], base, shift, yawFrom, yawTo, tilt);
     }
 
     /**

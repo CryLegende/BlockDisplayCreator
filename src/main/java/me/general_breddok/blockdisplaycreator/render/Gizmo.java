@@ -26,11 +26,17 @@ import java.util.UUID;
  * The tool a player moves one custom block shown through packets with: three arrows to move it along an axis,
  * three squares to move it on a plane, two arcs to turn it (around the vertical axis, and tipping it forward), a bar
  * whose knob sets its size, a button that puts it back where it was placed, and for administrators a button that
- * opens the panel of what is set on this block alone (see {@link AdminMenu}).
+ * opens the panel of what is set on this block alone (see {@link AdminMenu}), one that puts its item in their hand,
+ * and a switch that puts the tool on the block's click box.
  * <p>
  * The tool is made of display entities that exist on the player's client only. He aims at a part, which lights up,
  * and clicks to take hold of it: the block then follows where he looks, until he clicks again. A right click on a
  * part puts back what that part changes.
+ * <p>
+ * On the click box, the tool stands in its middle and draws its outline: the arrows and squares move it, a white cube
+ * on its top sets its height, those on its sides its width (its base stays square), the red button gives it the
+ * click boxes of its file back. What is drawn is the one click box of {@link BlockSettings#clickBox}, summoned again
+ * when a part is dropped.
  * <p>
  * An invisible click box, on his client only, stays around his eyes while the tool is open: his client then sends
  * every right click, even with an empty hand and aiming at nothing, and no click of his reaches a block.
@@ -54,12 +60,16 @@ final class Gizmo {
     private static final double[] MOVE_STEPS = {0.0625, 0.125, 0.25, 0.5, 1};
     private static final double[] TURN_STEPS = {1, 2.5, 5, 15, 22.5, 45, 90};
     private static final Material[] COLORS = {Material.RED_CONCRETE, Material.LIME_CONCRETE, Material.LIGHT_BLUE_CONCRETE,
-            Material.WHITE_CONCRETE, Material.LIGHT_GRAY_CONCRETE, Material.BLACK_CONCRETE, Material.COMMAND_BLOCK};
+            Material.WHITE_CONCRETE, Material.LIGHT_GRAY_CONCRETE, Material.BLACK_CONCRETE, Material.COMMAND_BLOCK,
+            Material.CARTOGRAPHY_TABLE, Material.TARGET};
     private static final int RED = 0;
+    private static final int LIGHT_BLUE = 2;
     private static final int WHITE = 3;
     private static final int GREY = 4;
     private static final int BLACK = 5;
     private static final int COMMAND = 6;
+    private static final int CARTOGRAPHY = 7;
+    private static final int TARGET = 8;
     private static final double[] SCALE_STEPS = {0.01, 0.025, 0.05, 0.1};
     /**
      * The strip above the tool, turned to face the player wherever he stands: a bar whose knob sets the size of the
@@ -76,6 +86,26 @@ final class Gizmo {
      * Where the button of the admin panel stands, at the left end of the strip.
      */
     private static final float ADMIN_X = -0.85f;
+    /**
+     * Where the button that puts the block's item in the player's hand stands, left of the admin button, and the
+     * switch to the click box, right of the red button.
+     */
+    private static final float COPY_X = -1.2f;
+    private static final float HITBOX_X = 1.2f;
+    /**
+     * The side of the white cubes that size the click box, and how close to the middle of the tool they come at least
+     * (a small box would bring them all together).
+     */
+    private static final float BOX_CUBE = 0.16f;
+    private static final double BOX_CUBE_MIN = 0.3;
+    /**
+     * How thick the lines of the outline of the click box are, in blocks.
+     */
+    private static final float OUTLINE = 0.035f;
+    /**
+     * The narrowest a click box gets, in blocks.
+     */
+    private static final double BOX_MIN = 0.1;
     /**
      * How far, in degrees, the player may walk around the tool before the strip turns to face him again.
      */
@@ -96,7 +126,12 @@ final class Gizmo {
     private static final double RING_THICKNESS = 0.13;
     private static final int RING_SEGMENTS = 10;
 
-    private enum Kind {MOVE_AXIS, MOVE_PLANE, TURN, SCALE, RESET, ADMIN}
+    /**
+     * What a part of the tool does. {@code COPY} puts the block's item in the player's hand, {@code HITBOX} switches the
+     * tool between the model and its click box, {@code BOX_SIZE} is a white cube that sizes the click box along its axis
+     * (width on x and z, height on y), {@code OUTLINE} the lines around the click box, which nothing takes hold of.
+     */
+    private enum Kind {MOVE_AXIS, MOVE_PLANE, TURN, SCALE, RESET, ADMIN, COPY, HITBOX, BOX_SIZE, OUTLINE}
 
     private static final class Piece {
         final int id;
@@ -107,6 +142,10 @@ final class Gizmo {
          * Whether the piece is the knob of the size bar: it stands where the size of the block puts it.
          */
         final boolean knob;
+        /**
+         * Which line of the outline of the click box the piece is (0 to 11), -1 for another piece.
+         */
+        int edge = -1;
         List<Object> normal;
 
         Piece(int id, Vector3f center, Vector3f size, Quaternionf orient, boolean knob) {
@@ -125,6 +164,10 @@ final class Gizmo {
          */
         final int axis;
         final String label;
+        /**
+         * What it is called while the tool is on the click box, null for the same.
+         */
+        String boxLabel;
         final List<Piece> pieces = new ArrayList<>();
         final int color;
         boolean lit;
@@ -206,6 +249,28 @@ final class Gizmo {
     private final Vector3d centre;
     private final Vector3d lastEye = new Vector3d(Double.NaN, 0, 0);
     private final Vector3d lastLook = new Vector3d();
+
+    // the click box, while the tool is on it
+    /**
+     * Whether the handles act on the block's click box rather than on its model.
+     */
+    private boolean boxMode;
+    /**
+     * The click box drawn and edited: width, height, floor, x, z, at the size the file gives (see
+     * {@link BlockSettings#clickBox}). It is the block's once a part is dropped.
+     */
+    private double[] box;
+    private final double[] boxStart = new double[5];
+    /**
+     * Where the click box stands in the world: smallest x, y, z then largest.
+     */
+    private final double[] boxBounds = new double[6];
+    /**
+     * What takes a move in the world into a change of where the click box stands from its block (x, floor, z),
+     * worked out when a part is taken.
+     */
+    private org.joml.Matrix3d boxInverse = new org.joml.Matrix3d();
+    private Handle hitboxSwitch;
 
     /**
      * Shows the tool around a block, to its player only.
@@ -294,6 +359,13 @@ final class Gizmo {
     void follow() {
         if (this.active != null) {
             return;
+        }
+        if (this.boxMode) {
+            // its click box may have been changed too (the hitbox page, a typed value)
+            double[] stored = storedBox();
+            if (stored != null) {
+                this.box = stored;
+            }
         }
         refreshTool();
         rescale();
@@ -391,6 +463,7 @@ final class Gizmo {
     private void build() {
         for (int axis = 0; axis < 3; axis++) {
             Handle arrow = new Handle(Kind.MOVE_AXIS, axis, Texts.get("gizmo.label.move", "%axis%", AXES[axis]), axis);
+            arrow.boxLabel = Texts.get("gizmo.label.box-move", "%axis%", AXES[axis]);
             float middle = (ARROW_FROM + 0.84f) / 2;
             piece(arrow, along(axis, middle, 0.84f - ARROW_FROM, 0.045f), new Quaternionf());
             piece(arrow, along(axis, 0.92f, 0.16f, 0.13f), new Quaternionf());
@@ -400,6 +473,7 @@ final class Gizmo {
             int a = (normal + 1) % 3;
             int b = (normal + 2) % 3;
             Handle square = new Handle(Kind.MOVE_PLANE, normal, Texts.get("gizmo.label.move", "%axis%", AXES[a] + "/" + AXES[b]), normal);
+            square.boxLabel = Texts.get("gizmo.label.box-move", "%axis%", AXES[a] + "/" + AXES[b]);
             Vector3f center = new Vector3f();
             Vector3f size = new Vector3f();
             set(center, a, (PLANE_FROM + PLANE_TO) / 2);
@@ -427,6 +501,7 @@ final class Gizmo {
         }
         // a red button on a black plate, turned to the player
         Handle button = new Handle(Kind.RESET, 0, Texts.get("gizmo.label.reset"), RED);
+        button.boxLabel = Texts.get("gizmo.label.box-reset");
         piece(button, new Vector3f[]{new Vector3f(BUTTON_X, PANEL_Y, 0), new Vector3f(0.30f, 0.30f, 0.12f)}, new Quaternionf(), BLACK, false);
         piece(button, new Vector3f[]{new Vector3f(BUTTON_X, PANEL_Y, 0.09f), new Vector3f(0.19f, 0.19f, 0.08f)}, new Quaternionf(), RED, false);
         this.handles.add(button);
@@ -436,6 +511,30 @@ final class Gizmo {
             piece(panel, new Vector3f[]{new Vector3f(ADMIN_X, PANEL_Y, 0), new Vector3f(0.30f, 0.30f, 0.12f)}, new Quaternionf(), BLACK, false);
             piece(panel, new Vector3f[]{new Vector3f(ADMIN_X, PANEL_Y, 0.09f), new Vector3f(0.19f, 0.19f, 0.08f)}, new Quaternionf(), COMMAND, false);
             this.handles.add(panel);
+            // a cartography table (the table that copies maps) left of it: the block's item in the hand
+            Handle copy = new Handle(Kind.COPY, 0, Texts.get("gizmo.label.copy"), CARTOGRAPHY);
+            piece(copy, new Vector3f[]{new Vector3f(COPY_X, PANEL_Y, 0), new Vector3f(0.30f, 0.30f, 0.12f)}, new Quaternionf(), BLACK, false);
+            piece(copy, new Vector3f[]{new Vector3f(COPY_X, PANEL_Y, 0.09f), new Vector3f(0.19f, 0.19f, 0.08f)}, new Quaternionf(), CARTOGRAPHY, false);
+            this.handles.add(copy);
+            // a target right of the red button: the tool on the click box (its plate turns light blue), or back on the model
+            Handle hitbox = new Handle(Kind.HITBOX, 0, Texts.get("gizmo.label.hitbox"), TARGET);
+            hitbox.boxLabel = Texts.get("gizmo.label.model");
+            piece(hitbox, new Vector3f[]{new Vector3f(HITBOX_X, PANEL_Y, 0), new Vector3f(0.30f, 0.30f, 0.12f)}, new Quaternionf(), BLACK, false);
+            piece(hitbox, new Vector3f[]{new Vector3f(HITBOX_X, PANEL_Y, 0.09f), new Vector3f(0.19f, 0.19f, 0.08f)}, new Quaternionf(), TARGET, false);
+            this.handles.add(hitbox);
+            this.hitboxSwitch = hitbox;
+            // the white cubes on the sides and the top of the click box, and its outline
+            for (int axis = 0; axis < 3; axis++) {
+                Handle cube = new Handle(Kind.BOX_SIZE, axis, Texts.get(axis == 1 ? "gizmo.label.box-height" : "gizmo.label.box-width"), WHITE);
+                piece(cube, new Vector3f[]{new Vector3f(), new Vector3f(BOX_CUBE, BOX_CUBE, BOX_CUBE)}, new Quaternionf());
+                this.handles.add(cube);
+            }
+            Handle outline = new Handle(Kind.OUTLINE, 0, "", WHITE);
+            for (int edge = 0; edge < 12; edge++) {
+                piece(outline, new Vector3f[]{new Vector3f(), new Vector3f()}, new Quaternionf());
+                outline.pieces.get(edge).edge = edge;
+            }
+            this.handles.add(outline);
         }
         // pitch (around X, tipping the block forward) and yaw (around Y)
         for (int axis = 0; axis < 2; axis++) {
@@ -519,16 +618,81 @@ final class Gizmo {
      * The values that give a part its colour and where it stands in the tool.
      */
     private List<Object> withPose(Piece piece, boolean lit) {
-        Quaternionf frame = single(frameOf(owner(piece)));
-        Vector3f center = frame.transform(new Vector3f(piece.knob ? knobAt() : piece.center).mul((float) this.scale));
+        Handle handle = owner(piece);
+        List<Object> values = new ArrayList<>(lit ? this.lit : piece.normal);
+        if (!shows(handle)) {
+            // the parts of the other mode stay on the client, drawn at no size
+            values.addAll(this.nms.poseValues(new Vector3f(), new Quaternionf(), new Vector3f(), new Quaternionf(), 0));
+            return values;
+        }
+        if (handle.kind == Kind.OUTLINE) {
+            Vector3f[] line = outlineLine(piece.edge);
+            values.addAll(this.nms.poseValues(line[0].sub(new Vector3f(line[1]).mul(0.5f)), new Quaternionf(), line[1], new Quaternionf(), 0));
+            return values;
+        }
+        Quaternionf frame = single(frameOf(handle));
+        Vector3f at = handle.kind == Kind.BOX_SIZE ? cubeAt(handle.axis) : piece.knob ? knobAt() : piece.center;
+        Vector3f center = frame.transform(new Vector3f(at).mul((float) this.scale));
         Quaternionf orient = new Quaternionf(frame).mul(piece.orient);
         Vector3f size = new Vector3f(piece.size).mul((float) this.scale);
         // a block display is drawn from its corner: the box is centred by moving it back by half its size
         Vector3f half = orient.transform(new Vector3f(size).mul(0.5f));
         Vector3f translation = center.sub(half);
-        List<Object> values = new ArrayList<>(lit ? this.lit : piece.normal);
         values.addAll(this.nms.poseValues(translation, orient, size, new Quaternionf(), 0));
         return values;
+    }
+
+    /**
+     * Whether a part is drawn in the mode the tool is in: the arcs and the size bar on the model only, the cubes and the
+     * outline on the click box only.
+     */
+    private boolean shows(Handle handle) {
+        return switch (handle.kind) {
+            case TURN, SCALE -> !this.boxMode;
+            case BOX_SIZE, OUTLINE -> this.boxMode;
+            default -> true;
+        };
+    }
+
+    /**
+     * Where one line of the outline of the click box stands from the tool, in the world's axes: its middle, then its size.
+     */
+    private Vector3f[] outlineLine(int edge) {
+        double[] b = this.boxBounds;
+        int along = edge / 4;
+        int corner = edge % 4;
+        double[] middle = new double[3];
+        float[] size = {OUTLINE, OUTLINE, OUTLINE};
+        int first = (along + 1) % 3;
+        int second = (along + 2) % 3;
+        middle[along] = (b[along] + b[along + 3]) / 2;
+        middle[first] = (corner & 1) == 0 ? b[first] : b[first + 3];
+        middle[second] = (corner & 2) == 0 ? b[second] : b[second + 3];
+        size[along] = (float) (b[along + 3] - b[along]) + OUTLINE;
+        return new Vector3f[]{new Vector3f((float) (middle[0] - this.origin.x), (float) (middle[1] - this.origin.y), (float) (middle[2] - this.origin.z)),
+                new Vector3f(size[0], size[1], size[2])};
+    }
+
+    /**
+     * Where the white cube that sizes the click box along an axis of the tool stands, in the tool: on the side of the box
+     * that axis points to, never closer to the middle of the box than {@link #BOX_CUBE_MIN}. The tool stays where it is
+     * while a cube is held: the middle of the box is taken where it now is.
+     */
+    private Vector3f cubeAt(int axis) {
+        Vector3d direction = this.moveFrame.transform(unit(axis));
+        double reach = (Math.abs(direction.x) * (this.boxBounds[3] - this.boxBounds[0]) + Math.abs(direction.y) * (this.boxBounds[4] - this.boxBounds[1])
+                + Math.abs(direction.z) * (this.boxBounds[5] - this.boxBounds[2])) / 2;
+        double at = Math.max(BOX_CUBE_MIN, reach / this.scale);
+        Vector3d middle = this.moveFrame.transformInverse(boxMiddle().sub(this.origin)).div(this.scale);
+        return new Vector3f((float) (middle.x + (axis == 0 ? at : 0)), (float) (middle.y + (axis == 1 ? at : 0)), (float) (middle.z + (axis == 2 ? at : 0)));
+    }
+
+    /**
+     * The middle of the click box in the world.
+     */
+    private Vector3d boxMiddle() {
+        double[] b = this.boxBounds;
+        return new Vector3d((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2);
     }
 
     private void sendPoses() {
@@ -555,7 +719,31 @@ final class Gizmo {
         List<Object> packets = new ArrayList<>();
         for (Handle handle : this.handles) {
             for (Piece piece : handle.pieces) {
-                if (strip ? handle.kind == Kind.SCALE || handle.kind == Kind.RESET || handle.kind == Kind.ADMIN : piece.knob) {
+                if (strip ? onStrip(handle) : piece.knob) {
+                    packets.add(this.nms.dataPacket(piece.id, withPose(piece, handle.lit)));
+                }
+            }
+        }
+        if (!packets.isEmpty()) {
+            this.nms.send(this.player, this.nms.bundle(packets));
+        }
+    }
+
+    private static boolean onStrip(Handle handle) {
+        return switch (handle.kind) {
+            case SCALE, RESET, ADMIN, COPY, HITBOX -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Sends again where the outline of the click box and its cubes stand.
+     */
+    private void sendBox() {
+        List<Object> packets = new ArrayList<>();
+        for (Handle handle : this.handles) {
+            if (handle.kind == Kind.BOX_SIZE || handle.kind == Kind.OUTLINE) {
+                for (Piece piece : handle.pieces) {
                     packets.add(this.nms.dataPacket(piece.id, withPose(piece, handle.lit)));
                 }
             }
@@ -618,7 +806,8 @@ final class Gizmo {
     private Quaterniond frameOf(Handle handle) {
         return switch (handle.kind) {
             case TURN -> this.turnFrame;
-            case SCALE, RESET, ADMIN -> this.viewFrame;
+            case SCALE, RESET, ADMIN, COPY, HITBOX -> this.viewFrame;
+            case OUTLINE -> new Quaterniond();
             default -> this.moveFrame;
         };
     }
@@ -627,6 +816,9 @@ final class Gizmo {
      * How far along the ray the part is hit, in blocks, or -1.
      */
     private double hit(Handle handle, Vector3d eye, Vector3d look) {
+        if (!shows(handle) || handle.kind == Kind.OUTLINE) {
+            return -1;
+        }
         Quaterniond inverse = new Quaterniond(frameOf(handle)).invert();
         Vector3d o = inverse.transform(new Vector3d(eye).sub(this.origin)).div(this.scale);
         Vector3d d = inverse.transform(new Vector3d(look));
@@ -635,11 +827,25 @@ final class Gizmo {
             case MOVE_AXIS -> t = hitArrow(handle.axis, o, d);
             case MOVE_PLANE -> t = hitSquare(handle.axis, o, d);
             case SCALE -> t = hitSegment(o, d, new Vector3d(SLIDER_FROM - 0.05, PANEL_Y, 0), new Vector3d(SLIDER_TO + 0.05, PANEL_Y, 0), SLIDER_RADIUS);
-            case RESET -> t = hitBox(o, d, new double[]{BUTTON_X - 0.17, PANEL_Y - 0.17, -0.08}, new double[]{BUTTON_X + 0.17, PANEL_Y + 0.17, 0.15});
-            case ADMIN -> t = hitBox(o, d, new double[]{ADMIN_X - 0.17, PANEL_Y - 0.17, -0.08}, new double[]{ADMIN_X + 0.17, PANEL_Y + 0.17, 0.15});
+            case RESET -> t = hitButton(o, d, BUTTON_X);
+            case ADMIN -> t = hitButton(o, d, ADMIN_X);
+            case COPY -> t = hitButton(o, d, COPY_X);
+            case HITBOX -> t = hitButton(o, d, HITBOX_X);
+            case BOX_SIZE -> {
+                Vector3f at = cubeAt(handle.axis);
+                double half = BOX_CUBE / 2 + 0.03;
+                t = hitBox(o, d, new double[]{at.x - half, at.y - half, at.z - half}, new double[]{at.x + half, at.y + half, at.z + half});
+            }
             default -> t = hitArc(handle.axis, o, d);
         }
         return t < 0 ? -1 : t * this.scale;
+    }
+
+    /**
+     * Where the ray enters a button of the strip standing at that place along it, or -1.
+     */
+    private static double hitButton(Vector3d o, Vector3d d, float x) {
+        return hitBox(o, d, new double[]{x - 0.17, PANEL_Y - 0.17, -0.08}, new double[]{x + 0.17, PANEL_Y + 0.17, 0.15});
     }
 
     private static double component(Vector3d v, int axis) {
@@ -758,18 +964,32 @@ final class Gizmo {
     private Handle pick(Vector3d eye, Vector3d look) {
         Handle best = null;
         double nearest = reach();
+        Handle cube = null;
+        double cubeAt = reach();
         for (Handle handle : this.handles) {
             double t = hit(handle, eye, look);
-            if ((handle.kind == Kind.RESET || handle.kind == Kind.ADMIN) && t >= 0 && t < reach()) {
+            if (onStrip(handle) && handle.kind != Kind.SCALE && t >= 0 && t < reach()) {
                 // a button stays within reach when a part of the tool stands in front of it
                 return handle;
+            }
+            if (handle.kind == Kind.BOX_SIZE && t >= 0 && t < cubeAt) {
+                // a cube of the click box often stands on an arrow: aimed at, it is the cube that is taken
+                cubeAt = t;
+                cube = handle;
             }
             if (t >= 0 && t < nearest) {
                 nearest = t;
                 best = handle;
             }
         }
-        return best;
+        return cube != null ? cube : best;
+    }
+
+    /**
+     * What a part is called in the mode the tool is in.
+     */
+    private String labelOf(Handle handle) {
+        return this.boxMode && handle.boxLabel != null ? handle.boxLabel : handle.label;
     }
 
     // ---------- Every tick ----------
@@ -807,7 +1027,7 @@ final class Gizmo {
                     light(this.hovered, false);
                     light(now, true);
                     this.hovered = now;
-                    this.readout = now == null ? "" : now.label;
+                    this.readout = now == null ? "" : labelOf(now);
                     status();
                 }
             }
@@ -837,8 +1057,16 @@ final class Gizmo {
             if (this.hovered.kind == Kind.ADMIN) {
                 unhover();
                 this.manager.openAdmin(this.player, this.target);
+            } else if (this.hovered.kind == Kind.COPY) {
+                copyItem();
+            } else if (this.hovered.kind == Kind.HITBOX) {
+                boxMode(!this.boxMode);
             } else if (this.hovered.kind == Kind.RESET) {
-                reset(this.hovered);
+                if (this.boxMode) {
+                    resetBox();
+                } else {
+                    reset(this.hovered);
+                }
             } else {
                 grab(this.hovered);
             }
@@ -854,7 +1082,21 @@ final class Gizmo {
         }
         this.lastRightClick = tick;
         Handle handle = this.active != null ? this.active : this.hovered;
-        if (handle == null || handle.kind == Kind.ADMIN) {
+        if (handle == null || handle.kind == Kind.ADMIN || handle.kind == Kind.COPY || handle.kind == Kind.HITBOX) {
+            return;
+        }
+        if (this.boxMode) {
+            if (this.active != null) {
+                // a part held goes back as it was taken, then what it changes is put back
+                this.active = null;
+                this.box = this.boxStart.clone();
+                boxChanged(true, true);
+            }
+            if (handle.kind == Kind.RESET) {
+                resetBox();
+            } else {
+                resetBoxPart(handle);
+            }
             return;
         }
         if (this.active != null) {
@@ -865,7 +1107,21 @@ final class Gizmo {
         reset(handle);
     }
 
+    /**
+     * Puts the item of the block in the player's hand: the one he has, else a new one.
+     */
+    private void copyItem() {
+        boolean held = this.manager.copyItem(this.player, this.target);
+        this.readout = Texts.get(held ? "gizmo.readout.copied" : "gizmo.readout.copy-failed");
+        this.player.playSound(this.player, held ? Sound.ENTITY_ITEM_PICKUP : Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, held ? 1.2f : 0.7f);
+        status();
+    }
+
     private void grab(Handle handle) {
+        if (this.boxMode) {
+            grabBox(handle);
+            return;
+        }
         Vector3d eye = eye();
         Vector3d look = look();
         System.arraycopy(this.target.shift, 0, this.shiftStart, 0, 6);
@@ -925,6 +1181,10 @@ final class Gizmo {
         this.active = null;
         light(held, false);
         unhover();
+        if (this.boxMode) {
+            dropBox(held);
+            return;
+        }
         if (!mayStay()) {
             // out of what the player may touch (another island, a protected region): it goes back
             restore(this.shiftStart);
@@ -1052,6 +1312,17 @@ final class Gizmo {
      */
     private void refreshTool() {
         double[] pose = this.target.pose(this.summonedPitch);
+        if (this.boxMode) {
+            // on the click box: in its middle, where the model and the box now put it
+            this.yaw = pose[3];
+            updateFrames();
+            this.knobSize = this.target.scale();
+            measureBox();
+            this.origin.set(boxMiddle());
+            sendPoses();
+            sendPosition();
+            return;
+        }
         if (this.active == null || this.active.kind != Kind.SCALE) {
             // while the knob is held the tool stays where it is, under the line of sight that slides it
             this.origin.set(this.target.pivot(this.summonedPitch));
@@ -1115,6 +1386,10 @@ final class Gizmo {
 
     private void drag(Vector3d eye, Vector3d look) {
         Handle handle = this.active;
+        if (this.boxMode) {
+            dragBox(handle, eye, look);
+            return;
+        }
         double x = this.shiftStart[0];
         double y = this.shiftStart[1];
         double z = this.shiftStart[2];
@@ -1219,6 +1494,339 @@ final class Gizmo {
         return this.snapping ? Math.round(amount / step) * step : amount;
     }
 
+    // ---------- The click box ----------
+
+    /**
+     * Puts the tool on the block's click box, or back on its model (administrators only).
+     */
+    void boxMode(boolean on) {
+        if (!this.admin || on == this.boxMode) {
+            status();
+            return;
+        }
+        if (this.active != null) {
+            drop();
+        }
+        if (on) {
+            double[] start = storedBox();
+            if (start == null) {
+                this.manager.say(this.player, "gizmo.hitbox-nothing");
+                this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
+                return;
+            }
+            this.box = start;
+        }
+        unhover();
+        this.boxMode = on;
+        if (this.hitboxSwitch != null) {
+            // its plate is light blue while the tool is on the click box
+            this.hitboxSwitch.pieces.get(0).normal = this.normals[on ? LIGHT_BLUE : BLACK];
+        }
+        this.readout = "";
+        refreshTool();
+        if (!on) {
+            sendPoses();
+        }
+        this.manager.say(this.player, on ? "gizmo.hitbox-on" : "gizmo.hitbox-off");
+        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_XYLOPHONE, 0.6f, on ? 1.5f : 1.0f);
+        status();
+    }
+
+    /**
+     * The click box the tool starts from on this block: the one an administrator drew, else one around the click boxes
+     * of its file, else one around what it draws; null for a model that draws nothing.
+     */
+    @org.jetbrains.annotations.Nullable
+    private double[] storedBox() {
+        BlockSettings settings = this.target.settings;
+        if (settings != null && !settings.noClickBox && settings.clickBox != null) {
+            return settings.clickBox.clone();
+        }
+        return referenceBox();
+    }
+
+    /**
+     * What a right click on a part of the click box puts back: around the click boxes of its file, else around what
+     * the model draws.
+     */
+    @org.jetbrains.annotations.Nullable
+    private double[] referenceBox() {
+        return AdminMenu.startBox(this.target, new BlockSettings(), this.manager.definition(this.target));
+    }
+
+    private double hitboxMax() {
+        return Math.max(0.5, this.manager.setting("gizmo.hitbox-max", 32));
+    }
+
+    /**
+     * Works out where the click box stands in the world, as the block's hitbox will be laid out.
+     */
+    private void measureBox() {
+        double[] bounds = boundsOf(this.box);
+        System.arraycopy(bounds, 0, this.boxBounds, 0, 6);
+    }
+
+    /**
+     * Where a click box stands in the world, around every box it becomes: smallest x, y, z then largest.
+     */
+    private double[] boundsOf(double[] box) {
+        double[] bounds = {Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE};
+        for (double[] laid : this.renderer.clickBoxesFor(this.target, box)) {
+            bounds[0] = Math.min(bounds[0], laid[0] - laid[3] / 2);
+            bounds[1] = Math.min(bounds[1], laid[1]);
+            bounds[2] = Math.min(bounds[2], laid[2] - laid[3] / 2);
+            bounds[3] = Math.max(bounds[3], laid[0] + laid[3] / 2);
+            bounds[4] = Math.max(bounds[4], laid[1] + laid[4]);
+            bounds[5] = Math.max(bounds[5], laid[2] + laid[3] / 2);
+        }
+        if (bounds[0] > bounds[3]) {
+            Vector3d pivot = this.target.pivot(this.summonedPitch);
+            return new double[]{pivot.x, pivot.y, pivot.z, pivot.x, pivot.y, pivot.z};
+        }
+        return bounds;
+    }
+
+    private Vector3d middleOf(double[] box) {
+        double[] b = boundsOf(box);
+        return new Vector3d((b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2);
+    }
+
+    /**
+     * Works out what takes a move in the world into a change of where the click box stands from its block, through the
+     * way it is laid out (the model's turn and size, a block on a wall): where its middle goes for a step on each.
+     */
+    private void measureMoves() {
+        Vector3d middle = middleOf(this.box);
+        int[] index = {3, 2, 4};
+        Vector3d[] columns = new Vector3d[3];
+        for (int i = 0; i < 3; i++) {
+            double[] moved = this.box.clone();
+            moved[index[i]] += 1;
+            columns[i] = middleOf(moved).sub(middle);
+        }
+        org.joml.Matrix3d matrix = new org.joml.Matrix3d(columns[0], columns[1], columns[2]);
+        this.boxInverse = Math.abs(matrix.determinant()) < 1.0E-9
+                ? new org.joml.Matrix3d().scaling(1 / Math.max(1.0E-3, this.target.scale())) : matrix.invert();
+    }
+
+    /**
+     * Shows the click box as it now is.
+     *
+     * @param recentre whether the tool goes to its middle (it stays where it is while a cube is held)
+     * @param reshape  whether its size changed: its outline and cubes are drawn again
+     */
+    private void boxChanged(boolean recentre, boolean reshape) {
+        measureBox();
+        if (recentre) {
+            this.origin.set(boxMiddle());
+            sendPosition();
+        }
+        if (reshape) {
+            sendBox();
+        }
+    }
+
+    private void grabBox(Handle handle) {
+        Vector3d eye = eye();
+        Vector3d look = look();
+        System.arraycopy(this.box, 0, this.boxStart, 0, 5);
+        this.dragOrigin.set(this.origin);
+        Quaterniond frame = frameOf(handle);
+        frame.transform(this.dragAxis.set(unit(handle.axis)));
+        switch (handle.kind) {
+            case MOVE_PLANE -> {
+                frame.transform(this.dragU.set(unit((handle.axis + 1) % 3)));
+                frame.transform(this.dragV.set(unit((handle.axis + 2) % 3)));
+                if (!planePoint(eye, look, this.hitStart)) {
+                    return;
+                }
+            }
+            case MOVE_AXIS, BOX_SIZE -> {
+                Double t = axisParam(eye, look);
+                if (t == null) {
+                    return;
+                }
+                this.paramStart = t;
+            }
+            default -> {
+                return;
+            }
+        }
+        measureMoves();
+        this.active = handle;
+        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, 1.6f);
+        status();
+    }
+
+    private void dragBox(Handle handle, Vector3d eye, Vector3d look) {
+        double size = Math.max(1.0E-3, this.target.scale());
+        double max = hitboxMax();
+        double step = MOVE_STEPS[this.moveStep];
+        double[] next = this.boxStart.clone();
+        Vector3d moved = null;
+        switch (handle.kind) {
+            case MOVE_AXIS -> {
+                Double t = axisParam(eye, look);
+                if (t == null) {
+                    return;
+                }
+                double amount = snap(t - this.paramStart, step);
+                moved = new Vector3d(this.dragAxis).mul(amount);
+                this.readout = String.format(Locale.ROOT, "%s %+.3f", labelOf(handle), amount);
+            }
+            case MOVE_PLANE -> {
+                Vector3d hit = new Vector3d();
+                if (!planePoint(eye, look, hit)) {
+                    return;
+                }
+                hit.sub(this.hitStart);
+                double a = snap(hit.dot(this.dragU), step);
+                double b = snap(hit.dot(this.dragV), step);
+                moved = new Vector3d(this.dragU).mul(a).fma(b, this.dragV);
+                this.readout = String.format(Locale.ROOT, "%s %+.3f %+.3f", labelOf(handle), a, b);
+            }
+            case BOX_SIZE -> {
+                Double t = axisParam(eye, look);
+                if (t == null) {
+                    return;
+                }
+                int index = handle.axis == 1 ? 1 : 0;
+                // the top goes up and down from the floor; a side goes out as much as the cube, the other side too (the
+                // base stays square around its middle)
+                double spread = handle.axis == 1 ? 1 : 2 / Math.max(1.0, Math.abs(this.dragAxis.x) + Math.abs(this.dragAxis.z));
+                double real = this.boxStart[index] * size + (t - this.paramStart) * spread;
+                if (this.snapping) {
+                    real = Math.round(real / step) * step;
+                }
+                real = Math.max(BOX_MIN, Math.min(max, real));
+                next[index] = real / size;
+                this.readout = Texts.get("gizmo.readout.box-size", "%part%", labelOf(handle), "%value%", AdminMenu.blocks(real));
+            }
+            default -> {
+                return;
+            }
+        }
+        if (moved != null) {
+            Vector3d local = this.boxInverse.transform(moved, new Vector3d());
+            next[3] = clampOffset(this.boxStart[3] + local.x, size, max);
+            next[2] = clampOffset(this.boxStart[2] + local.y, size, max);
+            next[4] = clampOffset(this.boxStart[4] + local.z, size, max);
+        }
+        if (java.util.Arrays.equals(next, this.box)) {
+            return;
+        }
+        this.box = next;
+        // a box moved takes the tool along; while a cube is held the tool stays where it is
+        boxChanged(handle.kind != Kind.BOX_SIZE, handle.kind == Kind.BOX_SIZE);
+    }
+
+    private static double clampOffset(double value, double size, double max) {
+        return Math.max(-max / size, Math.min(max / size, value));
+    }
+
+    private void dropBox(Handle held) {
+        // the tool goes to the middle of the box as it now is
+        boxChanged(true, held.kind == Kind.BOX_SIZE);
+        if (!java.util.Arrays.equals(this.box, this.boxStart)) {
+            saveBox();
+            this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, 1.0f);
+        }
+        status();
+    }
+
+    /**
+     * Gives the block the click box drawn: its hitbox is summoned again.
+     */
+    private void saveBox() {
+        if (!this.manager.adminMenu().setClickBox(this.player, this.target, this.box)) {
+            this.manager.say(this.player, "gizmo-admin.hitbox-later");
+        }
+    }
+
+    /**
+     * The red button on the click box: the block takes the click boxes of its file back.
+     */
+    private void resetBox() {
+        unhover();
+        BlockSettings settings = this.target.settings;
+        if (settings == null || !settings.noClickBox && settings.clickBox == null) {
+            this.manager.say(this.player, "gizmo.hitbox-already-file");
+            this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
+            status();
+            return;
+        }
+        if (!this.manager.adminMenu().setClickBox(this.player, this.target, null)) {
+            this.manager.say(this.player, "gizmo-admin.hitbox-later");
+        }
+        double[] start = storedBox();
+        if (start != null) {
+            this.box = start;
+        }
+        boxChanged(true, true);
+        this.readout = Texts.get("gizmo.readout.box-reset");
+        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BELL, 0.6f, 0.8f);
+        status();
+    }
+
+    /**
+     * A right click on a part of the click box: what it changes goes back to the click box of the file (or the one
+     * around the model), the rest staying as it is. An arrow puts back where the box stands along its axis, a square
+     * on its plane, a cube its width or its height.
+     */
+    private void resetBoxPart(Handle handle) {
+        double[] reference = referenceBox();
+        if (reference == null) {
+            return;
+        }
+        double[] next = this.box.clone();
+        switch (handle.kind) {
+            case BOX_SIZE -> {
+                int index = handle.axis == 1 ? 1 : 0;
+                next[index] = reference[index];
+            }
+            case MOVE_AXIS, MOVE_PLANE -> {
+                double[] home = this.box.clone();
+                home[2] = reference[2];
+                home[3] = reference[3];
+                home[4] = reference[4];
+                Vector3d away = middleOf(this.box).sub(middleOf(home));
+                Vector3d axis = frameOf(handle).transform(unit(handle.axis));
+                Vector3d back = handle.kind == Kind.MOVE_AXIS ? new Vector3d(axis).mul(-away.dot(axis))
+                        : new Vector3d(axis).mul(away.dot(axis)).sub(away);
+                measureMoves();
+                Vector3d local = this.boxInverse.transform(back, new Vector3d());
+                next[3] += local.x;
+                next[2] += local.y;
+                next[4] += local.z;
+                for (int i = 2; i < 5; i++) {
+                    if (Math.abs(next[i] - reference[i]) < 1.0E-6) {
+                        next[i] = reference[i];
+                    }
+                }
+            }
+            default -> {
+                return;
+            }
+        }
+        unhover();
+        boolean same = true;
+        for (int i = 0; i < 5; i++) {
+            same &= Math.abs(next[i] - this.box[i]) < 1.0E-6;
+        }
+        if (same) {
+            this.manager.say(this.player, "gizmo.nothing-to-reset");
+            this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.7f);
+            status();
+            return;
+        }
+        this.box = next;
+        saveBox();
+        boxChanged(true, true);
+        this.readout = Texts.get("gizmo.readout.reset", "%part%", labelOf(handle));
+        this.player.playSound(this.player, Sound.BLOCK_NOTE_BLOCK_BELL, 0.6f, 0.8f);
+        status();
+    }
+
     // ---------- Settings, while it is open ----------
 
     void scroll(boolean down) {
@@ -1226,7 +1834,10 @@ final class Gizmo {
             return;
         }
         int direction = down ? 1 : -1;
-        if (this.active.kind == Kind.TURN) {
+        if (this.boxMode) {
+            // the click box moves and is sized by the same steps, in blocks
+            this.moveStep = Math.max(0, Math.min(MOVE_STEPS.length - 1, this.moveStep + direction));
+        } else if (this.active.kind == Kind.TURN) {
             this.turnStep = Math.max(0, Math.min(TURN_STEPS.length - 1, this.turnStep + direction));
         } else if (this.active.kind == Kind.SCALE) {
             this.scaleStep = Math.max(0, Math.min(SCALE_STEPS.length - 1, this.scaleStep + direction));
@@ -1252,6 +1863,13 @@ final class Gizmo {
     }
 
     void status() {
+        if (this.boxMode) {
+            actionBar(Texts.get("gizmo.status-hitbox", "%readout%", this.readout.isEmpty() ? Texts.get("gizmo.readout.aim") : this.readout,
+                    "%state%", this.manager.adminMenu().clickState(this.target),
+                    "%step%", this.snapping ? trimmed(MOVE_STEPS[this.moveStep]) : Texts.get("gizmo.readout.free-step"),
+                    "%axes%", Texts.get(this.local ? "gizmo.readout.model-axes" : "gizmo.readout.world-axes")));
+            return;
+        }
         boolean sizing = this.active != null && this.active.kind == Kind.SCALE;
         double step = this.active != null && this.active.kind == Kind.TURN ? TURN_STEPS[this.turnStep] : sizing ? SCALE_STEPS[this.scaleStep] * 100 : MOVE_STEPS[this.moveStep];
         actionBar(Texts.get("gizmo.status", "%readout%", this.readout.isEmpty() ? Texts.get("gizmo.readout.aim") : this.readout,
@@ -1277,7 +1895,11 @@ final class Gizmo {
         this.shown = 0;
         if (this.active != null) {
             this.active = null;
-            this.renderer.commitShift(this.target);
+            if (this.boxMode) {
+                saveBox();
+            } else {
+                this.renderer.commitShift(this.target);
+            }
         }
         int[] ids = new int[this.pieces.size() + 1];
         for (int i = 0; i < this.pieces.size(); i++) {

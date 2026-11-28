@@ -120,7 +120,7 @@ gizmo:
   opened: "&8&l« &e&lSH &8&l» &7Gizmo &eactivé&7 : vise une pièce, &eclic gauche&7 pour la prendre, de nouveau pour la poser."
   #%min% and %max% = the sizes the bar goes from and to, in %
   help: "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (%min% à %max% %)&8 · &7Shift + clic droit &8: &efermer"
-  help-admin: "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (%min% à %max% %)&8 · &7bloc de commande &8: &eréglages de ce bloc seul &8· &7Shift + clic droit &8: &efermer"
+  help-admin: "&7Molette &8: &epas &8· &7Shift+F &8: &eaimantation &8· &7F &8: &eaxes &8· &7clic droit sur une pièce &8: &ela remettre à zéro &8· &7bouton rouge &8: &etout remettre &8· &7curseur blanc &8: &etaille (%min% à %max% %)&8 · &7bloc de commande &8: &eréglages de ce bloc seul &8· &7table de cartographie &8: &eson objet &8· &7cible &8: &esa hitbox &8· &7Shift + clic droit &8: &efermer"
   closed: "&8&l« &e&lSH &8&l» &7Gizmo &efermé&7."
   failed: "&8&l« &c&lSH &8&l» &7Le gizmo &cn'a pas pu s'ouvrir&7."
   too-far: "&8&l« &6&lSH &8&l» &7Gizmo &6fermé&7 : tu t'es &6trop éloigné&7 du modèle."
@@ -128,8 +128,15 @@ gizmo:
   locked: "&8&l« &6&lSH &8&l» &7Ce modèle a été &6verrouillé&7 par un admin : il ne se déplace pas."
   already-at-origin: "&8&l« &6&lSH &8&l» &7Ce modèle est &6déjà à sa place d'origine&7."
   nothing-to-reset: "&8&l« &6&lSH &8&l» &7Rien à &6remettre à zéro&7 ici."
+  #The gizmo of the click box (the target of its strip, administrators only)
+  hitbox-on: "&8&l« &b&lSH &8&l» &7Gizmo sur la &bhitbox&7 : flèches pour la déplacer, &fcubes blancs&7 pour sa largeur et sa hauteur, &cbouton rouge&7 pour reprendre celle du fichier."
+  hitbox-off: "&8&l« &e&lSH &8&l» &7Gizmo sur le &emodèle&7."
+  hitbox-nothing: "&8&l« &c&lSH &8&l» &7Ce modèle ne dessine rien : &cpas de hitbox&7 à régler."
+  hitbox-already-file: "&8&l« &6&lSH &8&l» &7Cette hitbox est &6déjà celle du fichier&7."
   #Action bar while the gizmo is open: %readout% = the part aimed at or what it changes, %step%, %axes%
   status: "&6&lGizmo &8» &f%readout% &8| &7pas &e%step% &8| &7axes &e%axes% &8| &7clic droit &eremise à zéro"
+  #The same on the click box: %state% = what its click box is, as the hitbox page of the panel says it
+  status-hitbox: "&b&lHitbox &8» &f%readout% &8| &7%state% &8| &7pas &e%step% &8| &7axes &e%axes%"
   readout:
     aim: "vise une pièce"
     free-step: "libre"
@@ -137,6 +144,11 @@ gizmo:
     world-axes: "du monde"
     reset-all: "Remis à l'origine"
     reset: "%part% remis à zéro"
+    copied: "Objet copié"
+    copy-failed: "Pas d'objet à copier"
+    box-reset: "Hitbox du fichier remise"
+    #%part% = the width or the height, %value% in blocks
+    box-size: "%part% %value%"
   label:
     move: "Déplacer %axis%"
     size: "Taille"
@@ -144,6 +156,13 @@ gizmo:
     turn: "Tourner"
     tilt: "Pencher"
     admin: "Réglages de ce bloc seul"
+    copy: "Copier l'objet"
+    hitbox: "Gizmo de la hitbox"
+    model: "Revenir au modèle"
+    box-move: "Déplacer la hitbox %axis%"
+    box-width: "Largeur"
+    box-height: "Hauteur"
+    box-reset: "Reprendre la hitbox du fichier"
 
 #The admin panel of the gizmo (command block of the gizmo, or /bdc settings): what is set on one placed block alone.
 #Each icon has a material, a name and a lore; a lore line holding %list% gives one line per command.
@@ -359,10 +378,9 @@ gizmo-admin:
       material: SLIME_BLOCK
       name: "&eZone cliquable sur mesure"
       lore:
-        - "&7Une seule zone, centrée sur le bloc,"
-        - "&7à la place de celles du fichier. Elle"
-        - "&7lance ce que lance la zone du fichier"
-        - "&7et grandit avec le bloc."
+        - "&7Une seule zone, à la place de celles"
+        - "&7du fichier. Elle lance ce que lance la"
+        - "&7zone du fichier et grandit avec le bloc."
         - ""
         - "%chosen%"
     hitbox-none:
@@ -427,6 +445,37 @@ gizmo-admin:
         - "&8Clic droit &7: &f-0,1"
         - "&8Shift + clic gauche &7: &f+1"
         - "&8Shift + clic droit &7: &f-1"
+    hitbox-offset-x:
+      material: RED_CONCRETE
+      name: "&eDécalage X &8: &f%value% blocs"
+      lore:
+        - "&7Le long de la flèche rouge du gizmo,"
+        - "&7dans les axes du modèle (jusqu'à %max%)."
+        - ""
+        - "&8Clic gauche &7: &f+0,1"
+        - "&8Clic droit &7: &f-0,1"
+        - "&8Shift + clic gauche &7: &f+1"
+        - "&8Shift + clic droit &7: &f-1"
+    hitbox-offset-z:
+      material: LIGHT_BLUE_CONCRETE
+      name: "&eDécalage Z &8: &f%value% blocs"
+      lore:
+        - "&7Le long de la flèche bleue du gizmo,"
+        - "&7dans les axes du modèle (jusqu'à %max%)."
+        - ""
+        - "&8Clic gauche &7: &f+0,1"
+        - "&8Clic droit &7: &f-0,1"
+        - "&8Shift + clic gauche &7: &f+1"
+        - "&8Shift + clic droit &7: &f-1"
+    hitbox-gizmo:
+      material: ARROW
+      name: "&eRégler au gizmo"
+      lore:
+        - "&7Ferme ce menu et met le gizmo sur la"
+        - "&7hitbox : flèches pour la déplacer,"
+        - "&7cubes blancs pour sa taille."
+        - ""
+        - "&8Clic &7: &fouvrir"
     hitbox-fit-model:
       material: ARMOR_STAND
       name: "&eAutour du modèle"
@@ -503,7 +552,7 @@ gizmo-admin:
     cooldown: "&8&l« &e&lSH &8&l» &7Écris le délai (ex. &e60s&7, &e5m&7, &e24h&7) : &e&nclique ici"
     permission: "&8&l« &e&lSH &8&l» &7Écris la permission (ex. &eskyhand.vip&7) : &e&nclique ici"
     note: "&8&l« &e&lSH &8&l» &7Écris la note : &e&nclique ici"
-    hitbox: "&8&l« &e&lSH &8&l» &7Écris largeur, hauteur et bas en blocs (ex. &e2 3 0&7) : &e&nclique ici"
+    hitbox: "&8&l« &e&lSH &8&l» &7Écris largeur, hauteur, bas, décalage X et Z en blocs (ex. &e2 3 0 0 0&7) : &e&nclique ici"
   saved: "&8&l« &a&lSH &8&l» &7Réglage de &a%model%&7 enregistré."
   copied: "&8&l« &a&lSH &8&l» &7Réglages de &a%model%&7 copiés."
   broken: "&8&l« &a&lSH &8&l» &a%model%&7 cassé, son objet est dans ton inventaire."
@@ -514,8 +563,8 @@ gizmo-admin:
   open-first: "&8&l« &c&lSH &8&l» &7Ouvre d'abord les réglages d'un bloc : bloc de commande de son gizmo, ou &c/bdc settings&7 en le visant."
   no-permission: "&8&l« &c&lSH &8&l» &7Tu n'as &cpas la permission&7."
   players-only: "&cOnly a player can set a block from its panel."
-  usage: "&8&l« &c&lSH &8&l» &7/bdc settings &8[&7size <%>&8 | &7view-distance <blocs>&8 | &7hitbox <largeur> <hauteur> [bas]|file|model|none&8 | &7collision on|off&8 | &7command add|remove|clear&8 | &7cooldown <durée>&8 | &7permission <perm>&8 | &7note <texte>&8 | &7list [rayon]&8]"
-  bad-hitbox: "&8&l« &c&lSH &8&l» &7Écris &c<largeur> <hauteur> [bas]&7 en blocs (de 0,1 à %max%), ou &cfile&7, &cmodel&7, &cnone&7."
+  usage: "&8&l« &c&lSH &8&l» &7/bdc settings &8[&7size <%>&8 | &7view-distance <blocs>&8 | &7hitbox <largeur> <hauteur> [bas] [x] [z]|file|model|none&8 | &7collision on|off&8 | &7command add|remove|clear&8 | &7cooldown <durée>&8 | &7permission <perm>&8 | &7note <texte>&8 | &7list [rayon]&8]"
+  bad-hitbox: "&8&l« &c&lSH &8&l» &7Écris &c<largeur> <hauteur> [bas] [x] [z]&7 en blocs (jusqu'à %max%, la largeur et la hauteur dès 0,1), ou &cfile&7, &cmodel&7, &cnone&7."
   no-collision: "&8&l« &c&lSH &8&l» &7Le fichier de ce modèle n'a &cpas de collision&7."
   hitbox-later: "&8&l« &6&lSH &8&l» &7Enregistré : sa hitbox change dès que le bloc est rechargé (une partie n'est pas chargée)."
   bad-size: "&8&l« &c&lSH &8&l» &7La taille va de &c%min%&7 à &c%max%&7."

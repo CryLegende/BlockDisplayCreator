@@ -135,4 +135,17 @@ public class ItemUtil {
     public static boolean selectItem(Player player, Material material) {
         return selectItem(player, item -> item.getType() == material, new ItemStack(material), null);
     }
+
+    /**
+     * Whether an item is the item of the custom block of this name, of this material.
+     */
+    public static Predicate<ItemStack> customBlockItem(@NotNull Material material, @NotNull String name) {
+        return stack -> {
+            if (stack.getType() != material) {
+                return false;
+            }
+            org.bukkit.inventory.meta.ItemMeta meta = stack.getItemMeta();
+            return meta != null && name.equals(me.general_breddok.blockdisplaycreator.custom.block.CustomBlockKey.holder(meta).getName());
+        };
+    }
 }

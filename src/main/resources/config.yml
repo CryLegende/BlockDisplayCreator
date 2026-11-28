@@ -55,7 +55,8 @@ gizmo:
   - 5m
   - 1h
   - 24h
-  #The largest click box the hitbox page of the admin panel draws, in blocks (width and height).   By def 32
+  #The largest click box the hitbox page of the admin panel and the gizmo of the click box draw, in blocks (width,
+  #height, and how far it stands from its block).   By def 32
   hitbox-max: 32
   #The outline the hitbox page draws for its administrator alone, while it is open and that many seconds more
   #(0: none). Particles from https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Particle.html; a DUST takes its color.
@@ -70,3 +71,23 @@ gizmo:
     open: UI_TOAST_IN
     click: UI_BUTTON_CLICK
     refused: BLOCK_NOTE_BLOCK_BASS
+
+#Aiming at a placed model shown through packets, for those with the permission below, even on a model without any click
+#box: a swing breaks it as a hit on its click box would (same drops, sounds and protections), a middle click puts its item
+#in the hand as a middle click on its click box would. The model counts when the line of sight meets one of its parts
+#closer than the block or the entity the crosshair is on: a swing at a player or a mob stays a hit on him, a click on a
+#block in front of the model stays on the block. While a gizmo is open its clicks are the gizmo's.
+admin-aim:
+  #The permission it takes.   By def bdc.gizmo.admin
+  permission: bdc.gizmo.admin
+  #How far from the eyes a model is reached, in blocks.   By def 5
+  reach: 5
+  #Whether a swing breaks the model aimed at, and in which game modes (SURVIVAL, CREATIVE).   By def true, SURVIVAL and CREATIVE
+  break: true
+  break-game-modes:
+  - SURVIVAL
+  - CREATIVE
+  #Ticks at least between two models broken by aiming: a button held down breaks them one after the other.   By def 5
+  break-delay: 5
+  #Whether a middle click takes the item of the model aimed at (the copy button of the gizmo works from anywhere).   By def true
+  pick: true

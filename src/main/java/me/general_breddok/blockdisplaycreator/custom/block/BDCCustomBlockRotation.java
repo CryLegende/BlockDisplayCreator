@@ -97,10 +97,19 @@ public class BDCCustomBlockRotation implements CustomBlockRotation {
     }
 
     public Vector calculateOffset(Entity entity, Vector originalOffset, int sidesCount) {
+        double[] half = halfSize(entity);
+        return calculateOffset(half[0], half[1], originalOffset, sidesCount);
+    }
+
+    /**
+     * Where an entity of these half sizes stands from the block it belongs to, for an offset of its file, as
+     * {@link #adjustInteractionRotation} puts a summoned one: what a click box will be laid out at, worked out without it.
+     */
+    public Vector calculateOffset(double halfWidth, double halfHeight, Vector originalOffset, int sidesCount) {
         return switch (attachedFace) {
             case UP, DOWN -> rotateForVertical(originalOffset, sidesCount);
-            case NORTH, SOUTH, EAST, WEST -> rotateForCardinal(entity, originalOffset);
-            default -> rotateForDiagonal(entity, originalOffset, sidesCount);
+            case NORTH, SOUTH, EAST, WEST -> rotateForCardinal(halfWidth, halfHeight, originalOffset);
+            default -> rotateForDiagonal(halfWidth, halfHeight, originalOffset, sidesCount);
         };
     }
 
@@ -113,7 +122,7 @@ public class BDCCustomBlockRotation implements CustomBlockRotation {
         return originalOffset.clone().rotateAroundY(-Math.toRadians(snappedAngle));
     }
 
-    private Vector rotateForCardinal(Entity entity, Vector originalOffset) {
+    private Vector rotateForCardinal(double halfWidth, double halfHeight, Vector originalOffset) {
         Vector rotated = originalOffset.clone()
                 .rotateAroundY(getYawRadians(this.attachedFace));
 
@@ -123,20 +132,24 @@ public class BDCCustomBlockRotation implements CustomBlockRotation {
         }
 
 
-        applyStandardSideOffset(entity, rotated);
+        applyStandardSideOffset(halfWidth, halfHeight, rotated);
         return rotated;
     }
 
-    private Vector rotateForDiagonal(Entity entity, Vector originalOffset, int sidesCount) {
+    private Vector rotateForDiagonal(double halfWidth, double halfHeight, Vector originalOffset, int sidesCount) {
         Vector rotated = originalOffset.clone();
         float snappedYaw = new YawSnapper(sidesCount).getClosestAngle(this.direction);
         rotated.rotateAroundY(-Math.toRadians(snappedYaw));
 
-        applyStandardSideOffset(entity, rotated);
+        applyStandardSideOffset(halfWidth, halfHeight, rotated);
         return rotated;
     }
 
-    private void applyStandardSideOffset(Entity entity, Vector originalOffset) {
+    /**
+     * Half the width and half the height of an entity as its side offset counts them: an interaction's box, the scale
+     * of a collision.
+     */
+    private static double[] halfSize(Entity entity) {
         double halfWidth = entity.getWidth() / 2;
         double halfHeight = entity.getHeight() / 2;
 
@@ -155,7 +168,10 @@ public class BDCCustomBlockRotation implements CustomBlockRotation {
                 }
             }
         }
+        return new double[]{halfWidth, halfHeight};
+    }
 
+    private void applyStandardSideOffset(double halfWidth, double halfHeight, Vector originalOffset) {
         withDirectionalOffset(attachedFace, 0.5, 0.5, (x, y, z) -> originalOffset.add(new Vector(x, y, z)));
         if (halfWidth != 0 || halfHeight != 0) {
             withDirectionalOffset(attachedFace, -halfHeight, -halfWidth, (x, y, z) -> originalOffset.add(new Vector(x, y, z)));

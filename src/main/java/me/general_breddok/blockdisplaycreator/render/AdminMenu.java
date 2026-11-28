@@ -88,6 +88,9 @@ public final class AdminMenu implements Listener {
     private static final int H_FIT_MODEL = 23;
     private static final int H_FIT_FILE = 24;
     private static final int H_TYPE = 25;
+    private static final int H_OFFSET_X = 28;
+    private static final int H_OFFSET_Z = 29;
+    private static final int H_GIZMO = 34;
     /**
      * How often the outline of a hitbox is drawn again (ticks), and how many dots it is drawn with at most.
      */
@@ -554,6 +557,8 @@ public final class AdminMenu implements Listener {
             inventory.setItem(H_WIDTH, item("hitbox-width", false, "%value%", blocks(settings.clickBox[0] * scale), "%max%", max));
             inventory.setItem(H_HEIGHT, item("hitbox-height", false, "%value%", blocks(settings.clickBox[1] * scale), "%max%", max));
             inventory.setItem(H_FLOOR, item("hitbox-floor", false, "%value%", blocks(settings.clickBox[2] * scale), "%max%", max));
+            inventory.setItem(H_OFFSET_X, item("hitbox-offset-x", Math.abs(settings.clickBox[3]) > 1.0E-9, "%value%", blocks(settings.clickBox[3] * scale), "%max%", max));
+            inventory.setItem(H_OFFSET_Z, item("hitbox-offset-z", Math.abs(settings.clickBox[4]) > 1.0E-9, "%value%", blocks(settings.clickBox[4] * scale), "%max%", max));
             if (clickBoxOf(placed) != null) {
                 inventory.setItem(H_FIT_MODEL, item("hitbox-fit-model", false));
             }
@@ -564,6 +569,7 @@ public final class AdminMenu implements Listener {
         } else {
             inventory.setItem(H_HINT, item("hitbox-size-hint", false));
         }
+        inventory.setItem(H_GIZMO, item("hitbox-gizmo", false));
         inventory.setItem(BACK, item("hitbox-back", false));
     }
 
@@ -603,22 +609,33 @@ public final class AdminMenu implements Listener {
                 }
                 settings.collisions = !settings.collisions;
             }
-            case H_WIDTH, H_HEIGHT, H_FLOOR -> {
+            case H_WIDTH, H_HEIGHT, H_FLOOR, H_OFFSET_X, H_OFFSET_Z -> {
                 double step = click == ClickType.LEFT ? 0.1 : click == ClickType.RIGHT ? -0.1
                         : click == ClickType.SHIFT_LEFT ? 1 : click == ClickType.SHIFT_RIGHT ? -1 : 0;
                 if (!custom || step == 0) {
                     return;
                 }
-                int index = slot == H_WIDTH ? 0 : slot == H_HEIGHT ? 1 : 2;
+                int index = switch (slot) {
+                    case H_WIDTH -> 0;
+                    case H_HEIGHT -> 1;
+                    case H_FLOOR -> 2;
+                    case H_OFFSET_X -> 3;
+                    default -> 4;
+                };
                 double scale = placed.scale();
                 double max = hitboxMax();
                 double real = Math.round((settings.clickBox[index] * scale + step) * 100) / 100.0;
-                real = Math.max(index == 2 ? -max : 0.1, Math.min(max, real));
+                real = Math.max(index >= 2 ? -max : 0.1, Math.min(max, real));
                 if (Math.abs(real / scale - settings.clickBox[index]) < 1.0E-9) {
                     refuse(player);
                     return;
                 }
                 settings.clickBox[index] = real / scale;
+            }
+            case H_GIZMO -> {
+                player.closeInventory();
+                this.gizmos.openHitbox(player, placed);
+                return;
             }
             case H_FIT_MODEL, H_FIT_FILE -> {
                 double[] box = !custom ? null : slot == H_FIT_MODEL ? clickBoxOf(placed)
@@ -664,7 +681,7 @@ public final class AdminMenu implements Listener {
      * boxes of its file, else one around what it draws (null for a model that draws nothing).
      */
     @Nullable
-    private static double[] startBox(PlacedDisplay placed, BlockSettings settings, @Nullable AbstractCustomBlock definition) {
+    static double[] startBox(PlacedDisplay placed, BlockSettings settings, @Nullable AbstractCustomBlock definition) {
         if (settings.clickBox != null) {
             return settings.clickBox.clone();
         }
@@ -682,6 +699,13 @@ public final class AdminMenu implements Listener {
             }
         }
         return count;
+    }
+
+    /**
+     * What the click box of a block is, as the hitbox page says it: its file's, drawn to measure, or none.
+     */
+    String clickState(PlacedDisplay placed) {
+        return clickState(placed, placed.settings == null ? new BlockSettings() : placed.settings, definition(placed));
     }
 
     private String clickState(PlacedDisplay placed, BlockSettings settings, @Nullable AbstractCustomBlock definition) {
@@ -724,7 +748,7 @@ public final class AdminMenu implements Listener {
     /**
      * {@code 1,25}, {@code 2}: a length in blocks as the panel writes it.
      */
-    private static String blocks(double value) {
+    static String blocks(double value) {
         double rounded = Math.round(value * 100) / 100.0;
         if (Math.abs(rounded - Math.rint(rounded)) < 1.0E-9) {
             return String.valueOf((long) Math.rint(rounded));
@@ -904,7 +928,8 @@ public final class AdminMenu implements Listener {
         }
         double scale = placed.scale();
         double[] box = placed.settings.clickBox;
-        return (blocks(box[0] * scale) + " " + blocks(box[1] * scale) + " " + blocks(box[2] * scale)).replace(',', '.');
+        return (blocks(box[0] * scale) + " " + blocks(box[1] * scale) + " " + blocks(box[2] * scale)
+                + " " + blocks(box[3] * scale) + " " + blocks(box[4] * scale)).replace(',', '.');
     }
 
     private void refuse(Player player) {
@@ -959,19 +984,33 @@ public final class AdminMenu implements Listener {
     }
 
     /**
-     * The click box a block without one gets: a box with a square base on the block's axis around what it draws
-     * (width, height, height of its floor), or null for a model that draws nothing.
+     * The click box a block without one gets: a box with a square base around what it draws (width, height, height of
+     * its floor, x and z of its middle), or null for a model that draws nothing.
      */
     @Nullable
-    private static double[] clickBoxOf(PlacedDisplay placed) {
+    static double[] clickBoxOf(PlacedDisplay placed) {
         float[] box = placed.model.bounds();
-        double half = Math.max(Math.max(Math.abs(box[0]), Math.abs(box[3])), Math.max(Math.abs(box[2]), Math.abs(box[5])));
+        double side = Math.max(box[3] - box[0], box[5] - box[2]);
         double floor = Math.max(0, box[1]);
         double height = box[4] - floor;
-        if (half <= 0 || height <= 0) {
+        if (side <= 0 || height <= 0) {
             return null;
         }
-        return new double[]{round(2 * half), round(height), round(floor)};
+        return BlockSettings.box(round(side), round(height), round(floor), round((box[0] + box[3]) / 2), round((box[2] + box[5]) / 2));
+    }
+
+    /**
+     * Gives a block the click box an administrator drew with the gizmo of its hitbox, or the click boxes of its file
+     * back (null). The block becomes the one his {@code /bdc settings ...} acts on.
+     *
+     * @return false when its hitbox is only summoned again at the block's next read
+     */
+    boolean setClickBox(Player player, PlacedDisplay placed, @Nullable double[] box) {
+        this.editing.put(player.getUniqueId(), new BlockRef(placed.world.getUID(), placed.x, placed.y, placed.z));
+        BlockSettings settings = placed.settings == null ? new BlockSettings() : placed.settings.copy();
+        settings.noClickBox = false;
+        settings.clickBox = box == null ? null : box.clone();
+        return apply(placed, settings);
     }
 
     private static double round(double value) {
@@ -1129,14 +1168,17 @@ public final class AdminMenu implements Listener {
                     Double width = parts.length >= 2 ? number(parts[0]) : null;
                     Double height = parts.length >= 2 ? number(parts[1]) : null;
                     Double floor = parts.length >= 3 ? number(parts[2]) : Double.valueOf(0);
-                    if (parts.length > 3 || width == null || height == null || floor == null || width < 0.1 || width > max
-                            || height < 0.1 || height > max || floor < -max || floor > max) {
+                    Double x = parts.length >= 4 ? number(parts[3]) : Double.valueOf(0);
+                    Double z = parts.length >= 5 ? number(parts[4]) : Double.valueOf(0);
+                    if (parts.length > 5 || width == null || height == null || floor == null || x == null || z == null
+                            || width < 0.1 || width > max || height < 0.1 || height > max
+                            || Math.abs(floor) > max || Math.abs(x) > max || Math.abs(z) > max) {
                         this.gizmos.say(player, "gizmo-admin.bad-hitbox", "%max%", blocks(max));
                         return;
                     }
                     double scale = placed.scale();
                     settings.noClickBox = false;
-                    settings.clickBox = new double[]{width / scale, height / scale, floor / scale};
+                    settings.clickBox = BlockSettings.box(width / scale, height / scale, floor / scale, x / scale, z / scale);
                 }
             }
             case "collision" -> {

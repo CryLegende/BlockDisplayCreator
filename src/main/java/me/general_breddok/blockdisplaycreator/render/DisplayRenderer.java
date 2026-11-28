@@ -1547,6 +1547,61 @@ public final class DisplayRenderer implements Listener {
     }
 
     /**
+     * A placed block a line of sight meets, and how far from the eyes.
+     */
+    record Aimed(PlacedDisplay placed, double distance) {
+    }
+
+    /**
+     * The placed block a player aims at by what it draws, the nearest his line of sight meets within a distance: only
+     * among the blocks he is sent, and of those only the ones close enough for what they draw to reach that far.
+     */
+    @Nullable
+    synchronized Aimed aimed(Player player, double within) {
+        Viewer viewer = this.viewers.get(player.getUniqueId());
+        if (viewer == null || viewer.player != player || viewer.shown.isEmpty()) {
+            return null;
+        }
+        Location eye = player.getEyeLocation();
+        org.bukkit.util.Vector look = eye.getDirection();
+        org.joml.Vector3d from = new org.joml.Vector3d(eye.getX(), eye.getY(), eye.getZ());
+        org.joml.Vector3d along = new org.joml.Vector3d(look.getX(), look.getY(), look.getZ()).normalize();
+        World world = player.getWorld();
+        PlacedDisplay best = null;
+        double nearest = within;
+        for (PlacedDisplay placed : viewer.shown) {
+            if (placed.shownFor != null || placed.world != world || placed.model == null || placed.model.elements.isEmpty()) {
+                continue;
+            }
+            // what it draws stands around where it was placed and moved: one too far away is not looked at further
+            double reach = nearest + placed.model.boundsRadius() * placed.scale() + 1;
+            double dx = placed.baseX + placed.shift[0] - from.x;
+            double dy = placed.baseY + placed.shift[1] - from.y;
+            double dz = placed.baseZ + placed.shift[2] - from.z;
+            if (placed.fixedPose == null && dx * dx + dy * dy + dz * dz > reach * reach) {
+                continue;
+            }
+            double at = placed.hit(from, along, nearest);
+            if (at >= 0 && at < nearest) {
+                nearest = at;
+                best = placed;
+            }
+        }
+        return best == null ? null : new Aimed(best, nearest);
+    }
+
+    /**
+     * Where a click box drawn on a block stands in the world, as its hitbox will be summoned and laid out where its
+     * model now is: for each box it becomes, x, y, z of the middle of its floor, then its width and height.
+     *
+     * @param box width, height, floor, x and z, at the size its file gives
+     */
+    synchronized List<double[]> clickBoxesFor(PlacedDisplay placed, double[] box) {
+        return BDCCustomBlockService.customClickBoxes(placed.rotation, placed.model.sidesCount, placed.base(),
+                placed.placedPose(placed.model.elements.get(0).pitch()), placed.shift, box);
+    }
+
+    /**
      * The placed block of a block position, if it is shown through packets.
      */
     @Nullable

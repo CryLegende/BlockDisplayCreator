@@ -638,8 +638,29 @@ final class PlacedDisplay {
     }
 
     /**
-     * Whether an operator moved the block.
+     * How far along a line of sight the first part of the block is entered, in blocks: what each part really draws at
+     * rest, not the box around them all (a line passing between the legs of a statue meets nothing). -1 when the line
+     * meets no part before a distance.
+     *
+     * @param from      where the line starts, in the world
+     * @param direction its direction, of length 1
+     * @param within    the distance beyond which nothing counts
      */
+    double hit(org.joml.Vector3d from, org.joml.Vector3d direction, double within) {
+        double[] pose = pose(this.model.elements.get(0).pitch());
+        org.joml.Quaterniond back = orientation(pose[3], pose[4]).invert();
+        double size = scale();
+        // in the model's own axes, at size 1: a point of the line is start + t × step, t in blocks of the world
+        org.joml.Vector3d start = back.transform(new org.joml.Vector3d(from).sub(pose[0], pose[1], pose[2])).div(size);
+        org.joml.Vector3d step = back.transform(new org.joml.Vector3d(direction)).div(size);
+        // the box around everything it draws first: most lines miss it
+        double box = DisplayModel.enters(start, step, this.model.bounds());
+        if (box < 0 || box >= within) {
+            return -1;
+        }
+        return this.model.hit(start, step, within);
+    }
+
     /**
      * Whether the block has a click box: its file's, or one an administrator drew, unless he took them away.
      */
@@ -1439,6 +1460,24 @@ final class PlacedDisplay {
     }
 
     /**
+     * The yaw the rotation of the block snaps to by the sides of its model, the direction and the model it was worked
+     * out for: a model of 360 sides takes a search through 360 angles, done again only when one of them changes.
+     */
+    private float snappedYaw;
+    private float snappedFrom = Float.NaN;
+    private volatile DisplayModel snappedFor;
+
+    private float snappedYaw() {
+        float direction = this.rotation.getDirection();
+        if (this.snappedFor != this.model || Float.compare(this.snappedFrom, direction) != 0) {
+            this.snappedYaw = new YawSnapper(this.model.sidesCount).getClosestAngle(direction);
+            this.snappedFrom = direction;
+            this.snappedFor = this.model;
+        }
+        return this.snappedYaw;
+    }
+
+    /**
      * Where the block stands and how it is turned before any shift of an operator.
      */
     double[] placedPose(float summonedPitch) {
@@ -1453,7 +1492,7 @@ final class PlacedDisplay {
         BlockFace face = this.rotation.getAttachedFace();
         if (face == BlockFace.UP || face == BlockFace.DOWN) {
             // a model shown for another plugin takes any angle, whatever the sides of its file
-            yaw = this.shownFor != null ? this.rotation.getDirection() : new YawSnapper(this.model.sidesCount).getClosestAngle(this.rotation.getDirection());
+            yaw = this.shownFor != null ? this.rotation.getDirection() : snappedYaw();
             pitch = Location.normalizePitch(summonedPitch);
         } else {
             pitch = 90;

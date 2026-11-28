@@ -28,6 +28,7 @@ import org.bukkit.entity.Shulker;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.jetbrains.annotations.Nullable;
 
 
 public class EntityDamageByEntityListener implements Listener {
@@ -65,43 +66,56 @@ public class EntityDamageByEntityListener implements Listener {
 
         event.setCancelled(true);
 
+        breakByHit(player, blockName, CustomBlockKey.holder(entity).getLocation(), CustomBlockService.getService(serviceManager, entity), true);
+    }
+
+    /**
+     * What a hit of a player on a custom block does: breaks it, unless it is hidden from him, protected (its file says
+     * {@code breakable: false}, or an administrator made it unbreakable), out of what he may break (the blocks-destruction
+     * option, regions, islands, the file's permissions). Its item drops unless he is in creative or spectator mode; the
+     * break sound plays. The same for a hit on its click box and for a swing aiming at what it draws.
+     *
+     * @param location where the block was placed, as stored on its entities
+     * @param tell     whether a protected block tells him how to remove it
+     * @return whether the block was broken
+     */
+    public static boolean breakByHit(Player player, String blockName, @Nullable Location location, CustomBlockService customBlockService, boolean tell) {
+        me.general_breddok.blockdisplaycreator.render.DisplayRenderer renderer = BlockDisplayCreator.getInstance().getDisplayRenderer();
+
         // a block whose display.visible-if keeps it from this player cannot be broken by him either
-        if (renderer != null && renderer.hides(player, CustomBlockKey.holder(entity).getLocation()))
-            return;
+        if (renderer != null && renderer.hides(player, location))
+            return false;
 
         // a file with "breakable: false" (a quest character, a decor players rely on) is never broken by a hit, not
         // even by an operator: /bdc custom-block break <x> <y> <z> removes it. Those allowed to break are told so.
         // the same for one placed block an administrator made unbreakable from its gizmo
-        if (!breakable(blockName) || (renderer != null && renderer.protects(CustomBlockKey.holder(entity).getLocation()))) {
-            if (BooleanConfigValue.BLOCKS_DESTRUCTION || player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
-                Location at = CustomBlockKey.holder(entity).getLocation();
-                if (at != null && at.getWorld() != null) {
+        if (!breakable(blockName) || (renderer != null && renderer.protects(location))) {
+            if (tell && (BooleanConfigValue.BLOCKS_DESTRUCTION || player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION))) {
+                if (location != null && location.getWorld() != null) {
                     ChatUtil.sendMessage(player, StringMessagesValue.PROTECTED_BREAK
-                            .replace("%x%", String.valueOf(at.getBlockX())).replace("%y%", String.valueOf(at.getBlockY()))
-                            .replace("%z%", String.valueOf(at.getBlockZ())).replace("%world%", at.getWorld().getName()));
+                            .replace("%x%", String.valueOf(location.getBlockX())).replace("%y%", String.valueOf(location.getBlockY()))
+                            .replace("%z%", String.valueOf(location.getBlockZ())).replace("%world%", location.getWorld().getName()));
                 }
             }
-            return;
+            return false;
         }
 
         if (!BooleanConfigValue.BLOCKS_DESTRUCTION) {
             if (!player.hasPermission(DefaultPermissions.BDC.CustomBlock.BLOCKS_DESTRUCTION)) {
                 ChatUtil.sendMessage(player, StringMessagesValue.PERMISSION_DENIED_BREAK);
-                return;
+                return false;
             }
         }
 
-        CustomBlockService customBlockService = CustomBlockService.getService(serviceManager, entity);
-
-        CustomBlock customBlock = customBlockService.getCustomBlock(entity);
+        CustomBlock customBlock = location == null ? null : customBlockService.getCustomBlock(location);
 
         if (customBlock == null) {
             ChatUtil.sendMessage(player, StringMessagesValue.CUSTOM_BLOCK_NOT_FOUND.replace("%customblock_name%", blockName));
-            return;
+            return false;
         }
 
         if (!checkAccess(player, customBlock)) {
-            return;
+            return false;
         }
 
         CustomBlockOption[] options = new CustomBlockOption[5];
@@ -111,8 +125,9 @@ public class EntityDamageByEntityListener implements Listener {
         }
 
         try {
-            customBlockService.breakBlock(customBlock, player, options);
+            return customBlockService.breakBlock(customBlock, player, options);
         } catch (IllegalArgumentException ignore) {
+            return false;
         }
     }
 

@@ -44,7 +44,7 @@ permissions:
       bdc.bypass.skyblock: true
 
   bdc.gizmo.admin:
-    description: Allows to set things on one placed custom block alone from the admin button of its gizmo or /bdc settings (click commands, cooldown, view distance, size from 10 to 1000 %, unbreakable...), and to move the blocks an administrator locked
+    description: Allows to set things on one placed custom block alone from the admin button of its gizmo or /bdc settings (click commands, cooldown, view distance, size from 10 to 1000 %, unbreakable...), to move the blocks an administrator locked and their click boxes, and (admin-aim.permission in config.yml) to break a model or take its item by aiming at what it draws
     default: op
 
   bdc.gizmo:

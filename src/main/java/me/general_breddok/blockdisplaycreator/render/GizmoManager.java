@@ -69,8 +69,12 @@ public final class GizmoManager implements Listener {
      * its own idea of it, which a client that does not send it leaves out.
      */
     private final java.util.Set<UUID> sneaking = new java.util.HashSet<>();
-    private int tick;
+    private volatile int tick;
     private final AdminMenu adminMenu;
+    /**
+     * What administrators do by aiming at a model: break it, take its item.
+     */
+    private final AdminAim aim;
 
     GizmoManager(BlockDisplayCreator plugin, DisplayRenderer renderer, NmsBridge nms) {
         this.plugin = plugin;
@@ -78,7 +82,52 @@ public final class GizmoManager implements Listener {
         this.nms = nms;
         this.adminMenu = new AdminMenu(plugin, renderer, this);
         plugin.getServer().getPluginManager().registerEvents(this.adminMenu, plugin);
+        this.aim = new AdminAim(plugin, renderer, this);
+        plugin.getServer().getPluginManager().registerEvents(this.aim, plugin);
         listenToUnknownEntities();
+    }
+
+    /**
+     * The ticks counted since the plugin started.
+     */
+    int now() {
+        return this.tick;
+    }
+
+    /**
+     * A middle click of a player on a custom block's click box or central block: when he is an administrator aiming at
+     * a model closer than it, he takes that model's item instead.
+     *
+     * @param beyond how far from his eyes the click box or block picked is
+     * @return whether the pick was taken
+     */
+    public boolean pickAimed(Player player, double beyond) {
+        return this.aim.pickAimed(player, beyond);
+    }
+
+    /**
+     * Puts the item of a block in an administrator's hand (the copy button of his gizmo): the one he has, else a new one.
+     */
+    boolean copyItem(Player player, PlacedDisplay placed) {
+        return this.aim.copy(player, placed, true);
+    }
+
+    /**
+     * Opens a player's gizmo on a block with its handles on the block's click box (the hitbox page of the admin panel).
+     */
+    void openHitbox(Player player, PlacedDisplay placed) {
+        Gizmo gizmo = this.sessions.get(player.getUniqueId());
+        if (gizmo == null || gizmo.target() != placed) {
+            if (!opens(player, placed)) {
+                say(player, "gizmo.failed");
+                return;
+            }
+            toggle(player, placed);
+            gizmo = this.sessions.get(player.getUniqueId());
+        }
+        if (gizmo != null && gizmo.target() == placed) {
+            gizmo.boxMode(true);
+        }
     }
 
     /**
@@ -106,6 +155,14 @@ public final class GizmoManager implements Listener {
                 gizmo.follow();
             }
         }
+    }
+
+    /**
+     * The file a placed block was made from, null when it is no longer loaded.
+     */
+    @org.jetbrains.annotations.Nullable
+    AbstractCustomBlock definition(PlacedDisplay placed) {
+        return this.plugin.getCustomBlockService().getStorage().getAbstractCustomBlock(placed.modelName);
     }
 
     /**
@@ -269,7 +326,7 @@ public final class GizmoManager implements Listener {
         return this.renderer.find(entity.getWorld(), at.getBlockX(), at.getBlockY(), at.getBlockZ());
     }
 
-    private boolean justToggled(Player player) {
+    boolean justToggled(Player player) {
         Integer at = this.toggled.get(player.getUniqueId());
         return at != null && this.tick - at <= 2;
     }

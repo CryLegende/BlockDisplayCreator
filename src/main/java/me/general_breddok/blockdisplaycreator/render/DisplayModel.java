@@ -756,6 +756,108 @@ final class DisplayModel {
     }
 
     /**
+     * For each part, what takes a point of the model back into the part's own box (its resting pose undone), null for a
+     * part that draws nothing or is flattened to nothing. Worked out the first time the model is aimed at.
+     */
+    private org.joml.Matrix4d[] partInverses;
+    private double boundsRadius = -1;
+
+    /**
+     * How far from the entity the box of {@link #bounds()} reaches at most, in blocks at the size the file gives.
+     */
+    double boundsRadius() {
+        if (this.boundsRadius < 0) {
+            float[] b = bounds();
+            double most = 0;
+            for (int i = 0; i < 8; i++) {
+                double x = (i & 1) == 0 ? b[0] : b[3];
+                double y = (i & 2) == 0 ? b[1] : b[4];
+                double z = (i & 4) == 0 ? b[2] : b[5];
+                most = Math.max(most, x * x + y * y + z * z);
+            }
+            this.boundsRadius = Math.sqrt(most);
+        }
+        return this.boundsRadius;
+    }
+
+    /**
+     * How far along a line, in the model's own axes at the size its file gives, the first part the line meets is
+     * entered: each part counts for what it really draws at rest (see {@link Element#body()}), so a line that only
+     * passes between the parts meets nothing. -1 when it meets none before a distance.
+     *
+     * @param start  where the line starts
+     * @param step   where it goes for each block it runs in the world
+     * @param within the distance beyond which nothing counts
+     */
+    double hit(org.joml.Vector3d start, org.joml.Vector3d step, double within) {
+        if (this.partInverses == null) {
+            org.joml.Matrix4d[] inverses = new org.joml.Matrix4d[this.elements.size()];
+            for (int i = 0; i < inverses.length; i++) {
+                Element element = this.elements.get(i);
+                if (!element.drawn() || element.body() == null) {
+                    continue;
+                }
+                Transformation rest = element.transformation();
+                org.joml.Vector3f t = rest.getTranslation();
+                org.joml.Vector3f s = rest.getScale();
+                org.joml.Quaternionf left = rest.getLeftRotation();
+                org.joml.Quaternionf right = rest.getRightRotation();
+                org.joml.Matrix4d matrix = new org.joml.Matrix4d().translate(t.x, t.y, t.z)
+                        .rotate(new org.joml.Quaterniond(left.x, left.y, left.z, left.w)).scale(s.x, s.y, s.z)
+                        .rotate(new org.joml.Quaterniond(right.x, right.y, right.z, right.w));
+                if (Math.abs(matrix.determinant()) > 1.0E-12) {
+                    inverses[i] = matrix.invert();
+                }
+            }
+            this.partInverses = inverses;
+        }
+        double nearest = within;
+        boolean met = false;
+        org.joml.Vector3d from = new org.joml.Vector3d();
+        org.joml.Vector3d along = new org.joml.Vector3d();
+        for (int i = 0; i < this.partInverses.length; i++) {
+            org.joml.Matrix4d inverse = this.partInverses[i];
+            if (inverse == null) {
+                continue;
+            }
+            inverse.transformPosition(start, from);
+            inverse.transformDirection(step, along);
+            double at = enters(from, along, this.elements.get(i).body());
+            if (at >= 0 && at < nearest) {
+                nearest = at;
+                met = true;
+            }
+        }
+        return met ? nearest : -1;
+    }
+
+    /**
+     * Where a line (start + t × step, t from 0) enters a straight box (smallest x, y, z then largest), or -1.
+     */
+    static double enters(org.joml.Vector3d start, org.joml.Vector3d step, float[] box) {
+        double near = 0;
+        double far = Double.MAX_VALUE;
+        for (int axis = 0; axis < 3; axis++) {
+            double s = start.get(axis);
+            double d = step.get(axis);
+            if (Math.abs(d) < 1.0E-12) {
+                if (s < box[axis] || s > box[axis + 3]) {
+                    return -1;
+                }
+                continue;
+            }
+            double first = (box[axis] - s) / d;
+            double second = (box[axis + 3] - s) / d;
+            near = Math.max(near, Math.min(first, second));
+            far = Math.min(far, Math.max(first, second));
+            if (near > far) {
+                return -1;
+            }
+        }
+        return near;
+    }
+
+    /**
      * Steps a pose change is looked at in, on the way the clients draw it, when an animated model gets its box.
      */
     private static final int INTERPOLATION_STEPS = 8;

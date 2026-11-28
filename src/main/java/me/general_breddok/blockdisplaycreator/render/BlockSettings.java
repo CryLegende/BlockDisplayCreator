@@ -69,8 +69,9 @@ public final class BlockSettings {
     String permission;
     /**
      * The one click box an administrator drew in place of those of its file (or for a file that gives it none):
-     * width, height and how high its floor stands above the block, in blocks of the model at the size its file gives
-     * (it grows and shrinks with the block). Null for the file's.
+     * width, height, how high its floor stands above the block, then how far its middle stands from the block's axis
+     * along the model's x and z, in blocks of the model at the size its file gives (it grows, shrinks and turns with
+     * the block). Null for the file's.
      */
     @Nullable
     double[] clickBox;
@@ -132,7 +133,8 @@ public final class BlockSettings {
         settings.cooldown = Math.max(0, yaml.getLong("cooldown", 0));
         settings.permission = blankToNull(yaml.getString("permission"));
         if (yaml.isConfigurationSection("click-box")) {
-            settings.clickBox = new double[]{yaml.getDouble("click-box.width"), yaml.getDouble("click-box.height"), yaml.getDouble("click-box.y")};
+            settings.clickBox = box(yaml.getDouble("click-box.width"), yaml.getDouble("click-box.height"), yaml.getDouble("click-box.y"),
+                    yaml.getDouble("click-box.x"), yaml.getDouble("click-box.z"));
             if (settings.clickBox[0] <= 0 || settings.clickBox[1] <= 0) {
                 settings.clickBox = null;
             }
@@ -157,11 +159,19 @@ public final class BlockSettings {
     }
 
     /**
-     * The one click box drawn in place of those of the file (width, height, height of its floor), or null.
+     * The one click box drawn in place of those of the file (width, height, height of its floor, x and z of its middle
+     * in the model's axes), or null.
      */
     @Nullable
     public double[] clickBox() {
         return this.noClickBox ? null : this.clickBox;
+    }
+
+    /**
+     * A click box as {@link #clickBox} keeps it: width, height, floor, then x and z of its middle.
+     */
+    static double[] box(double width, double height, double floor, double x, double z) {
+        return new double[]{width, height, floor, x, z};
     }
 
     /**
@@ -220,6 +230,12 @@ public final class BlockSettings {
             yaml.set("click-box.width", this.clickBox[0]);
             yaml.set("click-box.height", this.clickBox[1]);
             yaml.set("click-box.y", this.clickBox[2]);
+            if (this.clickBox[3] != 0) {
+                yaml.set("click-box.x", this.clickBox[3]);
+            }
+            if (this.clickBox[4] != 0) {
+                yaml.set("click-box.z", this.clickBox[4]);
+            }
         }
         if (!this.collisions) {
             yaml.set("collisions", false);
